@@ -1,4 +1,9 @@
-# Batch B incident investigation — restoration pending
+# Batch B incident investigation — recovery success recorded
+
+> 最新狀態（2026-10-16）：**RECOVERY_SUCCESS**；四條 FK DDL／DML Commit 全部 ACKNOWLEDGED，15 PK 零殘留、非 Manifest 異動 0、Control 0／0 與三開關 OFF，原 FK／Schema／Migration 已恢復驗證，Exit Code 0。依使用者已驗收結果記錄，詳見 [成功紀錄](recovery-success-checkpoint.md)。Session 仍 Blocked；Batch B 真實 MySQL 測試尚未完成。下文保留原事故與授權方案歷史，所有舊「最新／Pending／尚未成功／下一次授權」描述均不覆蓋本段，也不是重新執行許可。本輪未重跑或連線。
+
+## 歷史紀錄（不代表當前執行授權）
+
 
 > 1826 最新狀態（2026-10-16）：已失敗的一次性 Recovery 不得重試。已離線改為不同名稱、ADD 優先的四步 FK bridge；尚未執行真實 DDL/DML。唯讀現況已確認原 FK NO ACTION、原 Schema 指紋、15 PK／Control／Registry 不變，狀態 READY_FOR_NEW_RECOVERY_APPROVAL。先前單條 ALTER 同名 ADD/DROP 方案已失效，不能執行。新範圍見 [1826 修復方案](batch-b-recovery-fk-plan.md)。
 

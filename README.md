@@ -1,6 +1,6 @@
 # JukeBox101
 
-目前工程狀態（Recovery checkpoint）：Batch B 真實 Recovery 尚未成功，Session 仍 Blocked；最近一次於 `R_FK_PRECHECK` 遭 MySQL 1045 拒絕登入，未執行該次 FK DDL 或 Manifest 清理。已補上 DBA／Harness 連線角色診斷並通過離線測試，但真實登入尚未重新驗證。以下歷史測試數量不代表 Recovery 或 Batch B 已通過人工驗收。
+目前狀態（2026-10-16）：**RECOVERY_SUCCESS**。四條 FK DDL 與 DML Commit 全部 ACKNOWLEDGED；原 Manifest 15 PK 零殘留、非 Manifest 異動 0；Control 0／0、三開關 OFF；原 FK／Schema／Migration 全部恢復並驗證；Recovery Exit Code 0。依使用者提供的已驗收結果記錄，本輪未連線複驗。Session 仍 Blocked，Batch B 真實 MySQL 測試尚未完成，不標記通過或正式可用。
 
 Python 3.12 Discord 音樂交換 Bot，採本機優先、可部署 Linux 的架構，使用 MySQL 8.0.16+、PyMySQL 原生參數化 SQL。Phase 1A～1D、Phase 2A.1 Repository 隔離整合已 Accepted；Phase 2A.2 Registration 人工 Passed；Phase 2A.3 DB-disabled Discord Interaction Transport 已 Accepted — User Verified。真實 Discord＋MySQL 持久化互動仍 Pending，Phase 2A 整體不標記全面完成。Phase 2B.1 及 Phase 2B.2 Implementation 01 的離線契約已實作並通過離線測試，兩者仍等待人工驗收；不代表真實影片驗證或 Nickel 業務已完成。
 
@@ -268,3 +268,7 @@ Application `TEST_DB_*` 與 Migration `TEST_MIGRATION_DB_*` 已分離，固定�
 
 
 Harness 最終安全收斂（離線）：保持 submissions 僅 SELECT 與 18 表 DELETE；新增精確 control revision／switch drift 檢查、server UUID pin、未啟用角色與額外 grants 檢查、清理失敗原因保存。DBA 草案改為先建立鎖定 Harness、完整核對後只解鎖 Harness；須受控執行，不能直接忽略 SELECT 結果跑完整批 SQL。本輪 681 Passed／0 Failed／23 Skipped；未連線 MySQL、未執行任何 DBA 或業務 SQL。詳見 [單次授權範圍與安全限制](docs/batch-b-real-mysql-tests.md)。
+
+## Private Beta 規格 checkpoint（2026-10-16）
+
+狀態：**BETA_SPEC_READY_FOR_REVIEW**；僅文件規格，未實作 Beta。見 [最小 Beta 規格](docs/private-beta-mvp-specification.md) 與 [Recovery 成功紀錄](docs/recovery-success-checkpoint.md)。下列或先前各階段測試數量屬歷史，不代表本輪真實 MySQL 驗收。

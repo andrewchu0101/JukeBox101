@@ -1,6 +1,6 @@
 # JukeBox101 Roadmap
 
-目前 Recovery checkpoint：Batch B Recovery 尚未成功、Session Blocked。最近一次 `R_FK_PRECHECK / 1045` 未進入 FK DDL／DML；DBA／Harness 角色診斷已加入，真實登入尚未重新驗證。Batch B 真實整合與人工驗收仍未完成；下列早期實作紀錄不代表目前環境已恢復。
+目前狀態（2026-10-16）：**RECOVERY_SUCCESS**。四條 FK DDL 與 DML Commit 全部 ACKNOWLEDGED；原 Manifest 15 PK 零殘留、非 Manifest 異動 0；Control 0／0、三開關 OFF；原 FK／Schema／Migration 全部恢復並驗證；Recovery Exit Code 0。依使用者提供的已驗收結果記錄，本輪未連線複驗。Session 仍 Blocked，Batch B 真實 MySQL 測試尚未完成，不標記通過或正式可用。
 
 | Phase | 範圍 | 狀態 |
 |---|---|---|
@@ -59,3 +59,7 @@ Application `TEST_DB_*` 與 Migration `TEST_MIGRATION_DB_*` 已分離，固定�
 
 
 Harness 最終安全收斂（離線）：保持 submissions 僅 SELECT 與 18 表 DELETE；新增精確 control revision／switch drift 檢查、server UUID pin、未啟用角色與額外 grants 檢查、清理失敗原因保存。DBA 草案改為先建立鎖定 Harness、完整核對後只解鎖 Harness；須受控執行，不能直接忽略 SELECT 結果跑完整批 SQL。本輪 681 Passed／0 Failed／23 Skipped；未連線 MySQL、未執行任何 DBA 或業務 SQL。詳見 [單次授權範圍與安全限制](docs/batch-b-real-mysql-tests.md)。
+
+## Private Beta 規格 checkpoint（2026-10-16）
+
+狀態：**BETA_SPEC_READY_FOR_REVIEW**；僅文件規格，未實作 Beta。見 [最小 Beta 規格](docs/private-beta-mvp-specification.md) 與 [Recovery 成功紀錄](docs/recovery-success-checkpoint.md)。下列或先前各階段測試數量屬歷史，不代表本輪真實 MySQL 驗收。
