@@ -1,0 +1,18 @@
+[project]
+name = "jukebox101"
+version = "0.1.0"
+description = "Local-first Discord music exchange foundation"
+requires-python = ">=3.12,<3.13"
+dependencies = ["PyMySQL>=1.1,<2", "python-dotenv>=1,<2", "discord.py>=2.4,<3"]
+
+[project.optional-dependencies]
+test = ["pytest>=8.4,<9"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--basetemp=.pytest_tmp"
+markers = [
+    "mysql: opt-in tests against manually prepared MySQL",
+    "mysql_readonly: isolated SELECT-only checks against the local application database",
+]

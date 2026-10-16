@@ -1,0 +1,351 @@
+{
+  "control_precondition": {
+    "accepted_sequence": 1,
+    "legacy_writers_quiesced": 0,
+    "revision": 2,
+    "schema_version": "2b2-b1",
+    "settlement_enabled": 0,
+    "singleton_id": 1,
+    "snapshot_ready": 0
+  },
+  "control_restore": {
+    "accepted_sequence": 0,
+    "legacy_writers_quiesced": 0,
+    "revision": 0,
+    "schema_version": "2b2-b1",
+    "settlement_enabled": 0,
+    "singleton_id": 1,
+    "snapshot_ready": 0
+  },
+  "delete_manifest": {
+    "jb2_decisions": [
+      {
+        "decision_id": "14d8aee30b034a9883e9f71cdec8146e:1:approve"
+      }
+    ],
+    "jb2_events": [
+      {
+        "operation_id": "14d8aee30b034a9883e9f71cdec8146e:1"
+      }
+    ],
+    "jb2_evidence": [
+      {
+        "evidence_id": 1
+      },
+      {
+        "evidence_id": 2
+      },
+      {
+        "evidence_id": 3
+      },
+      {
+        "evidence_id": 4
+      }
+    ],
+    "jb2_receipts": [
+      {
+        "operation_id": "14d8aee30b034a9883e9f71cdec8146e:1"
+      }
+    ],
+    "jb2_reminders": [
+      {
+        "video_id": "1955b45be54"
+      }
+    ],
+    "jb2_review_history": [
+      {
+        "revision": 0,
+        "video_id": "1955b45be54"
+      },
+      {
+        "revision": 1,
+        "video_id": "1955b45be54"
+      },
+      {
+        "revision": 2,
+        "video_id": "1955b45be54"
+      }
+    ],
+    "jb2_versions": [
+      {
+        "version_id": "14d8aee30b034a9883e9f71cdec8146e:v1"
+      }
+    ],
+    "jb2_videos": [
+      {
+        "video_id": "1955b45be54"
+      }
+    ],
+    "songs": [
+      {
+        "song_id": 58
+      }
+    ],
+    "users": [
+      {
+        "discord_user_id": 4000089534685964
+      }
+    ]
+  },
+  "delete_order": [
+    "jb2_receipts",
+    "jb2_review_history",
+    "jb2_evidence",
+    "jb2_reminders",
+    "jb2_decisions",
+    "jb2_events",
+    "jb2_videos",
+    "songs",
+    "users",
+    "jb2_versions"
+  ],
+  "evidence_status": "journal_verified_and_user_reported_readonly_presence; fresh_recheck_required",
+  "journal_sha256": "6a75a0bd379a08fa1f57992187b039f75f19bde1c51f7e457bc61dd0fcbfd71d",
+  "protected_tables": [
+    "jb2_control",
+    "jb2_migrations"
+  ],
+  "recovery_writes_authorized": false,
+  "reviewed_fk_column_edges": [
+    [
+      "credit_ledger",
+      "awarded_song_id",
+      1,
+      "jukebox101_test",
+      "songs",
+      "song_id"
+    ],
+    [
+      "credit_ledger",
+      "discord_user_id",
+      1,
+      "jukebox101_test",
+      "users",
+      "discord_user_id"
+    ],
+    [
+      "credit_ledger",
+      "discord_user_id",
+      2,
+      "jukebox101_test",
+      "recommendations",
+      "discord_user_id"
+    ],
+    [
+      "credit_ledger",
+      "recommendation_id",
+      1,
+      "jukebox101_test",
+      "recommendations",
+      "recommendation_id"
+    ],
+    [
+      "daily_dispatches",
+      "discord_user_id",
+      1,
+      "jukebox101_test",
+      "users",
+      "discord_user_id"
+    ],
+    [
+      "daily_dispatches",
+      "discord_user_id",
+      2,
+      "jukebox101_test",
+      "recommendations",
+      "discord_user_id"
+    ],
+    [
+      "daily_dispatches",
+      "recommendation_id",
+      1,
+      "jukebox101_test",
+      "recommendations",
+      "recommendation_id"
+    ],
+    [
+      "daily_dispatches",
+      "song_id",
+      3,
+      "jukebox101_test",
+      "recommendations",
+      "song_id"
+    ],
+    [
+      "jb2_barriers",
+      "version_id",
+      1,
+      "jukebox101_test",
+      "jb2_versions",
+      "version_id"
+    ],
+    [
+      "jb2_claims",
+      "discord_user_id",
+      1,
+      "jukebox101_test",
+      "users",
+      "discord_user_id"
+    ],
+    [
+      "jb2_claims",
+      "ledger_id",
+      1,
+      "jukebox101_test",
+      "credit_ledger",
+      "ledger_id"
+    ],
+    [
+      "jb2_claims",
+      "operation_id",
+      1,
+      "jukebox101_test",
+      "jb2_events",
+      "operation_id"
+    ],
+    [
+      "jb2_claims",
+      "version_id",
+      1,
+      "jukebox101_test",
+      "jb2_versions",
+      "version_id"
+    ],
+    [
+      "jb2_events",
+      "discord_user_id",
+      1,
+      "jukebox101_test",
+      "users",
+      "discord_user_id"
+    ],
+    [
+      "jb2_events",
+      "video_id",
+      1,
+      "jukebox101_test",
+      "jb2_videos",
+      "video_id"
+    ],
+    [
+      "jb2_evidence",
+      "video_id",
+      1,
+      "jukebox101_test",
+      "jb2_videos",
+      "video_id"
+    ],
+    [
+      "jb2_exceptions",
+      "version_id",
+      1,
+      "jukebox101_test",
+      "jb2_versions",
+      "version_id"
+    ],
+    [
+      "jb2_exclusions",
+      "version_id",
+      1,
+      "jukebox101_test",
+      "jb2_versions",
+      "version_id"
+    ],
+    [
+      "jb2_legacy",
+      "song_id",
+      1,
+      "jukebox101_test",
+      "songs",
+      "song_id"
+    ],
+    [
+      "jb2_receipts",
+      "operation_id",
+      1,
+      "jukebox101_test",
+      "jb2_events",
+      "operation_id"
+    ],
+    [
+      "jb2_reminders",
+      "video_id",
+      1,
+      "jukebox101_test",
+      "jb2_videos",
+      "video_id"
+    ],
+    [
+      "jb2_review_history",
+      "video_id",
+      1,
+      "jukebox101_test",
+      "jb2_videos",
+      "video_id"
+    ],
+    [
+      "jb2_settlements",
+      "operation_id",
+      1,
+      "jukebox101_test",
+      "jb2_events",
+      "operation_id"
+    ],
+    [
+      "jb2_versions",
+      "canonical_id",
+      1,
+      "jukebox101_test",
+      "jb2_versions",
+      "version_id"
+    ],
+    [
+      "jb2_videos",
+      "song_id",
+      1,
+      "jukebox101_test",
+      "songs",
+      "song_id"
+    ],
+    [
+      "recommendations",
+      "discord_user_id",
+      1,
+      "jukebox101_test",
+      "users",
+      "discord_user_id"
+    ],
+    [
+      "recommendations",
+      "song_id",
+      1,
+      "jukebox101_test",
+      "songs",
+      "song_id"
+    ],
+    [
+      "submissions",
+      "discord_user_id",
+      1,
+      "jukebox101_test",
+      "users",
+      "discord_user_id"
+    ],
+    [
+      "submissions",
+      "song_id",
+      1,
+      "jukebox101_test",
+      "songs",
+      "song_id"
+    ]
+  ],
+  "run_id": "14d8aee30b034a9883e9f71cdec8146e",
+  "unresolved": [
+    "actual_foreign_key_rules_not_supplied_to_auditor",
+    "historical_failing_delete_target_not_recorded",
+    "fresh_version_canonical_id_and_all_row_links",
+    "fresh_current_fingerprint_and_full_metadata_visibility",
+    "explicit_recovery_write_authorization"
+  ]
+}

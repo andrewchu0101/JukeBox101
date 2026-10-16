@@ -1,0 +1,10 @@
+{
+  "source": "Local Phase 2A.2 registry baseline; not a fetched remote export",
+  "commands": [
+    {"name": "balance", "type": 1, "options": []},
+    {"name": "daily", "type": 1, "options": [{"name": "mode", "type": 3, "required": true, "choices": [{"name": "on", "value": "on"}, {"name": "off", "value": "off"}]}]},
+    {"name": "exchange", "type": 1, "options": []},
+    {"name": "history", "type": 1, "options": []},
+    {"name": "share", "type": 1, "options": [{"name": "url", "type": 3, "required": true}]}
+  ]
+}
