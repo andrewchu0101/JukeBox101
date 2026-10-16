@@ -43,6 +43,11 @@ class MySQLHarness:
     workers_stopped: bool = True  # [cleanup prerequisite]: No DELETE is allowed while a worker may still be alive.
     journal: Path = field(default_factory=lambda: Path(tempfile.mkdtemp(prefix="jukebox101-batch-b-")) / "run.json")
 
+    supervised_session_id: str | None = None  # [new session boundary]: Never an old incident identifier.
+    expected_definitions: dict | None = field(default=None, repr=False)
+    expected_baseline: dict | None = field(default=None, repr=False)
+    transaction_progress: list = field(default_factory=list)  # [management commits]: Attempt and ACK are distinct.
+
     def start(self) -> None:
         """@description: Certify an empty accepted baseline before enabling only the disposable test switches.
         @param self: Run owner with separately loaded app and harness profiles.
@@ -58,7 +63,7 @@ class MySQLHarness:
             self.definitions = schema_fingerprints(cursor)
         self.verify_cleanup_readiness()
         rows = lock_inventory(self.connection)  # [empty baseline]: Never infer disposal permission from a schema name.
-        self.baseline = rows
+        self.require_start_baseline(rows)
         with self.connection.cursor() as cursor:
             original = require_baseline(rows)  # [original singleton]: Restore exact counters and OFF switches only after verified cleanup.
             if schema_fingerprints(cursor) != self.definitions:
@@ -67,8 +72,18 @@ class MySQLHarness:
             self.enabled = True  # [uncertain enable commit]: Cleanup must run even if its acknowledgement is lost.
             set_control(cursor, dict({name: original[name] for name in CONTROL_COLUMNS}, snapshot_ready=1,
                                      legacy_writers_quiesced=1, settlement_enabled=1))
-        self.connection.commit()
+        self.commit_transaction("ENABLE")
         self.persist("ENABLED")
+
+    def require_start_baseline(self, rows: dict) -> None:
+        """@description: Prevent an individual test from accepting a drifted supervisor baseline.
+        @param self: Run with optional immutable parent baseline.
+        @param rows: Fresh locked 23-table inventory.
+        @return: None; all expected empty rows, Registry and Control must match exactly.
+        """
+        if self.expected_baseline is not None and rows != self.expected_baseline:
+            raise HarnessSafetyError("SUPERVISED_BASELINE_MISMATCH")
+        self.baseline = rows
 
     def verify_cleanup_readiness(self) -> None:
         """@description: Refuse known self-root cleanup failure before enabling any application write.
@@ -76,6 +91,8 @@ class MySQLHarness:
         @return: None; only a separately supervised temporary FK window permits testing.
         """
         require_cleanup_cascade(self.definitions)
+        if self.expected_definitions is not None and self.definitions != self.expected_definitions:
+            raise HarnessSafetyError("SUPERVISED_SCHEMA_MISMATCH")
         self.verify_application()
         validate_test_constraints(self.connection)
 
@@ -125,7 +142,8 @@ class MySQLHarness:
                   "server_uuid": os.environ.get("TEST_DB_SERVER_UUID"),
                   "counts": self.last_counts, "observed_primary_keys": self.observed_keys, "observed_control": self.observed_control,
                   "failures": self.failure_details, "scenario_outcomes": self.scenario_outcomes,
-                  "cleanup_progress": self.cleanup_progress}
+                  "cleanup_progress": self.cleanup_progress, "transaction_progress": self.transaction_progress,
+                  "parent_session_id": self.supervised_session_id}
         if self.baseline is not None:
             report["original_control"] = self.baseline["jb2_control"][0]
             report["migration"] = self.baseline["jb2_migrations"]
@@ -199,20 +217,53 @@ class MySQLHarness:
             return
         try:
             if self.enabled:
+                if self.supervised_session_id and self.failed:
+                    raise HarnessSafetyError("SUPERVISED_SESSION_BLOCKED_NO_CLEANUP")
                 self.cleanup()
         except BaseException as error:
-            self.record_failure(error, "cleanup")
-            try:
-                self.disable_only()
-            except BaseException as recovery_error:
-                self.record_failure(recovery_error, "shutdown")
-                raise
-            finally:
-                self.persist("STOP_MANUAL_RECOVERY_REQUIRED")
+            self.handle_cleanup_failure(error)
             raise
         finally:
             self.close_owned_session()
 
+
+    def handle_cleanup_failure(self, error: BaseException) -> None:
+        """@description: Preserve supervised uncertainty without an emergency write or automatic repair.
+        @param self: Run retaining the original failed transaction and manifest.
+        @param error: Original cleanup or poisoned-session failure.
+        @return: None; rollback releases uncommitted work but never proves an unknown commit absent.
+        """
+        self.record_failure(error, "cleanup")
+        try:
+            if self.supervised_session_id:
+                self.connection.rollback()
+                self.observe_cleanup("ROLLBACK_ACKNOWLEDGED", "", {})
+                return
+            self.disable_only()
+        except BaseException as recovery_error:
+            self.record_failure(recovery_error, "shutdown")
+            raise
+        finally:
+            self.persist("STOP_MANUAL_RECOVERY_REQUIRED")
+
+    def commit_transaction(self, phase: str) -> None:
+        """@description: Audit every management commit without retrying a missing acknowledgement.
+        @param self: Connection-owning run with an existing durable journal.
+        @param phase: Enable, cleanup, reminder adjustment or legacy emergency shutdown.
+        @return: None; UNKNOWN poisons the run before further writes.
+        """
+        progress = dict(phase=phase, outcome="PENDING")  # [commit intent]: Durable before sending COMMIT.
+        self.transaction_progress.append(progress)
+        self.persist("DML_COMMIT_ATTEMPT")
+        try:
+            self.connection.commit()
+        except BaseException as error:
+            progress["outcome"] = "UNKNOWN"
+            self.record_failure(error, "commit")
+            self.persist("DML_COMMIT_UNKNOWN")
+            raise
+        progress["outcome"] = "ACKNOWLEDGED"
+        self.persist("DML_COMMIT_ACKNOWLEDGED")
 
     def record_failure(self, error: BaseException, stage: str) -> None:
         """@description: Preserve actionable cleanup causes without logging credentials or raw driver messages.
@@ -250,6 +301,7 @@ class MySQLHarness:
         """
         if not self.workers_stopped:
             raise HarnessSafetyError("WORKERS_STILL_RUNNING_NO_CLEANUP")
+        require_worker_audits(self.scope.audit_directory)
         rows = lock_inventory(self.connection)  # [stable teardown inventory]: SERIALIZABLE protects rows and insertion gaps.
         self.persist("CLEANUP_CHECK", rows)
         with self.connection.cursor() as cursor:
@@ -265,7 +317,7 @@ class MySQLHarness:
             set_control(cursor, {name: self.baseline["jb2_control"][0][name] for name in CONTROL_COLUMNS})
             if read_inventory(cursor) != self.baseline:
                 raise HarnessSafetyError("CLEANUP_BASELINE_MISMATCH")
-        self.connection.commit()
+        self.commit_transaction("CLEANUP")
         verified = lock_inventory(self.connection)
         if verified != self.baseline:
             raise HarnessSafetyError("POST_COMMIT_BASELINE_MISMATCH")
@@ -315,7 +367,7 @@ class MySQLHarness:
                 cursor.execute("UPDATE jb2_reminders SET next_due_at=UTC_TIMESTAMP(6) WHERE video_id=%s", (row["video_id"],))
                 if cursor.rowcount != 1:
                     raise HarnessSafetyError("REMINDER_SETUP_ROWCOUNT_MISMATCH")
-        self.connection.commit()
+        self.commit_transaction("REMINDER_SETUP")
 
     def disable_only(self) -> None:
         """@description: Freeze further settlement without disguising residual rows or resetting acceptance counters.
@@ -332,7 +384,7 @@ class MySQLHarness:
                 raise HarnessSafetyError("EMERGENCY_OWNERSHIP_UNAVAILABLE")
             lock_control(cursor)
             cursor.execute("UPDATE jb2_control SET snapshot_ready=0,legacy_writers_quiesced=0,settlement_enabled=0 WHERE singleton_id=1")
-        self.connection.commit()
+        self.commit_transaction("EMERGENCY_SHUTDOWN")
 
     def abandon_session(self) -> None:
         """@description: Release a failed transaction before trying emergency shutdown on an independent verified session.
@@ -408,3 +460,45 @@ def start_application_process(process: Any) -> None:
     finally:
         os.environ.update(hidden)
         hidden.clear()
+
+
+def require_worker_audits(directory: str | None, active_allowed: bool = False) -> None:
+    """@description: Refuse cleanup or another worker after unresolved application commit evidence.
+    @param directory: Fresh session-owned transaction audit directory, absent for legacy tests.
+    @param active_allowed: Permit peer connections during deliberate concurrency, never a poisoned outcome.
+    @return: None; incomplete, unknown or blocked worker records preserve all committed rows.
+    """
+    if directory is None:
+        return
+    for path in Path(directory).glob("transaction-*.json"):
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report["blocked"] or (not active_allowed and not report["closed"]):
+            raise HarnessSafetyError("APPLICATION_TRANSACTION_UNCERTAIN")
+        rejected = {"UNKNOWN"} if active_allowed else {"PENDING", "UNKNOWN"}
+        if any(item["outcome"] in rejected for item in report["progress"]):
+            raise HarnessSafetyError("APPLICATION_TRANSACTION_UNCERTAIN")
+
+
+def create_harness(application: DatabaseSettings, management: DatabaseSettings, supervision: dict | None) -> MySQLHarness:
+    """@description: Bind existing run manifests to a single parent-owned Stage-B-only session.
+    @param application: Existing application profile, never DBA authority.
+    @param management: Existing least-privileged cleanup profile.
+    @param supervision: Parent-provided pytest configuration; absent for legacy execution.
+    @return: Existing harness with a fresh run manifest and pinned temporary schema.
+    """
+    if supervision is None:
+        return MySQLHarness(application, management)
+    from tests.batch_b_acceptance import stage_b_save
+    supervision['before_run']()
+    scope = RunScope()  # [independent test manifest]: Never reuse an old incident or sibling test's roots.
+    directory = Path(supervision['directory']) / scope.run_id
+    directory.mkdir()
+    transactions = directory / 'transactions'
+    transactions.mkdir()
+    scope.audit_directory = str(transactions)
+    harness = MySQLHarness(application, management, scope=scope, journal=directory / 'run.json',
+                           supervised_session_id=supervision['session_id'], expected_definitions=supervision['definitions'],
+                           expected_baseline=supervision['baseline'])
+    supervision['state']['runs'].append(dict(run_id=scope.run_id, journal=str(harness.journal)))
+    stage_b_save(supervision['state'], 'B_ONLY_RUN_REGISTERED')
+    return harness

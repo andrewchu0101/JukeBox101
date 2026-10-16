@@ -80,7 +80,7 @@ def gateway_interaction():
     @return: Synthetic authenticated interaction with captured private responses.
     """
     return SimpleNamespace(
-        guild_id=SYNTHETIC_GUILD_ID, application_id=SYNTHETIC_APPLICATION_ID,
+        id=456, guild_id=SYNTHETIC_GUILD_ID, application_id=SYNTHETIC_APPLICATION_ID,
         _state=MagicMock(), guild=None,
         type=discord.InteractionType.application_command, user=SimpleNamespace(id=123), command_failed=False,
         response=SimpleNamespace(is_done=MagicMock(return_value=False), send_message=AsyncMock(), defer=AsyncMock()),

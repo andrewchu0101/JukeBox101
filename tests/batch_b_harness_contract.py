@@ -38,6 +38,7 @@ class RunScope:
     """Track exact predeclared subjects instead of treating a run prefix as ownership proof."""
 
     run_id: str = field(default_factory=lambda: uuid4().hex)
+    audit_directory: str | None = field(default=None, repr=False)  # [supervised worker audit]: Fresh session-owned path, never a credential.
     owner_id: int = field(init=False)
     subjects: dict = field(init=False)  # [predeclared ownership]: Exact user/video/version triples bound to each operation.
     decisions: set[str] = field(init=False)  # [approved audit keys]: Cleanup does not infer ownership from arbitrary prefixes.

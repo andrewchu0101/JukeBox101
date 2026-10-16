@@ -12,10 +12,12 @@ import re
 import sys
 from typing import TextIO
 from uuid import UUID
+from pathlib import Path
+import tempfile
 from bot.config import DatabaseSettings
 from tests.batch_b_harness_contract import HARNESS_USER, HarnessSafetyError, RUN_SWITCH, HARNESS_SWITCH
 from tests.batch_b_harness_database import verified_connection, read_inventory, schema_fingerprints
-from tests.batch_b_acceptance_setup import stage_a, record_error
+from tests.batch_b_acceptance_setup import stage_a, record_error, stage_call
 
 
 def receive(stream: TextIO) -> tuple[dict, list[str]]:
@@ -32,10 +34,7 @@ def receive(stream: TextIO) -> tuple[dict, list[str]]:
         raise HarnessSafetyError('DBA_ROLE_REJECTED')
     if str(UUID(header['server_uuid'])) != header['server_uuid'].lower():
         raise HarnessSafetyError('SERVER_UUID_REJECTED')
-    credentials = [json.loads(stream.readline(16384)) for _ in range(3)]  # [short-lived plaintext]: Never written to reports.
-    if any(not isinstance(secret, str) or not secret or len(secret) > 4096 or '\x00' in secret for secret in credentials):
-        raise HarnessSafetyError('CREDENTIAL_PROTOCOL_REJECTED')
-    return header, credentials
+    return header, receive_private_credentials(stream)
 
 
 def settings(user: str, password: str) -> DatabaseSettings:
@@ -76,13 +75,23 @@ def install_profiles(application: DatabaseSettings, harness: DatabaseSettings) -
 class TestCounts:
     """Count actual pytest reports without exposing assertion values, local variables or driver text."""
 
-    def __init__(self) -> None:
+    def __init__(self, supervision: dict | None = None) -> None:
         """@description: Initialize separate genuine test outcomes.
         @param self: Private pytest report observer.
+        @param supervision: Optional new-session metadata and parent-only preflight callbacks.
         @return: None.
         """
+        self.supervision = supervision  # [parent-only context]: No DBA connection is sent to application workers.
         self.counts = dict(passed=0, failed=0, skipped=0)  # [real results]: Offline tests never enter this runner.
         self.reports = []  # [pytest phase evidence]: Distinguish a passed call from a failed teardown without raw traceback.
+
+    def pytest_configure(self, config: object) -> None:
+        """@description: Bind this one pytest invocation to its independently created supervised session.
+        @param self: Observer with optional new-session context.
+        @param config: Current pytest configuration, never inherited environment authority.
+        @return: None.
+        """
+        config.stage_b_supervision = self.supervision
 
     def pytest_runtest_logreport(self, report: object) -> None:
         """@description: Count calls and setup/teardown failures without printing exception payloads.
@@ -99,13 +108,14 @@ class TestCounts:
             self.counts['passed'] += 1
 
 
-def run_tests(state: dict) -> int:
+def run_tests(state: dict, supervision: dict | None = None) -> int:
     """@description: Run only the existing real suite while suppressing potentially sensitive traceback output.
     @param state: Sanitized counts and journal references.
+    @param supervision: Optional exact schema, new-session scope and before/after run guards.
     @return: Original pytest exit code.
     """
     import pytest
-    observer = TestCounts()  # [actual result accounting]: Never substitute mock success for MySQL behavior.
+    observer = TestCounts(supervision)  # [actual result accounting]: Never substitute mock success for MySQL behavior.
     output = io.StringIO()
     try:
         with redirect_stdout(output), redirect_stderr(output):
@@ -266,6 +276,8 @@ def entry() -> int:
     """
     if not sys.argv[1:]:
         return main()
+    if sys.argv[1:] == ['--stage-b-only']:
+        return stage_b_main(sys.stdin)
     modes = {'--inspect-recovery': 'batch_b_recovery', '--restore-recovery': 'batch_b_recovery_write',
              '--fk-lab': 'batch_b_fk_lab', '--repair-recovery-fk': 'batch_b_recovery_fk'}  # [mutually exclusive entry]: Never fall through to provisioning.
     if len(sys.argv) != 2 or sys.argv[1] not in modes:
@@ -276,6 +288,334 @@ def entry() -> int:
         return importlib.import_module('tests.' + modes[sys.argv[1]]).main(sys.stdin)
     finally:
         close_gates()
+
+
+def receive_stage_b(stream: TextIO) -> tuple[dict, list[str]]:
+    """@description: Require a new session and the pinned Stage-B-only scope before any credentials or I/O.
+    @param stream: Existing anonymous stdin protocol, never a command-line secret.
+    @return: Validated header and DBA, application and existing harness credentials.
+    """
+    header = json.loads(stream.readline(8192))  # [new authority]: Distinct from A+B and recovery modes.
+    require_stage_b_identity(header)
+    require_stage_b_authority(header)
+    return header, receive_private_credentials(stream)
+
+
+def receive_private_credentials(stream: TextIO) -> list[str]:
+    """@description: Reuse one bounded three-role credential protocol across A+B and Stage-B-only.
+    @param stream: Existing anonymous pipe; values never appear in reports or command arguments.
+    @return: DBA, application and existing harness secrets for the owning orchestration boundary.
+    """
+    credentials = [json.loads(stream.readline(16384)) for _ in range(3)]  # [private lifetime]: Cleared by the caller's finally boundary.
+    if any(not isinstance(secret, str) or not secret or len(secret) > 4096 or '\x00' in secret for secret in credentials):
+        raise HarnessSafetyError('CREDENTIAL_PROTOCOL_REJECTED')
+    return credentials
+
+
+def require_stage_b_identity(header: dict) -> None:
+    """@description: Reject malformed session and DBA identities without accepting a caller-controlled path.
+    @param header: Parsed private protocol header with no credentials.
+    @return: None; missing fields fail before authorization or network access.
+    """
+    if not isinstance(header.get('session_id'), str) or str(UUID(header['session_id'])) != header['session_id']:
+        raise HarnessSafetyError('STAGE_B_SESSION_REJECTED')
+    username = header.get('dba_user')  # [existing DBA identity]: Never an Application/Migrator/Harness account.
+    if not isinstance(username, str) or not re.fullmatch('[A-Za-z0-9_]{1,32}', username) or username.startswith('jukebox101_'):
+        raise HarnessSafetyError('STAGE_B_DBA_REJECTED')
+
+
+def require_stage_b_authority(header: dict) -> None:
+    """@description: Bind Stage B to the previously approved instance, schema and one new confirmation.
+    @param header: Shape-checked identities and explicit operation intent, never ambient switches.
+    @return: None; foreign pins, extra fields and old-mode authorization are refused.
+    """
+    from tests.batch_b_recovery_fk import SERVER_UUID, ORIGINAL_SCHEMA
+    expected = {'authorization', 'dba_user', 'server_uuid', 'schema_fingerprint', 'session_id', 'exclusive_no_ddl', 'confirmation'}
+    if set(header) != expected or header['authorization'] != 'BATCH_B_STAGE_B_ONLY' or header['exclusive_no_ddl'] is not True:
+        raise HarnessSafetyError('STAGE_B_AUTHORIZATION_REQUIRED')
+    if header['server_uuid'] != SERVER_UUID or header['schema_fingerprint'] != ORIGINAL_SCHEMA:
+        raise HarnessSafetyError('STAGE_B_PIN_REJECTED')
+    if header['confirmation'] != 'STAGE_B_ONLY ' + header['session_id']:
+        raise HarnessSafetyError('STAGE_B_CONFIRMATION_REQUIRED')
+
+
+def stage_b_save(state: dict, phase: str) -> None:
+    """@description: Keep a durable new-session journal without touching any recovery evidence.
+    @param state: Nonsecret parent session facts and child manifest references.
+    @param phase: Fixed orchestration phase, distinct from the FK helper's subphases.
+    @return: None; failed persistence cannot be reported as successful validation.
+    """
+    from tests.batch_b_harness import persist_manifest
+    state['stage'] = phase
+    persist_manifest(Path(state['session_journal']), state)
+
+
+def reserve_stage_b_session(header: dict, state: dict) -> Path:
+    """@description: Refuse reuse of the same session even after an earlier process crashes or fails preflight.
+    @param header: Validated UUID, never a caller-selected filesystem path.
+    @param state: New session audit output, not an old journal.
+    @return: Fresh exclusively created local directory for this invocation and its manifests.
+    """
+    directory = Path(tempfile.gettempdir()) / ('jukebox101-stage-b-' + header['session_id'])
+    directory.mkdir()  # [single-use boundary]: Existing directory forbids resume and retry before database access.
+    state.update(session_id=header['session_id'], session_journal=str(directory / 'session.json'), runs=[],
+                 previous_session_blocked=True, session_blocked=True, a_completed=False, b_started=False,
+                 baseline_restored=False, original_schema=header['schema_fingerprint'])
+    stage_b_save(state, 'B_ONLY_RESERVED')
+    return directory
+
+
+def connect_stage_b(context: dict, credentials: list[str], state: dict) -> None:
+    """@description: Reuse existing accounts and exclusive-session checks without Stage A provisioning.
+    @param context: Private parent-owned connection and profile map, never serialized.
+    @param credentials: DBA, application and existing harness secrets, kept out of worker environments.
+    @param state: Safe failure attribution and journal.
+    @return: None; outer ownership boundary closes partial connections.
+    """
+    from bot.database.connection import open_connection
+    from tests.batch_b_recovery_fk import prepare_session
+    context['application'] = settings('jukebox101_test_app', credentials[1])
+    context['management'] = settings(HARNESS_USER, credentials[2])
+    context['dba'] = stage_call(state, 'B_ONLY_DBA_CONNECT', open_connection, settings(context['header']['dba_user'], credentials[0]))
+    context['harness'] = stage_call(state, 'B_ONLY_HARNESS_CONNECT', verified_connection, context['management'], HARNESS_USER)
+    context['dba_id'] = stage_call(state, 'B_ONLY_DBA_SESSION', prepare_session, context['dba'], 'jukebox101:batch-b-fk-window')
+    context['harness_id'] = stage_call(state, 'B_ONLY_HARNESS_SESSION', prepare_session, context['harness'], 'jukebox101:batch-b-stage-b-supervisor')
+    credentials.clear()
+    state.pop('current_step', None)
+
+
+def inspect_stage_b(context: dict, state: dict) -> None:
+    """@description: Prove the pinned original schema, zero business rows and accepted Registry before DDL.
+    @param context: Owned parent sessions and explicit fixed-target profiles.
+    @param state: New session audit, with no raw table payloads.
+    @return: None; all reads complete before the first temporary FK is attempted.
+    """
+    from tests.batch_b_recovery_fk import require_exclusive, ORIGINAL_SCHEMA
+    from tests.batch_b_fk_window import build_window, digest
+    from tests.batch_b_acceptance_setup import verify_metadata, verify_application_login, verify_harness_login
+    from tests.batch_b_harness_database import CONTROL_COLUMNS, require_baseline
+    from tests.mysql_safety import validate_test_constraints
+    with context['dba'].cursor() as cursor:
+        require_exclusive(cursor, context)
+        baseline = verify_metadata(cursor)
+        control = require_baseline(baseline[0])
+        if any(control[name] != 0 for name in CONTROL_COLUMNS):
+            raise HarnessSafetyError('STAGE_B_ORIGINAL_CONTROL_NOT_ZERO')
+        context['window'] = build_window(baseline[1], ORIGINAL_SCHEMA)
+    validate_test_constraints(context['dba'])
+    verify_application_login(context['application'])
+    verify_harness_login(context['management'])
+    context['baseline'] = baseline
+    state['cascade_schema'] = digest(dict(context['window'].cascade))
+    stage_b_boundary(context, False)
+    stage_b_save(state, 'B_ONLY_PREFLIGHT_VERIFIED')
+
+
+def stage_b_boundary(context: dict, phase: bool | str) -> None:
+    """@description: Recheck full DBA visibility, exclusivity, FK rules and unchanged data at every schema boundary.
+    @param context: Private supervisor state and immutable preflight baseline.
+    @param phase: Exact original, dual-FK bridge or CASCADE state.
+    @return: None; no unknown data is accepted as a new baseline.
+    """
+    from tests.batch_b_recovery_fk import require_exclusive
+    from tests.batch_b_recovery_write import verify_fk_metadata
+    from tests.batch_b_fk_window import require_schema
+    context['harness'].rollback()
+    context['dba'].rollback()
+    with context['dba'].cursor() as cursor:
+        require_exclusive(cursor, context)
+        require_stage_b_events_disabled(cursor)
+        require_schema(schema_fingerprints(cursor), context['window'], phase)
+        verify_fk_metadata(cursor, phase)
+        if read_inventory(cursor) != context['baseline'][0]:
+            raise HarnessSafetyError('STAGE_B_BOUNDARY_DATA_CHANGED')
+    context['dba'].rollback()
+
+
+def require_stage_b_events_disabled(cursor: object) -> None:
+    """@description: Reject enabled events in any schema that could write into the disposable test database.
+    @param cursor: DBA cursor with already-proved global metadata visibility.
+    @return: None; scheduled background writers invalidate exclusive-access attestation.
+    """
+    from tests.batch_b_acceptance_setup import query
+    if query(cursor, "SELECT EVENT_SCHEMA,EVENT_NAME FROM information_schema.EVENTS WHERE STATUS='ENABLED'"):
+        raise HarnessSafetyError('STAGE_B_ENABLED_EVENT_REFUSED')
+
+
+def stage_b_transition(context: dict, cascade: bool, state: dict) -> None:
+    """@description: Reuse the reviewed four-step FK helper with fresh data checks and no DDL replay.
+    @param context: Parent-only DBA session and approved immutable window.
+    @param cascade: Open CASCADE or restore the exact original NO ACTION constraint.
+    @param state: Durable per-DDL progress, including partial and unknown outcomes.
+    @return: None; helper failure never starts tests or another DDL direction.
+    """
+    from tests.batch_b_fk_window import apply_switch
+    label = 'cascade_ddl_outcome' if cascade else 'restore_ddl_outcome'
+    if label in state:
+        raise HarnessSafetyError('STAGE_B_DDL_RETRY_REFUSED')
+    if not cascade and not state.get('tests_verified'):
+        raise HarnessSafetyError('STAGE_B_RESTORE_REQUIRES_COMPLETE_TESTS')
+    apply_switch(context['dba'], context['window'], cascade, state, stage_b_save,
+                 lambda phase: stage_b_boundary(context, phase))
+    state['fk_restoration_pending'] = cascade
+    stage_b_save(state, 'B_ONLY_CASCADE_VERIFIED' if cascade else 'B_ONLY_ORIGINAL_VERIFIED')
+
+
+def stage_b_run(context: dict, state: dict) -> None:
+    """@description: Run exactly the existing suite only within the verified temporary FK state.
+    @param context: Parent connections, immutable baseline and session directory.
+    @param state: Sanitized result counts and registered run manifests.
+    @return: None; any failed or skipped test leaves the session blocked without restoration writes.
+    """
+    if state.get('b_started'):
+        raise HarnessSafetyError('STAGE_B_PYTEST_RETRY_REFUSED')
+    stage_b_boundary(context, True)
+    supervision = dict(session_id=state['session_id'], directory=context['directory'], state=state,
+                       definitions=dict(context['window'].cascade), baseline=context['baseline'][0], before_run=lambda: stage_b_boundary(context, True))
+    install_profiles(context['application'], context['management'])
+    state['b_started'] = True
+    stage_b_save(state, 'B_ONLY_TESTS_STARTED')
+    try:
+        result = run_tests(state, supervision)
+    finally:
+        close_gates()
+    state['pytest_exit_code'] = result
+    stage_b_save(state, 'B_ONLY_TESTS_FINISHED')
+    require_stage_b_results(state)
+    stage_b_boundary(context, True)
+    state['tests_verified'] = True
+
+
+def require_stage_b_results(state: dict) -> None:
+    """@description: Require genuine complete test counts and all registered manifests before restoring schema.
+    @param state: Actual observer output, never a caller assertion of success.
+    @return: None; missing journals, uncertainty or pytest failure retain the block.
+    """
+    if state.get('pytest_exit_code') != 0 or state.get('tests') != dict(passed=23, failed=0, skipped=0):
+        raise HarnessSafetyError('STAGE_B_TESTS_INCOMPLETE')
+    if len(state['runs']) != 23 or len(state.get('journals', [])) != 23:
+        raise HarnessSafetyError('STAGE_B_MANIFESTS_INCOMPLETE')
+    for run, summary in zip(state['runs'], state['journals'], strict=True):
+        require_stage_b_run(run, summary, state['session_id'])
+
+
+def require_stage_b_run(run: dict, summary: dict, session_id: str) -> None:
+    """@description: Prevent old or sibling-session manifests from authorizing this supervisor's restoration.
+    @param run: Run ID and journal path registered before any child database work.
+    @param summary: Existing sanitized pytest teardown summary.
+    @param session_id: Parent's independently reserved single-use UUID.
+    @return: None; only fully restored, correctly attributed child evidence is accepted.
+    """
+    report = json.loads(Path(run['journal']).read_text(encoding='utf-8'))
+    if report['run_id'] != run['run_id'] or report['parent_session_id'] != session_id or report['status'] != 'RESTORED_VERIFIED':
+        raise HarnessSafetyError('STAGE_B_MANIFEST_NOT_RESTORED')
+    if summary['run_id'] != run['run_id'] or summary['journal'] != run['journal'] or summary['restoration_pending'] or summary['session_blocked']:
+        raise HarnessSafetyError('STAGE_B_CHILD_BLOCKED')
+    require_stage_b_commits(report, Path(run['journal']).parent / 'transactions')
+
+
+def require_stage_b_commits(report: dict, directory: Path) -> None:
+    """@description: Require explicit management acknowledgements and durable application transaction audits.
+    @param report: Restored child manifest for this parent session.
+    @param directory: Exact child-owned application audit directory.
+    @return: None; missing records, partial commits or a failed child preserve the block.
+    """
+    from tests.batch_b_harness import require_worker_audits
+    commits = report['transaction_progress']  # [commit evidence]: ENABLE and CLEANUP bracket every successful run.
+    if not commits or commits[0]['phase'] != 'ENABLE' or commits[-1]['phase'] != 'CLEANUP' or report['failures']:
+        raise HarnessSafetyError('STAGE_B_COMMIT_AUDIT_INCOMPLETE')
+    if any(item['outcome'] != 'ACKNOWLEDGED' for item in commits):
+        raise HarnessSafetyError('STAGE_B_COMMIT_UNCERTAIN')
+    if not directory.is_dir() or not any(directory.glob('transaction-*.json')):
+        raise HarnessSafetyError('STAGE_B_WORKER_AUDIT_MISSING')
+    require_worker_audits(str(directory))
+
+
+def execute_stage_b(context: dict, state: dict) -> None:
+    """@description: Keep the original-to-window-to-original sequence single-use and fail stopped.
+    @param context: Owned parent resources and new-session directory.
+    @param state: Durable audit outcome, blocked until every final check is acknowledged.
+    @return: None; failure exits immediately without compensation DDL, cleanup replay or unblocking.
+    """
+    stage_b_save(state, 'B_ONLY_PREFLIGHT_STARTED')
+    inspect_stage_b(context, state)
+    stage_b_transition(context, True, state)
+    stage_b_run(context, state)
+    stage_b_transition(context, False, state)
+    verify_restoration(context['management'], context['baseline'], state)
+    stage_b_boundary(context, False)
+    state['baseline_restored'] = True
+    stage_b_save(state, 'B_ONLY_RESTORED_VERIFIED')
+
+
+def close_stage_b(context: dict, state: dict) -> None:
+    """@description: Release only parent-owned sessions and preserve secondary close failures.
+    @param context: Partially acquired connection map.
+    @param state: Audit outcome that cannot remain successful after resource-release uncertainty.
+    @return: None.
+    """
+    for name in ('harness', 'dba'):
+        connection = context.pop(name, None)
+        if connection is None:
+            continue
+        try:
+            connection.close()
+        except BaseException as error:
+            record_error(state, error)
+            state.update(baseline_restored=False, connection_close_failed=True)
+
+
+def stage_b_main(stream: TextIO) -> int:
+    """@description: Expose one explicit new-session mode without provisioning or altering old block records.
+    @param stream: Masked-credential bridge from the existing PowerShell launcher.
+    @return: Zero only after 23 genuine passes, precise cleanup, original FK and final journal verification.
+    """
+    state = dict(stage='B_ONLY_FAILED_BLOCKED', session_blocked=True, previous_session_blocked=True, baseline_restored=False)
+    context, credentials = {}, []  # [private resources]: Credentials never enter the serialized state.
+    try:
+        close_gates()
+        header, credentials = receive_stage_b(stream)
+        context.update(header=header, directory=reserve_stage_b_session(header, state))
+        os.environ['TEST_DB_SERVER_UUID'] = header['server_uuid']
+        connect_stage_b(context, credentials, state)
+        execute_stage_b(context, state)
+    except BaseException as error:
+        record_error(state, error)
+        state['baseline_restored'] = False
+    finally:
+        credentials.clear()
+        close_gates()
+        close_stage_b(context, state)
+        clear_stage_b_profiles()
+    return emit_stage_b(state)
+
+
+def clear_stage_b_profiles() -> None:
+    """@description: Remove process-scoped credential adapters even after interrupted pytest or failed preflight.
+    @param: none
+    @return: None.
+    """
+    for key in tuple(os.environ):
+        if key.startswith(('TEST_DB_', 'TEST_HARNESS_DB_', 'TEST_DBA_DB_')) or key == 'JUKEBOX_BATCH_B_EXCLUSIVE':
+            os.environ.pop(key, None)
+
+
+def emit_stage_b(state: dict) -> int:
+    """@description: Never promote a final journal failure or partial restore to a usable session.
+    @param state: Safe parent outcome and new-session manifest references.
+    @return: Nonzero for any uncertainty; the previous session block is never cleared.
+    """
+    complete = state.get('baseline_restored') is True and 'error_type' not in state
+    state['session_blocked'] = not complete
+    state['stage'] = 'B_ONLY_COMPLETE_MANUAL_ACCEPTANCE_PENDING' if complete else 'B_ONLY_FAILED_BLOCKED'
+    try:
+        if 'session_journal' in state:
+            stage_b_save(state, state['stage'])
+    except BaseException as error:
+        record_error(state, error)
+        state.update(session_blocked=True, baseline_restored=False, stage='B_ONLY_FAILED_BLOCKED')
+    print(json.dumps(state, ensure_ascii=True))
+    return int(state['session_blocked'])
 
 
 if __name__ == '__main__':

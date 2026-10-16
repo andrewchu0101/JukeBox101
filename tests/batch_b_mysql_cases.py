@@ -42,8 +42,14 @@ def repository(settings: Any, scope: RunScope, fault: dict | None = None) -> Sub
         @param: none
         @return: Real PyMySQL connection or client-fault adapter.
         """
+        from tests.batch_b_harness import require_worker_audits
+        require_worker_audits(scope.audit_directory, active_allowed=True)
         connection = verified_connection(settings, "jukebox101_test_app")
-        return FaultConnection(connection, fault) if fault is not None else connection
+        try:
+            return FaultConnection(connection, fault if fault is not None else {}, scope.audit_directory)
+        except BaseException:
+            connection.close()
+            raise
     return SubmissionRepository(factory, scope.owner_id)
 
 

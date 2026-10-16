@@ -204,6 +204,8 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
     @param parameters: Bound synthetic values.
     @return: Explicit rows for the requested protocol.
     """
+    if "WHERE e.discord_user_id=%s ORDER BY e.accepted_sequence DESC LIMIT %s" in sql:
+        return _public_history_rows(connection.database.state, parameters)
     if "FROM jb2_events e JOIN jb2_videos" in sql:
         return _event_rows(connection, sql, parameters)
     if "FROM jb2_barriers UNION" in sql:
@@ -441,3 +443,21 @@ def _maintenance_update(state: dict, sql: str, parameters: tuple) -> None:
             next_due_at=datetime.combine(parameters[1], datetime.min.time()) + timedelta(days=1))
     else:
         raise AssertionError("Unimplemented fake update: " + sql)
+
+
+def _public_history_rows(committed: dict, parameters: tuple) -> list[dict]:
+    """@description: Simulate the new public SELECT without granting an unfiltered snapshot to callers.
+    @param committed: Fake committed state used by a read-only connection.
+    @param parameters: Authenticated user and maximum row count from bound SQL.
+    @return: Recent caller-owned events with their current per-video review projection.
+    """
+    recipient_id, limit = parameters
+    events = sorted(committed["jb2_events"].values(), key=lambda event: event["accepted_sequence"], reverse=True)
+    rows = []  # [private projection]: Other submitters are excluded before pagination.
+    for event in events:
+        if event["discord_user_id"] != recipient_id:
+            continue
+        video = committed["jb2_videos"][event["video_id"]]
+        rows.append(dict(operation_id=event["operation_id"], video_id=event["video_id"],
+                         review_status=video["review_status"], reward_status=event["reward_status"]))
+    return rows[:limit]

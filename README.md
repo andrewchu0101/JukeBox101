@@ -1,5 +1,11 @@
 # JukeBox101
 
+Stage-B-only 目前狀態：**STAGE_B_ONLY_OFFLINE_READY_FOR_REVIEW**。已在既有 Harness 接入單次新 Session、受控四步 FK Window、原 23 項套件與逐 Commit／精確 Manifest 清理稽核；完整離線回歸 1228 Passed／0 Failed／55 Skipped，PowerShell Mock 119 斷言 Passed。未連線或執行真實 Stage B；舊 Session 仍 Blocked。下一次的三段授權與最短步驟見 [Stage-B-only／私人 Guild 實跑](docs/stage-b-only-run.md)。這取代下文「尚需離線補接 supervisor」的歷史待辦，不代表 Batch B 或 Beta 真實驗收已通過。
+
+
+目前私人 Beta 接線：已完成既有 `/share` → Batch B Pending 持久化、`/history` 本人投稿／目前審核狀態、`/balance` 原餘額查詢；正式入口強制指定私人 Guild／Application／Owner，缺設定 Fail Closed。**程式已接線／離線通過，不代表真實可用**。Session 仍 Blocked，Batch B 真實 MySQL 驗收未完成；本輪沒有外部操作，資料庫三開關維持 OFF。完整離線結果 1163 Passed／0 Failed／55 Skipped，PowerShell Mock 90 斷言 Passed。後續所需操作與授權見 [私人 Beta 接線紀錄](docs/private-beta-implementation.md)。
+
+
 目前狀態（2026-10-16）：**RECOVERY_SUCCESS**。四條 FK DDL 與 DML Commit 全部 ACKNOWLEDGED；原 Manifest 15 PK 零殘留、非 Manifest 異動 0；Control 0／0、三開關 OFF；原 FK／Schema／Migration 全部恢復並驗證；Recovery Exit Code 0。依使用者提供的已驗收結果記錄，本輪未連線複驗。Session 仍 Blocked，Batch B 真實 MySQL 測試尚未完成，不標記通過或正式可用。
 
 Python 3.12 Discord 音樂交換 Bot，採本機優先、可部署 Linux 的架構，使用 MySQL 8.0.16+、PyMySQL 原生參數化 SQL。Phase 1A～1D、Phase 2A.1 Repository 隔離整合已 Accepted；Phase 2A.2 Registration 人工 Passed；Phase 2A.3 DB-disabled Discord Interaction Transport 已 Accepted — User Verified。真實 Discord＋MySQL 持久化互動仍 Pending，Phase 2A 整體不標記全面完成。Phase 2B.1 及 Phase 2B.2 Implementation 01 的離線契約已實作並通過離線測試，兩者仍等待人工驗收；不代表真實影片驗證或 Nickel 業務已完成。

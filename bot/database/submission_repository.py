@@ -4,19 +4,24 @@ Construction performs no I/O; an explicit injected connection factory is invoked
 """
 
 from collections.abc import Callable
+from contextlib import closing
+from dataclasses import replace
 from typing import Any
 
-from bot.database.persisted_snapshot import load_snapshot
+from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import ReviewCommand, apply_review, require_owner
 from bot.database.reward_settlement import settle_reward
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
 from bot.database.submission_store import accept_submission
-from bot.database.submission_transaction import submission_transaction
+from bot.database.submission_transaction import PersistenceNotReady, submission_transaction
+from bot.models import HISTORY_LIMIT
 from bot.review import ReviewSnapshot
+from bot.song_identity import VideoIdentity
+from bot.urls import parse_youtube_url
 from bot.reward_candidates import RewardDecision
 from bot.submission_snapshot import SubmissionSnapshot
 from bot.submission_workflow import SubmissionRequest, SubmissionResult
-from bot.version_identity import VersionExclusion, require_reference
+from bot.version_identity import VersionAssignment, VersionExclusion, require_reference
 
 
 class SubmissionRepository:
@@ -45,6 +50,41 @@ class SubmissionRepository:
             raise ValueError("Approval must use the audited review boundary after acceptance")
         with submission_transaction(self._factory) as (cursor, control):
             return accept_submission(cursor, control, request)
+
+    def accept_pending(self, discord_user_id: int, source_url: str, operation_id: str) -> SubmissionResult:
+        """@description: Admit untrusted Discord URLs without accepting evidence or awarding Nickel.
+        @param self: Existing transaction-owning submission repository.
+        @param discord_user_id: Authenticated interaction submitter.
+        @param source_url: User URL, never identity or eligibility evidence.
+        @param operation_id: Stable server-assigned interaction retry key.
+        @return: New pending receipt or the original operation receipt on replay.
+        """
+        request = _pending_request(discord_user_id, source_url, operation_id)
+        with submission_transaction(self._factory) as (cursor, control):
+            if not control["snapshot_ready"] or not control["legacy_writers_quiesced"] or control["settlement_enabled"]:
+                raise PersistenceNotReady("Pending intake requires reviewed isolation and disabled settlement")
+            cursor.execute("SELECT video_id,identity_json,review_json,review_revision,review_status "
+                           "FROM jb2_videos WHERE video_id = %s", (request.identity.video.video_id,))
+            current = cursor.fetchone()  # [authoritative identity]: A public resubmission never replaces Owner evidence.
+            if current is not None:
+                request = replace(request, identity=decode_current_identity(current))
+            return accept_submission(cursor, control, request)
+
+    def history(self, discord_user_id: int) -> list[dict]:
+        """@description: Limit the public projection to the caller's submissions and current review states.
+        @param self: Existing repository with worker-owned connections.
+        @param discord_user_id: Authenticated recipient, never a slash-command option.
+        @return: Bounded newest-first submission rows without another user's private evidence.
+        """
+        with closing(self._factory()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT e.operation_id,e.video_id,v.review_status,e.reward_status "
+                    "FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
+                    "WHERE e.discord_user_id=%s ORDER BY e.accepted_sequence DESC LIMIT %s",
+                    (discord_user_id, HISTORY_LIMIT),
+                )
+                return list(cursor.fetchall())
 
     def snapshot(self) -> SubmissionSnapshot:
         """@description: Supply a globally covered current projection without a caller completeness switch.
@@ -110,3 +150,18 @@ class SubmissionRepository:
         require_owner(actor_id, self._owner_id, "scheduled pending summary")
         with submission_transaction(self._factory) as (cursor, control):
             return pending_summary(cursor, self._owner_id)
+
+
+def _pending_request(discord_user_id: int, source_url: str, operation_id: str) -> SubmissionRequest:
+    """@description: Keep public intake facts separate from privileged review evidence.
+    @param discord_user_id: Authenticated Discord submitter.
+    @param source_url: Untrusted YouTube URL normalized by the existing parser.
+    @param operation_id: Stable interaction-derived idempotency reference.
+    @return: Evidence-free request whose sequence is assigned inside the database transaction.
+    """
+    require_reference(operation_id)
+    if len(operation_id) > 128 or type(discord_user_id) is not int or discord_user_id <= 0:
+        raise ValueError("Invalid public submission identity")
+    video = VideoIdentity(parse_youtube_url(source_url).video_id)  # [unresolved subject]: URL identity is not recording evidence.
+    return SubmissionRequest(source_url, operation_id, discord_user_id, 0,
+                             VersionAssignment(video), ReviewSnapshot(video), 0)

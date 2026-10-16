@@ -274,8 +274,9 @@ def uncertain_case(settings: Any, scope: Any, mode: str) -> None:
     faulty = repository(settings, scope, {"commit": position})
     try:
         faulty.accept(request(scope, 1)) if operation == "accept" else faulty.settle(request(scope, 1).operation_id)
-    except CommitOutcomeUnknown:
-        pass
+    except CommitOutcomeUnknown as error:
+        if not isinstance(error.__cause__, InjectedClientFault):
+            raise
     else:
         raise AssertionError("COMMIT_FAULT_DID_NOT_FIRE")
     for _ in range(2):

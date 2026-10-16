@@ -20,6 +20,10 @@ function Read-Host {
     if ($Prompt -like 'Local DBA*') { return 'root' }
     if ($Prompt -like 'Previously reviewed read-only*') { return ('a' * 64) }
     if ($Prompt -like 'Previously*') { return '11111111-2222-4333-8444-555555555555' }
+    if ($Prompt -like 'After approved Stage B*') {
+        if ($script:Mode -eq 'reject-stage-confirm') { return 'NO' }
+        return ($Prompt -split 'type ', 2)[1]
+    }
     if ($Prompt -like 'After approved*') {
         if ($script:Mode -eq 'reject-confirm') { return 'NO' }
         return 'RESTORE 14d8aee30b034a9883e9f71cdec8146e'
@@ -35,7 +39,7 @@ function New-AcceptanceProcess {
     $fake = [pscustomobject]@{StartInfo=$null; HasExited=$false; ExitCode=23; Disposed=$false;
         StandardInput=(New-Object System.IO.StringWriter); StandardOutput=[pscustomobject]@{}; StandardError=[pscustomobject]@{}}
     $fake.StandardOutput | Add-Member ScriptMethod ReadToEndAsync {
-        $stage = if ($script:ExpectedMode -eq 'repair') { 'R_FK_FAILED_BLOCKED' } elseif ($script:ExpectedMode -eq 'lab') { 'FK_LAB_COMPLETE' } elseif ($script:ExpectedMode -eq 'read') { 'R_READ_ONLY_COMPLETE' } elseif ($script:ExpectedMode -eq 'write') { 'R_RECOVERY_FAILED_BLOCKED' } else { 'B_TEST_FAILED' }
+        $stage = if ($script:ExpectedMode -eq 'stage-b') { 'B_ONLY_FAILED_BLOCKED' } elseif ($script:ExpectedMode -eq 'repair') { 'R_FK_FAILED_BLOCKED' } elseif ($script:ExpectedMode -eq 'lab') { 'FK_LAB_COMPLETE' } elseif ($script:ExpectedMode -eq 'read') { 'R_READ_ONLY_COMPLETE' } elseif ($script:ExpectedMode -eq 'write') { 'R_RECOVERY_FAILED_BLOCKED' } else { 'B_TEST_FAILED' }
         [System.Threading.Tasks.Task]::FromResult([string]('{"stage":"' + $stage + '"}'))
     }
     $fake.StandardError | Add-Member ScriptMethod ReadToEndAsync { [System.Threading.Tasks.Task]::FromResult([string]'fake-private-driver-text') }
@@ -174,6 +178,43 @@ try {
     $bridgeReport = Convert-AcceptanceReport '{"stage":"R_FK_FAILED_BLOCKED","fk_verified_state":"BRIDGE","fk_ddl_progress":[{"direction":"cascade_ddl_outcome","step":1,"sql":"ALTER TABLE `jukebox101_test`.`jb2_versions` ADD CONSTRAINT `fk_jb2_version_root_recovery` FOREIGN KEY (`canonical_id`) REFERENCES `jb2_versions` (`version_id`) ON DELETE CASCADE","outcome":"ACKNOWLEDGED"}]}'
     Assert-Bridge (($bridgeReport | ConvertFrom-Json).fk_verified_state -eq 'BRIDGE') 'Bridge verification state lost'
     Assert-Bridge (($bridgeReport | ConvertFrom-Json).fk_ddl_progress[0].outcome -eq 'ACKNOWLEDGED') 'Separate DDL step evidence lost'
+    $script:Mode = 'normal'
+    $script:ExpectedMode = 'stage-b'
+    $stageOutcome = Invoke-BatchBAcceptance $root -StageBOnly
+    Assert-Bridge ($stageOutcome.ExitCode -eq 23) 'Stage B original exit code lost'
+    Assert-Bridge ($script:Child.StartInfo.Arguments -eq '-B -m tests.batch_b_acceptance --stage-b-only') 'Stage B fell through to A+B'
+    $stageLines = $script:Child.StandardInput.ToString().Trim().Split("`n")
+    $stageHeader = $stageLines[0] | ConvertFrom-Json
+    Assert-Bridge ($stageLines.Count -eq 4) 'Stage B role credential framing changed'
+    Assert-Bridge ($stageHeader.authorization -eq 'BATCH_B_STAGE_B_ONLY') 'Stage B authority lost'
+    Assert-Bridge ($stageHeader.confirmation -eq ('STAGE_B_ONLY ' + $stageHeader.session_id)) 'Stage B confirmation not bound to new session'
+    Assert-Bridge ($stageHeader.session_id -cmatch '^[0-9a-f-]{36}$') 'Stage B session is not a UUID'
+    Assert-Bridge ($stageHeader.server_uuid -eq 'ab73bd54-c3c3-11f1-bc47-005056c00001') 'Stage B UUID pin changed'
+    Assert-Bridge ($stageHeader.schema_fingerprint -eq '5f201eabfb5828f80029497e3eca81432ed99a81aebbd15f2a23515cc93c62a8') 'Stage B Schema pin changed'
+    Assert-Bridge $stageHeader.exclusive_no_ddl 'Stage B exclusive access missing'
+    Assert-Bridge ($null -eq $stageHeader.PSObject.Properties['journal']) 'Stage B reused old incident evidence path'
+    Assert-Bridge ($script:Child.StartInfo.EnvironmentVariables['JUKEBOX_RUN_BATCH_B_MIGRATION'] -eq '0') 'Stage B enabled migration'
+    Assert-Bridge (-not $script:Child.StartInfo.EnvironmentVariables.ContainsKey('TEST_DB_PASSWORD')) 'Stage B inherited private app credential'
+    $null = Invoke-BatchBAcceptance $root -StageBOnly
+    $nextHeader = ($script:Child.StandardInput.ToString().Trim().Split("`n")[0]) | ConvertFrom-Json
+    Assert-Bridge ($nextHeader.session_id -ne $stageHeader.session_id) 'Stage B reused a session UUID'
+    foreach ($conflict in @(@{StageBOnly=$true;FkLab=$true}, @{StageBOnly=$true;RecoveryJournal='old.json'},
+        @{StageBOnly=$true;RestoreRecovery=$true}, @{StageBOnly=$true;RepairRecoveryFk=$true;RecoveryJournal='old.json'})) {
+        $rejected = $false
+        try { $null = Invoke-BatchBAcceptance $root @conflict } catch { $rejected=$true }
+        Assert-Bridge $rejected 'Stage B accepted conflicting mode'
+    }
+    $script:Mode = 'reject-stage-confirm'
+    $rejected = $false
+    try { $null = Invoke-BatchBAcceptance $root -StageBOnly } catch { $rejected=$true }
+    Assert-Bridge $rejected 'Stage B ignored failed per-session confirmation'
+    $script:Mode = 'normal'
+    $script:ExpectedMode = 'normal'
+    $rejected = $false
+    try { $null = Invoke-BatchBAcceptance $root -StageBOnly } catch { $rejected=$true }
+    Assert-Bridge $rejected 'Stage B accepted an A+B worker report'
+    $completeStage = Convert-AcceptanceReport '{"stage":"B_ONLY_COMPLETE_MANUAL_ACCEPTANCE_PENDING","session_id":"11111111-2222-4333-8444-555555555555","previous_session_blocked":true,"session_blocked":false,"tests_verified":true}'
+    Assert-Bridge (($completeStage | ConvertFrom-Json).previous_session_blocked -eq $true) 'Stage B lost old Session Block'
     Write-Output ('PASS: ' + $script:Checks + ' offline assertions; no process or MySQL started.')
 }
 finally {

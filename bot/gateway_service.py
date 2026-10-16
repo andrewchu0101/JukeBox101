@@ -11,11 +11,12 @@ MODE_LABEL = "Development / DB-disabled"
 class GatewayAcceptanceService:
     """Implement the existing handler-facing operations without accepting persistence dependencies."""
 
-    async def share(self, discord_user_id: int, source_url: str) -> str:
+    async def share(self, discord_user_id: int, source_url: str, operation_id: str | None = None) -> str:
         """@description: Verify URL transport while clearly refusing song persistence and credits.
         @param self: Transport-only acceptance service.
         @param discord_user_id: Requester identity, not stored or logged.
         @param source_url: User input validated locally without retrieving metadata.
+        @param operation_id: Optional interaction identity, deliberately never persisted.
         @return: Explicit test-mode outcome; invalid inputs raise the existing validation error.
         """
         parse_youtube_url(source_url)

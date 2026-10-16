@@ -38,7 +38,7 @@ def interaction():
     @return: Synthetic interaction with asynchronous response methods.
     """
     return SimpleNamespace(
-        user=SimpleNamespace(id=123),
+        id=456, user=SimpleNamespace(id=123),
         response=SimpleNamespace(defer=AsyncMock(), is_done=MagicMock(return_value=True), send_message=AsyncMock()),
         edit_original_response=AsyncMock(),
     )
@@ -60,7 +60,7 @@ def test_local_registry_and_minimal_permissions(client_and_service):
 
 
 @pytest.mark.parametrize("command_name, extra_arguments, expected_arguments", [
-    ("share", ("https://youtu.be/Abc_123-Xyz",), (123, "https://youtu.be/Abc_123-Xyz")),
+    ("share", ("https://youtu.be/Abc_123-Xyz",), (123, "https://youtu.be/Abc_123-Xyz", "discord:456")),
     ("exchange", (), (123,)), ("balance", (), (123,)), ("history", (), (123,)),
     ("daily", (app_commands.Choice(name="on", value="on"),), (123, True)),
     ("daily", (app_commands.Choice(name="off", value="off"),), (123, False)),
@@ -225,6 +225,8 @@ def test_explicit_entry_passes_token_only_to_login(database_settings, monkeypatc
     """
     entry = importlib.import_module("bot.__main__")
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "synthetic-token-secret")
+    for setting_name in ("DISCORD_DEV_GUILD_ID", "DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"):
+        monkeypatch.setenv(setting_name, "456")
     login_mock = MagicMock()
     sync_mock = AsyncMock()
     connect_mock = MagicMock(side_effect=AssertionError("Unexpected connection"))

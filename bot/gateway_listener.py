@@ -52,7 +52,7 @@ async def _reject_interaction(interaction: discord.Interaction) -> None:
         if interaction.response.is_done():
             return
         await interaction.response.send_message(
-            "Development / DB-disabled：此驗收入口只接受指定開發伺服器與 Application 的指令。",
+            "此入口只接受指定私人伺服器與 Application 的指令。",
             ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
         )
     except (discord.HTTPException, OSError) as transport_error:

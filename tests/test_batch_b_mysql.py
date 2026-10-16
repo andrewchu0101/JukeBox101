@@ -7,7 +7,7 @@ from collections.abc import Iterator
 import json
 import os
 import pytest
-from tests.batch_b_harness import MySQLHarness
+from tests.batch_b_harness import MySQLHarness, create_harness
 from tests.batch_b_harness_contract import RUN_SWITCH, HARNESS_SWITCH, load_profiles
 
 pytestmark = pytest.mark.skipif(os.environ.get(RUN_SWITCH) != "1" or os.environ.get(HARNESS_SWITCH) != "1",
@@ -24,32 +24,44 @@ def batch_b_write_guard() -> dict:
 
 
 @pytest.fixture
-def mysql_batch_b(batch_b_write_guard: dict) -> Iterator[MySQLHarness]:
-    """@description: Restore the accepted empty baseline even when a real scenario assertion fails.
+def mysql_batch_b(batch_b_write_guard: dict, request: pytest.FixtureRequest) -> Iterator[MySQLHarness]:
+    """@description: Restore each accepted empty baseline without sharing a previous pytest session's authority.
     @param batch_b_write_guard: Session poison state shared across tests.
-    @return: Enabled harness whose finally path cleans only verified owned rows.
+    @param request: Current pytest configuration containing optional parent-only supervision.
+    @return: Enabled existing harness whose finally path preserves uncertain writes.
     """
     if batch_b_write_guard["blocked"]:
         pytest.fail("HARNESS_SESSION_BLOCKED_AFTER_PREVIOUS_FAILURE")
     application, management = load_profiles()
-    harness = MySQLHarness(application, management)  # [one test run]: All roots are journaled before enabling switches.
+    supervision = getattr(request.config, "stage_b_supervision", None)
+    harness = create_harness(application, management, supervision)
     try:
         harness.start()
         yield harness
-    except BaseException:
+    except BaseException as error:
         batch_b_write_guard["blocked"] = True
+        harness.record_failure(error, "test")
         raise
     finally:
-        try:
-            harness.finish()
-            if harness.failed:
-                batch_b_write_guard["blocked"] = True
-        except BaseException:
-            batch_b_write_guard["blocked"] = True
-            pytest.fail("HARNESS_RECOVERY_FAILED; inspect nonsecret journal: " + str(harness.journal), pytrace=False)
-        finally:
-            print(json.dumps({"run_id": harness.scope.run_id, "journal": str(harness.journal), "restoration_pending": harness.enabled,
-                              "counts": harness.last_counts, "session_blocked": batch_b_write_guard["blocked"]}))
+        finish_mysql_run(harness, batch_b_write_guard)
+
+
+def finish_mysql_run(harness: MySQLHarness, guard: dict) -> None:
+    """@description: Preserve both cleanup failure and the session poison state in the existing safe summary.
+    @param harness: Existing run with only its own registered roots.
+    @param guard: Current pytest session's shared failure boundary.
+    @return: None; unsafe cleanup stops the suite before another run is admitted.
+    """
+    try:
+        harness.finish()
+        if harness.failed:
+            guard["blocked"] = True
+    except BaseException:
+        guard["blocked"] = True
+        pytest.fail("HARNESS_RECOVERY_FAILED; inspect nonsecret journal: " + str(harness.journal), pytrace=False)
+    finally:
+        print(json.dumps({"run_id": harness.scope.run_id, "journal": str(harness.journal), "restoration_pending": harness.enabled,
+                          "counts": harness.last_counts, "session_blocked": guard["blocked"]}))
 
 
 @pytest.mark.parametrize("scenario", ["persistence", "priority", "rejected", "concurrent_accept", "concurrent_reward",

@@ -1,6 +1,8 @@
 # Discord Private Beta 最小規格
 
-狀態：**BETA_SPEC_READY_FOR_REVIEW**。2026-10-16；本輪僅唯讀程式盤點與文件更新，沒有 Beta 實作或外部操作。Recovery 結果見 [成功紀錄](recovery-success-checkpoint.md)；Session 仍 Blocked，Batch B 真實 MySQL 驗收尚未完成，不能啟動或稱正式可用。
+歷史規格狀態：**BETA_SPEC_READY_FOR_REVIEW**。2026-10-16；本輪僅唯讀程式盤點與文件更新，沒有 Beta 實作或外部操作。Recovery 結果見 [成功紀錄](recovery-success-checkpoint.md)；Session 仍 Blocked，Batch B 真實 MySQL 驗收尚未完成，不能啟動或稱正式可用。
+
+> 後續使用者已核准本輪功能接線：`/history` 改作本人投稿／審核狀態，不新增 `/submission_status` 或 Owner 審核命令。現行實作與驗證以 [接線紀錄](private-beta-implementation.md) 為準；下文保留原規格提案。
 
 ## 既有路由與 Cog
 

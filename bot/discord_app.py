@@ -89,7 +89,7 @@ class CommandHandlers:
         @param url: User-provided YouTube video URL.
         @return: None.
         """
-        await _respond(interaction, self.service.share, interaction.user.id, url)
+        await _respond(interaction, self.service.share, interaction.user.id, url, f"discord:{interaction.id}")
 
     async def exchange(self, interaction: discord.Interaction) -> None:
         """@description: Explain the pending exchange gate without spending credits.
@@ -108,7 +108,7 @@ class CommandHandlers:
         await _respond(interaction, self.service.balance, interaction.user.id)
 
     async def history(self, interaction: discord.Interaction) -> None:
-        """@description: Reply privately with bounded successful recommendation history.
+        """@description: Reply privately with the injected service's caller-scoped history.
         @param self: Handler routing this command.
         @param interaction: Discord request carrying the recipient identity.
         @return: None.
@@ -138,7 +138,7 @@ def register_commands(tree: app_commands.CommandTree, handlers: CommandHandlers)
     tree.add_command(app_commands.Command(name="share", description="投稿 YouTube 影片供資格驗證", callback=handlers.share))
     tree.add_command(app_commands.Command(name="exchange", description="查詢交換功能開放狀態", callback=handlers.exchange))
     tree.add_command(app_commands.Command(name="balance", description="查詢可用交換點數", callback=handlers.balance))
-    tree.add_command(app_commands.Command(name="history", description="查詢最近成功取得的推薦", callback=handlers.history))
+    tree.add_command(app_commands.Command(name="history", description="查詢本人投稿及目前審核狀態", callback=handlers.history))
     tree.add_command(app_commands.Command(name="daily", description="設定每日推薦偏好（排程尚未啟用）", callback=handlers.daily))
 
 
