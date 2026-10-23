@@ -8,19 +8,27 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from enum import Enum
 
-from bot.database.review_persistence import ReviewCommand, require_owner
+from bot.database.review_persistence import (
+    ReexaminationCommand, ReviewCommand, content_judgement_digest, decision_digest, require_owner,
+)
 from bot.database.review_projection import ReviewProjection
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown
-from bot.evidence_record import EvidenceRecord
-from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus, approve_review, reject_review
-from bot.version_identity import VersionIdentityStatus
+from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
+from bot.review import (
+    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, reject_review,
+    reopen_for_reexamination,
+)
+from bot.review_gate import evaluate_approval_gate
+from bot.song_judgement import ContentJudgement
+from bot.version_identity import VersionIdentityStatus, require_reference
 
 NO_AWARD_EFFECT = "不發 Nickel，不寫入 credit_ledger，點數餘額不變。"  # [financial preview]: Shown before every confirmation.
+REEXAMINATION_EFFECT = "重審會保留原決策與受理順序，且重審期間不得直接核准。" + NO_AWARD_EFFECT  # [reexamination preview]: Explains the block.
 UNRESOLVED_IDENTITY_NOTE = "版本未確認：此次決定不會確認錄音版本。"  # [identity preview]: Approval never proves the recording.
 CONFLICT_IDENTITY_NOTE = "版本衝突：維持凍結，此次決定不會清除衝突。"  # [identity preview]: Conflicts stay frozen.
 
@@ -30,6 +38,7 @@ class ReviewAction(Enum):
 
     APPROVE = "approve"  # [song decision]: Explicit positive song eligibility, still award-free.
     REJECT = "reject"  # [song decision]: Explicit negative song eligibility after duration validation.
+    REEXAMINE = "reexamine"  # [formal reopen]: Confirmed only with a reliable evidence record bound into the token.
 
 
 class UnknownReviewToken(LookupError):
@@ -52,10 +61,13 @@ class ReviewPreview:
     operation_id: str  # [review subject]: Accepted operation the decision targets.
     action: ReviewAction  # [decision kind]: Approve or reject, fixed at preview time.
     expected_revision: int  # [concurrency token]: Confirmation fails if the review moved on.
+    evidence_reference: str  # [decision citation]: Evidence the Owner cited; a different citation needs a new preview.
     current_status: ReviewStatus  # [current state]: Status before the decision.
     projected_status: ReviewStatus  # [projected state]: Status the decision would produce.
     financial_effect: str  # [owner-facing effect]: Always states that no Nickel is issued.
     expires_at: datetime  # [token deadline]: After this instant the token is refused.
+    evidence_digest: str | None = None  # [evidence fingerprint]: Set for reexamination, which cites a full evidence record.
+    content_digest: str | None = None  # [content fingerprint]: Set for approval, which cites the Owner's content judgement.
 
 
 @dataclass
@@ -67,9 +79,13 @@ class _IssuedToken:
     action: ReviewAction  # [decision kind]: Fixed at preview time.
     reason: str  # [audit explanation]: Reused verbatim on retry.
     expected_revision: int  # [concurrency token]: Reused verbatim on retry.
+    evidence_reference: str | None  # [decision citation]: Part of the previewed intent, never edited at confirmation.
     decision_id: str  # [idempotency key]: Retries after an unknown commit replay this same key.
     expires_at: datetime  # [token deadline]: Checked before any new write.
     result: ReviewSnapshot | None = None  # [spent marker]: Set only after a confirmed commit.
+    evidence: EvidenceRecord | None = None  # [reexamination intent]: Owner-stamped record the token was previewed with.
+    content: ContentJudgement | None = None  # [approval intent]: Owner content verdict the approval gate accepted at preview.
+    song_eligible: bool = False  # [song decision]: Gate result at preview; never a constant, and never changed at confirmation.
 
 
 class OwnerReviewService:
@@ -103,26 +119,36 @@ class OwnerReviewService:
         return self._repository.review_view(actor_id, operation_id)
 
     def preview(self, actor_id: int, operation_id: str, action: ReviewAction, reason: str,
-                expected_revision: int) -> ReviewPreview:
-        """@description: Show the Owner the exact projected outcome and issue a short-lived confirmation token.
+                expected_revision: int, evidence_reference: str, content: ContentJudgement | None = None) -> ReviewPreview:
+        """@description: Show the Owner the exact projected outcome and issue a short-lived token bound to the cited evidence and content verdict.
         @param self: Owner review coordinator.
         @param actor_id: Authenticated caller, which must be the Owner.
         @param operation_id: Accepted operation to decide.
         @param action: Approve or reject.
         @param reason: Audit explanation stored with the decision.
         @param expected_revision: Review revision the Owner examined.
+        @param evidence_reference: Evidence the Owner relied on, bound into the confirmation intent.
+        @param content: Owner's song judgement; required for approval and refused for any other decision.
         @return: Preview with projected status, financial effect and expiry.
         """
         require_owner(actor_id, self._owner_id, reason)
+        require_reference(evidence_reference)
+        if action is ReviewAction.REEXAMINE:
+            raise ValueError("Reexamination previews must cite a full evidence record")
+        if content is not None and action is not ReviewAction.APPROVE:
+            raise ValueError("Only an approval may cite a content judgement")
         projection = self._repository.review_view(actor_id, operation_id)
-        projected = _project(projection.review, action, expected_revision)  # [hard gates]: Refuse before any token exists.
+        song_eligible = _approval_song_eligibility(actor_id, projection, content) if action is ReviewAction.APPROVE else False
+        projected = _project(projection.review, action, expected_revision, song_eligible)  # [hard gates]: Refuse before any token exists.
         token_id = secrets.token_urlsafe(24)  # [unguessable handle]: Not derived from operation or revision.
         expires_at = self._clock() + self._token_ttl
-        issued = _IssuedToken(actor_id, operation_id, action, reason, expected_revision, uuid.uuid4().hex, expires_at)
+        issued = _IssuedToken(actor_id, operation_id, action, reason, expected_revision, evidence_reference,
+                              uuid.uuid4().hex, expires_at, content=content, song_eligible=song_eligible)
         with self._token_lock:
             self._tokens[token_id] = issued
-        return ReviewPreview(token_id, operation_id, action, expected_revision, projection.review.status,
-                             projected.status, _financial_effect(projection.identity.status), expires_at)
+        return ReviewPreview(token_id, operation_id, action, expected_revision, evidence_reference,
+                             projection.review.status, projected.status, _financial_effect(projection.identity.status),
+                             expires_at, content_digest=content_judgement_digest(content) if content is not None else None)
 
     def confirm(self, actor_id: int, token_id: str) -> ReviewSnapshot:
         """@description: Apply a previewed decision exactly once and replay its original result on repeat.
@@ -143,6 +169,37 @@ class OwnerReviewService:
             issued.result = self._apply(issued)
             return issued.result
 
+    def preview_reexamination(self, actor_id: int, operation_id: str, evidence: EvidenceRecord, reason: str,
+                              expected_revision: int) -> ReviewPreview:
+        """@description: Formal reexamination entry: preview the reopen for the Owner, binding the exact evidence and revision.
+        Approval stays blocked afterwards until the TK-15 ordering event; only a confirmed token writes the reopen.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner.
+        @param operation_id: Accepted operation whose video the evidence describes.
+        @param evidence: Evidence record; the Owner's preview confirms it, so owner_confirmed is set here.
+        @param reason: Audit explanation.
+        @param expected_revision: Review revision the Owner examined.
+        @return: Preview with the evidence fingerprint, expiry and the no-award effect.
+        """
+        require_owner(actor_id, self._owner_id, reason)
+        confirmed = replace(evidence, owner_confirmed=True)  # [trusted confirmation]: The Owner's formal preview is the confirmation.
+        if assess_evidence(confirmed) is not EvidenceReliability.RELIABLE:
+            raise ValueError("Reexamination requires reliable Owner-confirmed evidence")
+        projection = self._repository.review_view(actor_id, operation_id)
+        if confirmed.video != projection.review.video:
+            raise ValueError("Reexamination evidence must describe this video")
+        # [hard gates]: Refuse before any token; the projection is the same pure reopen that confirmation writes.
+        projected = reopen_for_reexamination(projection.review, expected_revision, confirmed.evidence_id)
+        token_id = secrets.token_urlsafe(24)
+        expires_at = self._clock() + self._token_ttl
+        issued = _IssuedToken(actor_id, operation_id, ReviewAction.REEXAMINE, reason, expected_revision,
+                              confirmed.evidence_id, uuid.uuid4().hex, expires_at, evidence=confirmed)
+        with self._token_lock:
+            self._tokens[token_id] = issued
+        return ReviewPreview(token_id, operation_id, ReviewAction.REEXAMINE, expected_revision, confirmed.evidence_id,
+                             projection.review.status, projected.status, REEXAMINATION_EFFECT, expires_at,
+                             evidence_digest=decision_digest((confirmed,)))
+
     def add_reexamination_evidence(self, actor_id: int, operation_id: str, evidence: EvidenceRecord, reason: str,
                                    decision_id: str) -> EvidenceRecord:
         """@description: Record new Owner-judged evidence without changing the decision, identity or order.
@@ -155,8 +212,9 @@ class OwnerReviewService:
         @return: Original or newly stored evidence record.
         """
         require_owner(actor_id, self._owner_id, reason)
+        confirmed = replace(evidence, owner_confirmed=True)  # [trusted confirmation]: The Owner's submission here is the confirmation.
         with _unknown_outcome_boundary():
-            return self._repository.record_reexamination_evidence(decision_id, operation_id, actor_id, reason, evidence)
+            return self._repository.record_reexamination_evidence(decision_id, operation_id, actor_id, reason, confirmed)
 
     def _apply(self, issued: _IssuedToken) -> ReviewSnapshot:
         """@description: Send one previewed decision through the audited repository with its original key.
@@ -164,20 +222,39 @@ class OwnerReviewService:
         @param issued: Token whose intent is replayed verbatim.
         @return: Persisted or replayed review revision.
         """
-        command = _command_for(issued)
         with _unknown_outcome_boundary():
-            return self._repository.review(command)
+            if issued.action is ReviewAction.REEXAMINE:
+                return self._repository.reexamine(_reexamination_for(issued))
+            return self._repository.review(_command_for(issued))
 
 
-def _project(review: ReviewSnapshot, action: ReviewAction, expected_revision: int) -> ReviewSnapshot:
+def _approval_song_eligibility(actor_id: int, projection: ReviewProjection, content: ContentJudgement | None) -> bool:
+    """@description: Ask the approval gate whether the song may be approved, so refusals happen before any token exists.
+    @param actor_id: Authenticated Owner, who must also be the judge of the content verdict.
+    @param projection: Current review, duration and identity of the operation's video.
+    @param content: Owner content judgement, or None when the Owner gave none.
+    @return: The gate's song decision, which is True only when the gate says the song is eligible.
+    """
+    if content is None:
+        raise InvalidReviewTransition("Approval requires the Owner's content judgement")
+    if content.judged_by != actor_id:
+        raise InvalidReviewTransition("Content judgement must be the Owner's own verdict")
+    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity)  # [cross-video]: May raise ValueError.
+    if not gate.song_eligible:
+        raise InvalidReviewTransition(f"Approval refused by the song gate: {gate.reason}")
+    return gate.song_eligible
+
+
+def _project(review: ReviewSnapshot, action: ReviewAction, expected_revision: int, song_eligible: bool) -> ReviewSnapshot:
     """@description: Run the pure hard gates shared with confirmation so refusals happen at preview time.
     @param review: Current authoritative review.
     @param action: Requested Owner decision.
     @param expected_revision: Revision the Owner examined.
+    @param song_eligible: Song decision produced by the approval gate; ignored for rejection.
     @return: Projected revision that confirmation would produce.
     """
     if action is ReviewAction.APPROVE:
-        return approve_review(review, ApprovalSource.OWNER, expected_revision, song_eligible=True)
+        return approve_review(review, ApprovalSource.OWNER, expected_revision, song_eligible=song_eligible)
     if action is ReviewAction.REJECT:
         return reject_review(review, expected_revision)
     raise ValueError("Unknown review action")
@@ -185,14 +262,24 @@ def _project(review: ReviewSnapshot, action: ReviewAction, expected_revision: in
 
 def _command_for(issued: _IssuedToken) -> ReviewCommand:
     """@description: Translate a previewed Owner decision into the repository's audited command.
-    @param issued: Token holding the fixed decision intent.
+    @param issued: Token holding the fixed decision intent and the gate's song decision.
     @return: Command that never clears identity conflicts or touches credits.
     """
     if issued.action is ReviewAction.APPROVE:
         return ReviewCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason,
-                             issued.expected_revision, approval_source=ApprovalSource.OWNER, song_eligible=True)
+                             issued.expected_revision, approval_source=ApprovalSource.OWNER, song_eligible=issued.song_eligible,
+                             evidence_reference=issued.evidence_reference, content_judgement=issued.content)
     return ReviewCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason,
-                         issued.expected_revision, song_eligible=False)
+                         issued.expected_revision, song_eligible=issued.song_eligible, evidence_reference=issued.evidence_reference)
+
+
+def _reexamination_for(issued: _IssuedToken) -> ReexaminationCommand:
+    """@description: Translate a previewed reexamination into the repository's audited command with its original key.
+    @param issued: Token holding the fixed reopen intent and its evidence record.
+    @return: Command that reopens the review and never issues Nickel.
+    """
+    return ReexaminationCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason,
+                                issued.expected_revision, issued.evidence)
 
 
 def _financial_effect(identity_status: VersionIdentityStatus) -> str:

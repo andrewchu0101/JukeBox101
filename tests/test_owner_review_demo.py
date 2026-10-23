@@ -86,7 +86,7 @@ def test_non_owner_preview_is_refused_and_prints_no_token():
     @param: none
     @return: None.
     """
-    lines = run_script([f"as {STRANGER_ID}", "preview op-1 approve synthetic verified song"])
+    lines = run_script([f"as {STRANGER_ID}", "preview op-1 approve demo-cite-1 synthetic verified song"])
     assert any("PermissionError" in line for line in refusals(lines))
     assert not any("token=" in line for line in lines)
 
@@ -98,9 +98,9 @@ def test_switching_back_to_the_owner_restores_preview_rights():
     """
     session = new_session()
     session.execute(f"as {STRANGER_ID}")
-    assert refusals(session.execute("preview op-1 approve synthetic verified song"))
+    assert refusals(session.execute("preview op-1 approve demo-cite-1 synthetic verified song"))
     session.execute(f"as {OWNER_ID}")
-    assert token_from(session.execute("preview op-1 approve synthetic verified song"))
+    assert token_from(session.execute("preview op-1 approve demo-cite-1 synthetic verified song"))
 
 
 def test_approve_preview_then_confirm_applies_and_a_repeated_confirm_returns_the_same_output():
@@ -109,7 +109,7 @@ def test_approve_preview_then_confirm_applies_and_a_repeated_confirm_returns_the
     @return: None.
     """
     session = new_session()
-    token = token_from(session.execute("preview op-1 approve synthetic verified song"))
+    token = token_from(session.execute("preview op-1 approve demo-cite-1 synthetic verified song"))
     first = session.execute(f"confirm {token}")
     second = session.execute(f"confirm {token}")
     assert any("status=approved" in line for line in first)
@@ -122,7 +122,7 @@ def test_expired_token_is_refused_after_tick_past_the_time_limit():
     @return: None.
     """
     session = new_session()
-    token = token_from(session.execute("preview op-1 reject not an eligible song"))
+    token = token_from(session.execute("preview op-1 reject demo-cite-1 not an eligible song"))
     session.execute("tick 301")
     lines = session.execute(f"confirm {token}")
     assert any("ExpiredReviewToken" in line for line in refusals(lines))
@@ -135,8 +135,8 @@ def test_stale_token_is_refused_after_another_decision_changed_the_revision():
     @return: None.
     """
     session = new_session()
-    stale_token = token_from(session.execute("preview op-1 approve synthetic verified song"))
-    fresh_token = token_from(session.execute("preview op-1 reject not an eligible song"))
+    stale_token = token_from(session.execute("preview op-1 approve demo-cite-1 synthetic verified song"))
+    fresh_token = token_from(session.execute("preview op-1 reject demo-cite-1 not an eligible song"))
     session.execute(f"confirm {fresh_token}")
     lines = session.execute(f"confirm {stale_token}")
     assert any("StaleReviewVersion" in line for line in refusals(lines))
@@ -149,7 +149,7 @@ def test_fault_next_then_confirm_then_retry_applies_the_approval_exactly_once():
     @return: None.
     """
     session = new_session()
-    token = token_from(session.execute("preview op-1 approve synthetic verified song"))
+    token = token_from(session.execute("preview op-1 approve demo-cite-1 synthetic verified song"))
     history_before = len(session.database.state["jb2_review_history"])
     session.execute("fault next")  # [armed after preview]: A read must not consume the one-shot commit fault.
     ambiguous = session.execute(f"confirm {token}")
@@ -165,7 +165,7 @@ def test_fault_is_cleared_after_one_use_so_the_next_commit_is_healthy():
     @return: None.
     """
     session = new_session()
-    token = token_from(session.execute("preview op-1 approve synthetic verified song"))
+    token = token_from(session.execute("preview op-1 approve demo-cite-1 synthetic verified song"))
     session.execute("fault next")
     session.execute(f"confirm {token}")
     assert session.database.commit_fault is None

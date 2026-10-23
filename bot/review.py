@@ -8,6 +8,7 @@ from enum import Enum
 
 from bot.eligibility import DurationEligibility, DurationEvidence, assess_duration
 from bot.song_identity import SubmissionDisposition, VideoIdentity
+from bot.version_identity import require_reference
 
 
 class ReviewStatus(Enum):
@@ -53,6 +54,10 @@ class ReviewSnapshot:
     duration: DurationEvidence | None = None
     approval_source: ApprovalSource | None = None
     validation_error: ValidationError | None = None
+    # [reexamination block]: Set by the Owner's reopen; approval waits for the later TK-15 ordering event.
+    reexamination_pending: bool = False
+    # [released priority]: Set by a negative decision; reopening never restores the predecessor's blocking power.
+    priority_released: bool = False
 
     def __post_init__(self) -> None:
         """@description: Reject contradictory snapshots before they can authorize future rewards.
@@ -61,8 +66,12 @@ class ReviewSnapshot:
         """
         if not isinstance(self.video, VideoIdentity) or type(self.version) is not int or self.version < 0:
             raise InvalidReviewTransition("Invalid review identity or version")
-        if not isinstance(self.status, ReviewStatus):
+        if not isinstance(self.status, ReviewStatus) or type(self.reexamination_pending) is not bool:
             raise InvalidReviewTransition("Invalid review status")
+        if type(self.priority_released) is not bool:
+            raise InvalidReviewTransition("Invalid priority release flag")
+        if self.reexamination_pending and self.status in {ReviewStatus.APPROVED, ReviewStatus.REJECTED}:
+            raise InvalidReviewTransition("Only an unresolved review can await reexamination")
         if self.duration is not None:
             if not isinstance(self.duration, DurationEvidence) or self.duration.video != self.video:
                 raise InvalidReviewTransition("Duration evidence belongs to another video")
@@ -110,7 +119,7 @@ def _require_active_version(snapshot: ReviewSnapshot, expected_version: int) -> 
 
 def record_validation(snapshot: ReviewSnapshot, evidence: DurationEvidence, expected_version: int) -> ReviewSnapshot:
     """@description: Turn duration evidence into review progress without approving music.
-    @param snapshot: Current pending or failed review.
+    @param snapshot: Current pending or failed review, possibly awaiting reexamination.
     @param evidence: Full-video assertion for the same platform identity.
     @param expected_version: Revision used by the validation worker.
     @return: New revision pending validation, awaiting review or rejected for duration.
@@ -126,8 +135,13 @@ def record_validation(snapshot: ReviewSnapshot, evidence: DurationEvidence, expe
         DurationEligibility.REJECT: ReviewStatus.REJECTED,
         DurationEligibility.PENDING_VALIDATION: ReviewStatus.PENDING_VALIDATION,
     }[duration_result]
+    # [reexamination block]: Duration rejection ends reexamination; every other outcome keeps the block.
+    still_pending = snapshot.reexamination_pending and next_status is not ReviewStatus.REJECTED
+    # [released priority]: A duration rejection is a definitive negative decision, like an Owner rejection.
+    released = snapshot.priority_released or next_status is ReviewStatus.REJECTED
     return replace(snapshot, version=snapshot.version + 1, status=next_status,
-                   duration=evidence, validation_error=None)
+                   duration=evidence, validation_error=None, reexamination_pending=still_pending,
+                   priority_released=released)
 
 
 def record_validation_error(snapshot: ReviewSnapshot, error: ValidationError, expected_version: int) -> ReviewSnapshot:
@@ -143,7 +157,9 @@ def record_validation_error(snapshot: ReviewSnapshot, error: ValidationError, ex
 
 
 def approve_review(snapshot: ReviewSnapshot, source: ApprovalSource, expected_version: int, *, song_eligible: bool) -> ReviewSnapshot:
-    """@description: Apply identical hard gates to synthetic automatic and Owner decisions.
+    """@description: Apply identical hard gates to synthetic automatic and Owner decisions; refuse reexamination.
+    Approval of a reopened review is refused until a later TK-15 reexamination ordering event exists, so the original
+    accepted priority is never reused; the Owner may still reject it.
     @param snapshot: Review awaiting a song eligibility decision.
     @param source: Decision path, not proof of authorization or a real automatic classifier.
     @param expected_version: Revision used by the decision maker.
@@ -151,6 +167,8 @@ def approve_review(snapshot: ReviewSnapshot, source: ApprovalSource, expected_ve
     @return: Approved revision, without any persistence or Nickel issuance.
     """
     _require_active_version(snapshot, expected_version)
+    if snapshot.reexamination_pending:
+        raise InvalidReviewTransition("Reexamination pending: approval waits for the TK-15 ordering event")
     if snapshot.status is not ReviewStatus.PENDING_REVIEW or song_eligible is not True:
         raise InvalidReviewTransition("Explicit song eligibility and pending review are required")
     if not _duration_passes(snapshot):
@@ -159,15 +177,16 @@ def approve_review(snapshot: ReviewSnapshot, source: ApprovalSource, expected_ve
 
 
 def reject_review(snapshot: ReviewSnapshot, expected_version: int) -> ReviewSnapshot:
-    """@description: Represent an explicit negative song decision after duration validation.
+    """@description: Represent an explicit negative song decision, including a reopened reexamination.
     @param snapshot: Review currently awaiting the song decision.
     @param expected_version: Revision used by the decision maker.
-    @return: Rejected revision with no reward qualification.
+    @return: Rejected revision with no reward qualification, no reexamination block and released priority.
     """
     _require_active_version(snapshot, expected_version)
     if snapshot.status is not ReviewStatus.PENDING_REVIEW:
         raise InvalidReviewTransition("A pending song review is required")
-    return replace(snapshot, version=snapshot.version + 1, status=ReviewStatus.REJECTED)
+    return replace(snapshot, version=snapshot.version + 1, status=ReviewStatus.REJECTED,
+                   reexamination_pending=False, priority_released=True)
 
 
 def is_submission_reward_eligible(snapshot: ReviewSnapshot, disposition: SubmissionDisposition) -> bool:
@@ -178,3 +197,35 @@ def is_submission_reward_eligible(snapshot: ReviewSnapshot, disposition: Submiss
     """
     return (snapshot.status is ReviewStatus.APPROVED and _duration_passes(snapshot)
             and disposition is SubmissionDisposition.NEW_CANDIDATE)
+
+
+
+def reopen_for_reexamination(snapshot: ReviewSnapshot, expected_version: int, evidence_reference: str) -> ReviewSnapshot:
+    """@description: Reopen a terminal decision after new evidence, keeping the old decision in history and no award.
+    Only the Owner's formal reexamination entry may call this; ordinary approve and reject never reach it. The
+    snapshot does not carry the reference; the audit row written with this revision stores it.
+    Allowed transitions (APPROVED or REJECTED only; VALIDATION_FAILED and pending states are refused):
+    - APPROVED, or REJECTED with passing duration -> PENDING_REVIEW, passing duration kept, reexamination block set.
+    - REJECTED by a failing duration -> PENDING_VALIDATION, failing duration cleared, reexamination block set. The
+      next record_validation must pass the same duration gate; approval is never reachable from this state directly.
+    In every case approval_source is cleared. A rejected review always leaves reopen with priority released, even when a
+    legacy payload stored the flag as False, so it never regains blocking power; the original accepted_sequence stays
+    in the record as history and never restores priority.
+    @param snapshot: Approved or rejected review whose recorded decision is being challenged.
+    @param expected_version: Revision the Owner examined before requesting reexamination.
+    @param evidence_reference: Nonempty trusted reference to the new evidence record.
+    @return: Pending review or pending validation with a bumped revision and the reexamination block set.
+    """
+    require_reference(evidence_reference)
+    if type(expected_version) is not int or expected_version != snapshot.version:
+        raise StaleReviewVersion("Review version no longer matches")
+    if snapshot.status not in {ReviewStatus.APPROVED, ReviewStatus.REJECTED}:
+        raise InvalidReviewTransition("Only an approved or rejected review can be reopened")
+    # [released priority]: A rejection already released its predecessor's priority, whatever the stored flag says.
+    released = snapshot.priority_released or snapshot.status is ReviewStatus.REJECTED
+    if _duration_passes(snapshot):
+        return replace(snapshot, version=snapshot.version + 1, status=ReviewStatus.PENDING_REVIEW,
+                       approval_source=None, reexamination_pending=True, priority_released=released)
+    # [revalidation requirement]: Failing duration evidence is discarded so new evidence must pass the gate.
+    return replace(snapshot, version=snapshot.version + 1, status=ReviewStatus.PENDING_VALIDATION,
+                   duration=None, approval_source=None, reexamination_pending=True, priority_released=released)

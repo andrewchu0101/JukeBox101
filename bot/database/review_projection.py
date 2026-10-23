@@ -9,6 +9,8 @@ from typing import Any
 
 from bot.database.persisted_snapshot import decode_current_identity, decode_current_review
 from bot.database.review_persistence import decision_digest, replay_decision, save_decision
+from bot.database.review_persistence import load_content_judgements
+from bot.song_judgement import ContentJudgement
 from bot.database.submission_codec import decode_contract, encode_contract
 from bot.evidence_record import EvidenceRecord
 from bot.review import ReviewSnapshot
@@ -25,6 +27,7 @@ class ReviewProjection:
     review: ReviewSnapshot  # [current review]: Authoritative revision and status for the video.
     evidence: tuple[EvidenceRecord, ...]  # [audit evidence]: Reexamination facts only, oldest first.
     history: tuple[ReviewSnapshot, ...]  # [review history]: Every persisted revision, oldest first.
+    content_judgements: tuple[ContentJudgement, ...] = ()  # [song judgements]: Complete approval judgements, oldest first.
 
 
 def review_projection(cursor: Any, operation_id: str) -> ReviewProjection:
@@ -43,7 +46,8 @@ def review_projection(cursor: Any, operation_id: str) -> ReviewProjection:
     cursor.execute("SELECT evidence_json FROM jb2_evidence WHERE video_id=%s ORDER BY evidence_id", (row["video_id"],))
     evidence = tuple(_evidence_records(cursor.fetchall()))
     return ReviewProjection(row["operation_id"], row["accepted_sequence"], decode_current_identity(row),
-                            decode_current_review(row), evidence, history)
+                            decode_current_review(row), evidence, history,
+                            load_content_judgements(cursor, row["video_id"]))
 
 
 def append_evidence(cursor: Any, decision_id: str, operation_id: str, actor_id: int, reason: str,

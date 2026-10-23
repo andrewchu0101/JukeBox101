@@ -9,7 +9,7 @@ from dataclasses import replace
 from typing import Any
 
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
-from bot.database.review_persistence import ReviewCommand, apply_review, require_owner
+from bot.database.review_persistence import ReexaminationCommand, ReviewCommand, apply_reexamination, apply_review, require_owner
 from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
 from bot.database.reward_settlement import settle_reward
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
@@ -115,6 +115,16 @@ class SubmissionRepository:
         require_owner(command.actor_id, self._owner_id, command.reason)
         with submission_transaction(self._factory) as (cursor, control):
             return apply_review(cursor, control, command)
+
+    def reexamine(self, command: ReexaminationCommand) -> ReviewSnapshot:
+        """@description: Reopen a decided review on reliable new evidence through the audited persistence boundary.
+        @param self: Repository retaining deployment Owner identity.
+        @param command: Authenticated Owner reexamination with its evidence record and revision.
+        @return: Original or newly persisted pending review.
+        """
+        require_owner(command.actor_id, self._owner_id, command.reason)
+        with submission_transaction(self._factory) as (cursor, control):
+            return apply_reexamination(cursor, control, command)
 
     def review_view(self, actor_id: int, operation_id: str) -> ReviewProjection:
         """@description: Show the Owner one operation's current review, identity and audit trail without writing.

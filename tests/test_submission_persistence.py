@@ -5,13 +5,13 @@ These tests validate Python transaction intent and recovery only, never actual M
 
 from copy import deepcopy
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
 
-from bot.database.review_persistence import ReviewCommand
+from bot.database.review_persistence import ReexaminationCommand, ReviewCommand, decision_digest, review_command_digest
 from bot.database.submission_codec import decode_contract, encode_contract
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown, submission_transaction
@@ -598,3 +598,71 @@ def test_reminder_batch_does_not_silently_change_owner_target(persistence: tuple
     replacement = SubmissionRepository(database.connect, OWNER_ID + 1)
     with pytest.raises(PermissionError, match="target changed"):
         replacement.pending_reminders(OWNER_ID + 1)
+
+
+def test_review_digest_without_evidence_citation_keeps_the_previous_formula(persistence: tuple) -> None:
+    """@description: Keep stored decisions from before the citation field replayable with their original digest.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    legacy = ReviewCommand("legacy-approve", "op-1", OWNER_ID, "synthetic verified song decision", 1,
+                           approval_source=ApprovalSource.OWNER, song_eligible=True)
+    previous_fields = tuple(getattr(legacy, field) for field in ReviewCommand.__dataclass_fields__
+                            if field not in ("evidence_reference", "content_judgement"))
+    assert review_command_digest(legacy) == decision_digest(previous_fields)
+
+
+def test_citation_changes_the_review_digest(persistence: tuple) -> None:
+    """@description: Bind a cited evidence reference into the decision fingerprint so a changed citation is refused on replay.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    base = dict(decision_id="cited-1", operation_id="op-1", actor_id=OWNER_ID, reason="synthetic verified song decision",
+                expected_revision=1, approval_source=ApprovalSource.OWNER, song_eligible=True)
+    assert review_command_digest(ReviewCommand(evidence_reference="ev-a", **base)) != \
+        review_command_digest(ReviewCommand(evidence_reference="ev-b", **base))
+
+
+def test_reexamination_replay_with_different_evidence_is_refused(persistence: tuple) -> None:
+    """@description: Refuse reusing a reexamination key for a different evidence record instead of replaying it.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    database, repository = persistence
+    repository.accept(intake(1))
+    approve(repository, "op-1")
+    first = _reexam_evidence("ev-first")
+    second = _reexam_evidence("ev-second")
+    repository.reexamine(ReexaminationCommand("reexam-key", "op-1", OWNER_ID, "fresh owner inspection", 2, first))
+    with pytest.raises(ValueError, match="different intent"):
+        repository.reexamine(ReexaminationCommand("reexam-key", "op-1", OWNER_ID, "fresh owner inspection", 2, second))
+    assert repository.review_view(OWNER_ID, "op-1").review.version == 3
+
+
+def test_reexamination_stores_the_full_evidence_record_beside_the_reopened_revision(persistence: tuple) -> None:
+    """@description: Keep the judged evidence fact auditable with the reopened review rather than only its identifier.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    database, repository = persistence
+    repository.accept(intake(1))
+    approve(repository, "op-1")
+    entry = _reexam_evidence("ev-first")
+    repository.reexamine(ReexaminationCommand("reexam-key", "op-1", OWNER_ID, "fresh owner inspection", 2, entry))
+    projection = repository.review_view(OWNER_ID, "op-1")
+    assert [item for item in projection.evidence] == [entry]
+    assert projection.review.reexamination_pending is True
+
+
+def _reexam_evidence(evidence_id: str):
+    """@description: Create reliable Owner-confirmed evidence for the synthetic first submission's video.
+    @param evidence_id: Stable synthetic evidence identifier.
+    @return: Reliable evidence record naming the original recording.
+    """
+    from bot.evidence_record import EvidenceSourceType, record_evidence
+    from bot.version_identity import RecordingVersionIdentity
+
+    video = intake(1).identity.video
+    return record_evidence(evidence_id, video, EvidenceSourceType.OWNER_REVIEW, "synthetic-reexam",
+                           datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc), "fresh owner inspection", OWNER_ID,
+                           RecordingVersionIdentity("original"), owner_confirmed=True)

@@ -9,12 +9,13 @@ from typing import Callable
 from bot.database.review_persistence import ReviewCommand
 from bot.database.submission_repository import SubmissionRepository
 from bot.eligibility import DurationEvidence
-from bot.evidence_record import EvidenceRecord, EvidenceSourceType, record_evidence
+from bot.evidence_record import EvidenceRecord, EvidenceSourceType, VersionClaimKind, record_evidence
 from bot.owner_review import (
     ExpiredReviewToken, OwnerReviewService, ReviewAction, ReviewOutcomeUnknown, UnknownReviewToken,
 )
 from bot.review import ReviewSnapshot
 from bot.song_identity import VideoIdentity
+from bot.song_judgement import ContentJudgement
 from bot.submission_workflow import SubmissionRequest
 from bot.version_evidence import resolve_video_version
 from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
@@ -32,6 +33,19 @@ BANNER = (
     "所有資料皆為合成資料；本示範不連線 MySQL、Discord 或 Gateway。",
     "輸入 help 查看指令，quit 離開。",
 )
+
+
+
+def _synthetic_song_judgement(video, judged_by: int, operation_id: str, retrieved_at):
+    """@description: Build the synthetic Owner song judgement that approval must present for this video.
+    @param video: Video the judgement describes; the gate refuses any other video.
+    @param judged_by: Acting Owner identity recorded as the judge.
+    @param operation_id: Operation whose citation this judgement belongs to.
+    @param retrieved_at: Demo clock time of the judgement.
+    @return: Synthetic positive song judgement for approval previews.
+    """
+    return ContentJudgement(video, judged_by, "synthetic song judgement", retrieved_at,
+                            f"demo-content-{operation_id}", True)
 
 
 class SyntheticClock:
@@ -193,7 +207,8 @@ class DemoSession:
         """
         return record_evidence(evidence_id, _video(number), source, f"synthetic-{evidence_id}",
                                START + timedelta(hours=hours), "synthetic inspection", OWNER_ID,
-                               RecordingVersionIdentity(version_name))
+                               RecordingVersionIdentity(version_name), owner_confirmed=True,
+                               version_kind=VersionClaimKind.SAME_RECORDING_AUDIO_MV)
 
     def _list(self, _arguments: list[str]) -> list[str]:
         """@description: Summarize every operation so the Owner can choose one to inspect.
@@ -237,13 +252,17 @@ class DemoSession:
     def _preview(self, arguments: list[str]) -> list[str]:
         """@description: Show the projected decision and its financial effect without writing anything.
         @param self: Demo session.
-        @param arguments: Operation identifier, approve or reject, then the reason text.
+        @param arguments: Operation identifier, approve or reject, evidence citation, then the reason text.
         @return: Token, status transition, financial effect and expiry lines.
         """
-        operation_id, action_word, reason = arguments[0], arguments[1], " ".join(arguments[2:])
+        operation_id, action_word, citation = arguments[0], arguments[1], arguments[2]
+        reason = " ".join(arguments[3:])
         view = self.service.view(self.acting_id, operation_id)
-        preview = self.service.preview(self.acting_id, operation_id, _describe_action(action_word), reason,
-                                       view.review.version)
+        action = _describe_action(action_word)
+        content = _synthetic_song_judgement(view.review.video, self.acting_id, operation_id, self.clock()) \
+            if action is ReviewAction.APPROVE else None  # [Owner song judgement]: Approval needs content, reject does not.
+        preview = self.service.preview(self.acting_id, operation_id, action, reason, view.review.version, citation,
+                                       content=content)
         return [f"權杖 token={preview.token_id}",
                 f"預覽基準 revision={view.review.version}",
                 f"狀態 {preview.current_status.value} → {preview.projected_status.value}",
@@ -317,7 +336,7 @@ class DemoSession:
         return ["list                         所有合成操作的狀態、身分、revision、證據數",
                 "show <op>                    單一操作的審查、身分、證據與歷史",
                 "as <discord_id>              切換操作身分（預設 Owner）",
-                "preview <op> approve|reject <理由>   產生權杖，不寫入資料",
+                "preview <op> approve|reject <證據引用> <理由>   產生權杖，不寫入資料",
                 "confirm <token>              執行權杖",
                 "retry <token>                以相同 decision_id 重試（未知結果後使用）",
                 "fault next                   讓下一次提交變成「寫入但未回應」（請於 preview 之後、confirm 之前設定）",

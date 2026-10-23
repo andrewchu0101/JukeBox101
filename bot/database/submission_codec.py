@@ -10,10 +10,11 @@ from decimal import Decimal
 from enum import Enum
 
 from bot.eligibility import DurationEvidence
-from bot.evidence_record import EvidenceRecord, EvidenceSourceType
+from bot.evidence_record import EvidenceRecord, EvidenceSourceType, VersionClaimKind
 from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus, ValidationError
 from bot.reward_candidates import RewardCandidate, RewardCandidateStatus, RewardDecision, RewardDecisionReason
 from bot.share_replies import ShareScenario
+from bot.song_judgement import ContentJudgement
 from bot.song_identity import VideoIdentity
 from bot.submission_workflow import SubmissionResult
 from bot.urls import YouTubeVideo
@@ -22,10 +23,10 @@ from bot.version_identity import RecordingVersionIdentity, VersionAssignment, Ve
 # [persisted contracts]: Only reviewed internal value types may be reconstructed from database JSON.
 CONTRACTS = {item.__name__: item for item in (DurationEvidence, ReviewSnapshot, RewardCandidate, RewardDecision,
              VideoIdentity, SubmissionResult, YouTubeVideo, RecordingVersionIdentity, VersionAssignment, VersionExclusion,
-             EvidenceRecord)}
+             EvidenceRecord, ContentJudgement)}
 # [enum allowlist]: Presentation keys are stored separately from business decisions.
 ENUMS = {item.__name__: item for item in (ApprovalSource, ReviewStatus, ValidationError, RewardCandidateStatus,
-         RewardDecisionReason, ShareScenario, VersionIdentityStatus, EvidenceSourceType)}
+         RewardDecisionReason, ShareScenario, VersionIdentityStatus, EvidenceSourceType, VersionClaimKind)}
 
 
 def encode_contract(value: object) -> str:

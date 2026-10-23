@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from bot.evidence_record import EvidenceReliability, EvidenceSourceType, assess_evidence, record_evidence
+from bot.evidence_record import EvidenceRecord, EvidenceReliability, EvidenceSourceType, VersionClaimKind, assess_evidence, record_evidence
 from bot.song_identity import VideoIdentity
 from bot.version_identity import RecordingVersionIdentity
 
@@ -23,7 +23,7 @@ def make(**overrides):
     values = {
         "evidence_id": "ev-1", "video": VIDEO, "source_type": EvidenceSourceType.OWNER_REVIEW,
         "source_reference": "synthetic-note-1", "retrieved_at": RETRIEVED, "reason": "synthetic inspection",
-        "judged_by": 777, "version": RecordingVersionIdentity("orig-A"),
+        "judged_by": 777, "version": RecordingVersionIdentity("orig-A"), "owner_confirmed": False,
     }
     values.update(overrides)
     return record_evidence(**values)
@@ -58,12 +58,41 @@ def test_record_refuses_incomplete_or_ambiguous_provenance(overrides):
         make(**overrides)
 
 
-def test_owner_review_with_version_is_reliable():
-    """@description: Accept an audited owner inspection that names a recording version.
+def test_owner_confirmed_review_with_version_is_reliable():
+    """@description: Accept an audited owner inspection that names a recording version after Owner confirmation.
     @param: none
     @return: None.
     """
-    assert assess_evidence(make()) is EvidenceReliability.RELIABLE
+    assert assess_evidence(make(owner_confirmed=True)) is EvidenceReliability.RELIABLE
+
+
+def test_owner_review_with_version_but_without_owner_confirmation_stays_pending():
+    """@description: Keep a versioned inspection pending until the trusted Owner boundary confirms it.
+    @param: none
+    @return: None.
+    """
+    assert make().owner_confirmed is False
+    assert assess_evidence(make(owner_confirmed=False)) is EvidenceReliability.PENDING
+
+
+def test_record_refuses_non_boolean_owner_confirmation():
+    """@description: Refuse a confirmation flag that is not an exact boolean, so truthy input cannot grant trust.
+    @param: none
+    @return: None.
+    """
+    with pytest.raises(ValueError):
+        make(owner_confirmed="yes")
+
+
+def test_record_without_owner_confirmation_field_decodes_as_pending():
+    """@description: Treat a record stored before owner_confirmed existed as unconfirmed.
+    @param: none
+    @return: None.
+    """
+    legacy = EvidenceRecord("ev-legacy", VIDEO, EvidenceSourceType.OWNER_REVIEW, "synthetic-note-1", RETRIEVED,
+                            "synthetic inspection", 777, RecordingVersionIdentity("orig-A"))
+    assert legacy.owner_confirmed is False
+    assert assess_evidence(legacy) is EvidenceReliability.PENDING
 
 
 def test_platform_metadata_is_never_reliable_even_with_a_version():
@@ -71,7 +100,7 @@ def test_platform_metadata_is_never_reliable_even_with_a_version():
     @param: none
     @return: None.
     """
-    assert assess_evidence(make(source_type=EvidenceSourceType.PLATFORM_METADATA)) is EvidenceReliability.PENDING
+    assert assess_evidence(make(source_type=EvidenceSourceType.PLATFORM_METADATA, owner_confirmed=True)) is EvidenceReliability.PENDING
 
 
 def test_evidence_without_a_version_assertion_stays_pending():
@@ -79,7 +108,7 @@ def test_evidence_without_a_version_assertion_stays_pending():
     @param: none
     @return: None.
     """
-    assert assess_evidence(make(version=None)) is EvidenceReliability.PENDING
+    assert assess_evidence(make(version=None, owner_confirmed=True)) is EvidenceReliability.PENDING
 
 
 def test_later_retrieval_time_is_kept_as_its_own_fact():
@@ -89,3 +118,30 @@ def test_later_retrieval_time_is_kept_as_its_own_fact():
     """
     later = make(evidence_id="ev-2", retrieved_at=RETRIEVED + timedelta(hours=1))
     assert later.retrieved_at > make().retrieved_at
+
+
+def test_record_keeps_declared_version_kind():
+    """@description: Keep the claimed version category on the evidence so a distinct claim can match it exactly.
+    @param: none
+    @return: None.
+    """
+    assert make(version_kind=VersionClaimKind.REMIX).version_kind is VersionClaimKind.REMIX
+
+
+def test_record_refuses_version_kind_outside_the_approved_categories():
+    """@description: Refuse a category marker that is not one of the approved TK-23 categories.
+    @param: none
+    @return: None.
+    """
+    with pytest.raises(ValueError):
+        make(version_kind="remix")
+
+
+def test_record_without_version_kind_field_decodes_as_none():
+    """@description: Treat a record stored before version_kind existed as naming no category.
+    @param: none
+    @return: None.
+    """
+    legacy = EvidenceRecord("ev-legacy", VIDEO, EvidenceSourceType.OWNER_REVIEW, "synthetic-note-1", RETRIEVED,
+                            "synthetic inspection", 777, RecordingVersionIdentity("orig-A"), True)
+    assert legacy.version_kind is None

@@ -3,15 +3,17 @@
 Synthetic evidence covers failure recovery, stale results and both decision paths without services.
 """
 
+import json
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
+from bot.database.submission_codec import decode_contract, encode_contract
 from bot.eligibility import DurationEvidence
 from bot.review import (
     ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, StaleReviewVersion,
     ValidationError, approve_review, is_submission_reward_eligible, record_validation,
-    record_validation_error, reject_review,
+    record_validation_error, reject_review, reopen_for_reexamination,
 )
 from bot.song_identity import SubmissionDisposition, VideoIdentity
 
@@ -279,3 +281,242 @@ def _apply_operation(operation, snapshot, evidence, version):
     if operation == "approve":
         return approve_review(snapshot, ApprovalSource.OWNER, version, song_eligible=True)
     return reject_review(snapshot, version)
+
+
+def _reopen(snapshot, expected_version=None, evidence_reference="ev-reexam-1"):
+    """@description: Call the reexamination entry with the current revision unless a test overrides it.
+    @param snapshot: Approved or rejected review being reopened.
+    @param expected_version: Revision the Owner examined, defaulting to the snapshot's own.
+    @param evidence_reference: Trusted evidence reference cited by the decision.
+    @return: Result of reopen_for_reexamination.
+    """
+    version = snapshot.version if expected_version is None else expected_version
+    return reopen_for_reexamination(snapshot, version, evidence_reference)
+
+
+def _approved(pending_review):
+    """@description: Build the approved state that reexamination may reopen.
+    @param pending_review: Passing review awaiting an Owner song decision.
+    @return: Approved revision with Owner approval source.
+    """
+    return approve_review(pending_review, ApprovalSource.OWNER, 1, song_eligible=True)
+
+
+def test_reexamination_marker_defaults_false_for_old_payload_and_round_trips(pending_review):
+    """@description: Old persisted review JSON without the marker decodes as not pending, and new payloads keep it.
+    @param pending_review: Passing review used to build both payloads.
+    @return: None.
+    """
+    reopened = _reopen(_approved(pending_review))
+    legacy_document = json.loads(encode_contract(pending_review))
+    del legacy_document["value"]["fields"]["reexamination_pending"]
+    legacy_payload = json.dumps(legacy_document)
+    assert decode_contract(legacy_payload, ReviewSnapshot).reexamination_pending is False
+    assert decode_contract(encode_contract(reopened), ReviewSnapshot) == reopened
+    assert decode_contract(encode_contract(reopened), ReviewSnapshot).reexamination_pending is True
+
+
+@pytest.mark.parametrize("terminal", ["approve", "reject"])
+def test_reopen_returns_pending_review_with_marker_and_no_approval_source(pending_review, terminal):
+    """@description: Reopen approved or rejected reviews as pending with a bumped revision and no award source.
+    @param pending_review: Passing review awaiting an Owner song decision.
+    @param terminal: Terminal path that produced the snapshot being reopened.
+    @return: None.
+    """
+    decided = _approved(pending_review) if terminal == "approve" else reject_review(pending_review, 1)
+    reopened = _reopen(decided)
+    assert reopened.status is ReviewStatus.PENDING_REVIEW
+    assert reopened.reexamination_pending is True
+    assert reopened.approval_source is None
+    assert reopened.version == decided.version + 1
+
+
+@pytest.mark.parametrize("state", ["pending_validation", "pending_review", "validation_failed"])
+def test_reopen_refuses_nonterminal_states(pending_review, valid_evidence, state):
+    """@description: Refuse reexamination of reviews that are still undecided or failed validation.
+    @param pending_review: Passing review.
+    @param valid_evidence: Synthetic evidence for constructing other states.
+    @param state: Nonterminal status under test.
+    @return: None.
+    """
+    snapshot = {
+        "pending_validation": ReviewSnapshot(VIDEO),
+        "pending_review": pending_review,
+        "validation_failed": record_validation_error(pending_review, ValidationError.METADATA_UNAVAILABLE, 1),
+    }[state]
+    with pytest.raises(InvalidReviewTransition):
+        _reopen(snapshot)
+
+
+def test_reopen_refuses_stale_version(pending_review):
+    """@description: Refuse a reexamination prepared against an earlier review revision.
+    @param pending_review: Passing review.
+    @return: None.
+    """
+    with pytest.raises(StaleReviewVersion):
+        _reopen(_approved(pending_review), expected_version=0)
+
+
+@pytest.mark.parametrize("reference", ["", " ev-1", "ev-1 "])
+def test_reopen_requires_a_clean_nonempty_evidence_reference(pending_review, reference):
+    """@description: Require an auditable evidence reference before any reexamination revision exists.
+    @param pending_review: Passing review.
+    @param reference: Empty or padded reference.
+    @return: None.
+    """
+    with pytest.raises(ValueError):
+        _reopen(_approved(pending_review), evidence_reference=reference)
+
+
+def test_approval_is_refused_while_reexamination_is_pending(pending_review):
+    """@description: Block a re-approval that would reuse the original priority before the TK-15 ordering event.
+    @param pending_review: Passing review.
+    @return: None.
+    """
+    reopened = _reopen(_approved(pending_review))
+    with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
+        approve_review(reopened, ApprovalSource.OWNER, reopened.version, song_eligible=True)
+
+
+def test_reject_clears_reexamination_marker_without_award(pending_review):
+    """@description: Let the Owner reject a reopened review, which ends reexamination with no reward qualification.
+    @param pending_review: Passing review.
+    @return: None.
+    """
+    reopened = _reopen(_approved(pending_review))
+    rejected = reject_review(reopened, reopened.version)
+    assert rejected.status is ReviewStatus.REJECTED
+    assert rejected.reexamination_pending is False
+    assert rejected.approval_source is None
+    assert is_submission_reward_eligible(rejected, SubmissionDisposition.NEW_CANDIDATE) is False
+
+
+def test_reexamination_marker_survives_revalidation_until_rejected(pending_review, valid_evidence):
+    """@description: Keep the approval block through validation retries, and drop it only when a rejection ends the review.
+    @param pending_review: Passing review.
+    @param valid_evidence: Passing duration evidence for the retry.
+    @param: none
+    @return: None.
+    """
+    reopened = _reopen(_approved(pending_review))
+    failed = record_validation_error(reopened, ValidationError.METADATA_UNAVAILABLE, reopened.version)
+    retried = record_validation(failed, valid_evidence, failed.version)
+    assert failed.reexamination_pending is True and retried.reexamination_pending is True
+    with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
+        approve_review(retried, ApprovalSource.OWNER, retried.version, song_eligible=True)
+    too_long = DurationEvidence(VIDEO, 999, "synthetic-long", reliable=True, full_video=True)
+    assert record_validation(retried, too_long, retried.version).reexamination_pending is False
+
+
+def test_terminal_snapshot_cannot_carry_reexamination_marker(pending_review):
+    """@description: Refuse contradictory approved or rejected snapshots that still claim a pending reexamination.
+    @param pending_review: Passing review.
+    @return: None.
+    """
+    approved = _approved(pending_review)
+    with pytest.raises(InvalidReviewTransition):
+        replace(approved, reexamination_pending=True)
+
+
+def test_priority_released_defaults_false_and_rejection_sets_it(pending_review):
+    """@description: Mark only explicitly rejected reviews as having released reward priority.
+    @param pending_review: Passing review awaiting an Owner song decision.
+    @return: None.
+    """
+    assert ReviewSnapshot(VIDEO).priority_released is False
+    assert pending_review.priority_released is False
+    assert _approved(pending_review).priority_released is False
+    assert reject_review(pending_review, 1).priority_released is True
+
+
+def test_reopen_preserves_priority_released_flag(pending_review):
+    """@description: Keep released priority released after reopening, while an approval reopen stays unreleased.
+    @param pending_review: Passing review.
+    @return: None.
+    """
+    assert _reopen(_approved(pending_review)).priority_released is False
+    assert _reopen(reject_review(pending_review, 1)).priority_released is True
+
+
+def test_duration_rejection_sets_priority_released(valid_evidence):
+    """@description: Treat a duration rejection as a definitive negative decision that releases priority.
+    @param valid_evidence: Baseline full-video evidence.
+    @return: None.
+    """
+    too_long = replace(valid_evidence, seconds=999)
+    assert record_validation(ReviewSnapshot(VIDEO), too_long, 0).priority_released is True
+
+
+def test_priority_released_must_be_boolean():
+    """@description: Refuse a non-boolean priority fact that could be truthy by accident.
+    @param: none
+    @return: None.
+    """
+    with pytest.raises(InvalidReviewTransition):
+        replace(ReviewSnapshot(VIDEO), priority_released="yes")
+
+
+def test_duration_rejected_review_reopens_into_pending_validation(valid_evidence):
+    """@description: Let a duration-rejected review re-enter validation without carrying its failing evidence forward.
+    @param valid_evidence: Baseline full-video evidence.
+    @return: None.
+    """
+    too_long = replace(valid_evidence, seconds=999)
+    rejected_for_duration = record_validation(ReviewSnapshot(VIDEO), too_long, 0)
+    reopened = _reopen(rejected_for_duration)
+    assert reopened.status is ReviewStatus.PENDING_VALIDATION
+    assert reopened.duration is None and reopened.reexamination_pending is True
+    assert reopened.priority_released is True and reopened.approval_source is None
+
+
+@pytest.mark.parametrize("reexam_evidence, expected_status", [
+    ("unreliable", ReviewStatus.PENDING_VALIDATION),
+    ("not_full_video", ReviewStatus.PENDING_VALIDATION),
+    ("too_long", ReviewStatus.REJECTED),
+    ("passing", ReviewStatus.PENDING_REVIEW),
+])
+def test_reexamination_evidence_never_bypasses_duration_gate(valid_evidence, reexam_evidence, expected_status):
+    """@description: Route reexamination evidence through the same duration gate, never approving it directly.
+    @param valid_evidence: Baseline full-video evidence.
+    @param reexam_evidence: Kind of new reexamination evidence.
+    @param expected_status: Outcome of the shared duration gate.
+    @return: None.
+    """
+    rejected_for_duration = record_validation(ReviewSnapshot(VIDEO), replace(valid_evidence, seconds=999), 0)
+    reopened = _reopen(rejected_for_duration)
+    evidence = {
+        "unreliable": replace(valid_evidence, reliable=False),
+        "not_full_video": replace(valid_evidence, full_video=False),
+        "too_long": replace(valid_evidence, seconds=999),
+        "passing": valid_evidence,
+    }[reexam_evidence]
+    revalidated = record_validation(reopened, evidence, reopened.version)
+    assert revalidated.status is expected_status
+    assert revalidated.approval_source is None
+    assert not is_submission_reward_eligible(revalidated, SubmissionDisposition.NEW_CANDIDATE)
+    if expected_status is ReviewStatus.PENDING_REVIEW:
+        with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
+            approve_review(revalidated, ApprovalSource.OWNER, revalidated.version, song_eligible=True)
+
+
+def test_validation_failed_review_cannot_be_reopened(valid_evidence):
+    """@description: Keep reexamination limited to recorded decisions rather than transient validation failures.
+    @param valid_evidence: Baseline full-video evidence.
+    @return: None.
+    """
+    failed = record_validation_error(ReviewSnapshot(VIDEO), ValidationError.METADATA_UNAVAILABLE, 0)
+    with pytest.raises(InvalidReviewTransition, match="approved or rejected"):
+        _reopen(failed)
+
+
+def test_reopen_from_rejected_releases_priority_even_when_stored_flag_is_false():
+    """@description: Treat a stored rejection as released priority even when a legacy payload decoded the flag as False.
+    @param: none
+    @return: None.
+    """
+    # [legacy rejection]: Written before priority_released existed, so the decoded flag is False.
+    legacy_rejected = ReviewSnapshot(VIDEO, 2, ReviewStatus.REJECTED)
+    assert legacy_rejected.priority_released is False
+    reopened = _reopen(legacy_rejected)
+    assert reopened.priority_released is True
+    assert reopened.status is ReviewStatus.PENDING_VALIDATION and reopened.reexamination_pending is True
