@@ -120,7 +120,7 @@ pyproject.toml
 dependency-versions.txt
 README.md
 ROADMAP.md
-AGENTS.md
+CLAUDE.md
 ```
 
 ## Schema 設計與人工建立
