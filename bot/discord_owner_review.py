@@ -22,7 +22,7 @@ from bot.owner_review import (
     CONFLICT_IDENTITY_NOTE, ExpiredReviewToken, OwnerReviewService, ReviewAction, ReviewOutcomeUnknown, ReviewPreview,
     UnknownReviewToken, require_traceable_source,
 )
-from bot.review import ReviewSnapshot, ReviewStatus
+from bot.review import ReviewSnapshot, ReviewStatus, StaleReviewVersion
 from bot.song_judgement import ContentJudgement
 from bot.version_identity import RecordingVersionIdentity, VersionIdentityStatus
 
@@ -359,7 +359,9 @@ class OwnerReviewGroup(app_commands.Group):
         @param now: Clock used to stamp owner judgements and evidence.
         @return: None.
         """
-        super().__init__(name="owner", description="Owner 專用案件審核指令", guild_ids=[guild_id])
+        # [menu visibility]: No member permission by default hides the group from ordinary members; the backend Owner gate still decides.
+        super().__init__(name="owner", description="Owner 專用案件審核指令", guild_ids=[guild_id],
+                         default_permissions=discord.Permissions.none())
         self._gate = OwnerGate(owner_id, guild_id)  # [authorization gate]: Applied before every callback and button press.
         self._service_provider = service_provider  # [service access]: Returns the process-wide review service.
         self._now = now  # [judgement clock]: Stamps content judgements and evidence records.
@@ -587,6 +589,8 @@ def _error_text(error: Exception) -> str:
         return "結果未知，請重新確認同一筆預覽以取得原結果。"
     if isinstance(error, UnknownReviewToken):
         return "確認憑證無效，請重新預覽。"
+    if isinstance(error, StaleReviewVersion):  # [stale preview]: Review, identity, canonical mapping or evidence moved after preview.
+        return "案件已變更（審核版本、身分、證據或版本對應），預覽已失效，請重新預覽。"
     if isinstance(error, LookupError):  # [genuine missing case]: Only reached for LookupErrors that are not KeyError.
         return "找不到指定案件。"
     return str(error)

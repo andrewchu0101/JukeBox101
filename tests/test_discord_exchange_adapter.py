@@ -75,13 +75,13 @@ def test_a_lookup_failure_is_proven_unsent_because_no_message_was_attempted() ->
     assert result.kind is DmKind.NOT_SENT and result.reason == "recipient_lookup_failed"
 
 
-def test_cannot_send_to_user_error_code_50007_is_proven_unsent() -> None:
-    """@description: Discord's documented refusal to DM this user (50007) is the only forbidden error treated as proven unsent.
+def test_a_refusal_at_send_time_is_uncertain_even_with_error_code_50007() -> None:
+    """@description: A final 403 at send time is not proof of non-delivery, because discord.py may have retried earlier responses in the same call.
     @param: none
     @return: None.
     """
     result = send(client_with(user_whose_send_raises(http_error(discord.Forbidden, 50007))))
-    assert result.kind is DmKind.NOT_SENT and result.reason == "dm_closed_50007"
+    assert result.kind is DmKind.UNKNOWN
 
 
 def test_other_forbidden_errors_are_uncertain_and_never_refunded() -> None:

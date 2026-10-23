@@ -1,6 +1,6 @@
 """Adapt discord.py direct messages and interaction replies to the exchange delivery protocols.
 
-Only a refusal with Discord error code 50007 (cannot send messages to this user) or a failure before any send is classed as proven unsent; every other HTTP, server, rate-limit, timeout or connection failure is uncertain, because discord.py retries some requests internally and a request may still have been accepted.
+Only a failure of the recipient lookup, which is a GET that happens before any send is attempted in this call, is classed as proven unsent. Every failure of the send itself is uncertain, including Discord error 50007: discord.py may retry earlier 5xx responses inside the same call, so the final refusal alone cannot prove that no earlier attempt was accepted.
 """
 
 import logging
@@ -11,7 +11,6 @@ import discord
 from bot.exchange_delivery import DmResult
 
 LOGGER = logging.getLogger(__name__)
-CANNOT_SEND_TO_USER = 50007  # [Discord error code]: The DM was refused before a message was created.
 
 
 class DiscordDirectMessageSender:
@@ -40,9 +39,7 @@ class DiscordDirectMessageSender:
         try:
             message = await user.send(text)
         except discord.Forbidden as error:
-            if getattr(error, "code", None) == CANNOT_SEND_TO_USER:
-                return DmResult.not_sent("dm_closed_50007")  # [documented refusal]: No message exists for this attempt.
-            return DmResult.unknown("forbidden_other")
+            return DmResult.unknown(f"forbidden_{getattr(error, 'code', 0)}")  # [last response only]: Earlier retried attempts may have been accepted.
         except Exception as error:
             LOGGER.warning("Direct message outcome unknown: %s", type(error).__name__)
             return DmResult.unknown(type(error).__name__)
