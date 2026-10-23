@@ -3,6 +3,7 @@
 Owners type commands to inspect, preview, confirm and fault-inject decisions; no MySQL, Discord or Gateway connection is ever opened.
 """
 
+from tests.intake_fixture import seed_intake
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
@@ -163,7 +164,7 @@ class DemoSession:
         @return: None.
         """
         for number in range(1, 6):
-            self.repository.accept(_submission(number, SEEDED_SECONDS.get(number, DEFAULT_SECONDS)))
+            seed_intake(self.repository, _submission(number, SEEDED_SECONDS.get(number, DEFAULT_SECONDS)))
         self._seed_identity(2, [self._record("seed-ev-2", 2, "demo-version-A")])
         self._seed_identity(3, [self._record("seed-ev-3a", 3, "demo-version-A"),
                                 self._record("seed-ev-3b", 3, "demo-version-B", hours=1)])

@@ -3,6 +3,7 @@
 Real service -> repository -> fake DB path; synthetic data only.
 """
 
+from tests.intake_fixture import seed_intake
 from datetime import datetime, timedelta, timezone
 
 from bot.database.submission_repository import SubmissionRepository
@@ -43,7 +44,7 @@ def world():
     repository = SubmissionRepository(database.connect, OWNER_ID)
     service = OwnerReviewService(repository, OWNER_ID, Clock(), token_ttl=timedelta(minutes=5))
     video = VideoIdentity("Synth0001X1")
-    repository.accept(SubmissionRequest(f"https://youtu.be/{video.video_id}", "op-1", 101, 999, VersionAssignment(video),
+    seed_intake(repository, SubmissionRequest(f"https://youtu.be/{video.video_id}", "op-1", 101, 999, VersionAssignment(video),
                                         ReviewSnapshot(video), 0,
                                         DurationEvidence(video, 180, "synthetic-duration", True, True)))
     return database, service, video

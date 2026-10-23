@@ -4,6 +4,7 @@ Offline synthetic walkthrough for the Owner. It prints each step and the settlem
 Run: ./.venv/Scripts/python.exe -X utf8 -m tests.owner_review_walkthrough
 """
 
+from tests.intake_fixture import seed_intake
 from datetime import datetime, timedelta, timezone
 
 from bot.database.submission_repository import SubmissionRepository
@@ -48,7 +49,7 @@ def main() -> None:
     video = VideoIdentity("Synth0001X1")
 
     # Step 1: intake with a valid duration; the review is pending and the version is still unknown.
-    repository.accept(SubmissionRequest(f"https://youtu.be/{video.video_id}", "op-1", 101, 999, VersionAssignment(video),
+    seed_intake(repository, SubmissionRequest(f"https://youtu.be/{video.video_id}", "op-1", 101, 999, VersionAssignment(video),
                                         ReviewSnapshot(video), 0,
                                         DurationEvidence(video, 180, "synthetic-duration", True, True)))
     print("1. intake: review =", service.view(OWNER_ID, "op-1").review.status.value)
@@ -61,6 +62,10 @@ def main() -> None:
     print("1b. approved: review =", service.view(OWNER_ID, "op-1").review.status.value)
 
     # Step 2: an ordinary Owner review confirms version A (identity mapping through the existing path).
+    basis = record_evidence("ev-a", video, EvidenceSourceType.OWNER_REVIEW, "synthetic-basis-note",
+                            START, "synthetic basis inspection", OWNER_ID, RecordingVersionIdentity("synth-version-A"),
+                            version_kind=VersionClaimKind.SAME_RECORDING_AUDIO_MV)
+    service.add_reexamination_evidence(OWNER_ID, "op-1", basis, "synthetic basis inspection", "basis-1")
     revision = service.view(OWNER_ID, "op-1").review.version
     repository.review(ReviewCommand("seed-identity-a", "op-1", OWNER_ID, "synthetic confirmed mapping", revision,
                                     identity=VersionAssignment(video, VersionIdentityStatus.CONFIRMED,

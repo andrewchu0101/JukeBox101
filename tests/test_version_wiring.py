@@ -3,6 +3,7 @@
 Formal reexamination runs through SubmissionRepository.reexamine and settle over the offline fake; no MySQL or Discord is involved.
 """
 
+from tests.intake_fixture import seed_intake
 from datetime import datetime, timezone
 
 import pytest
@@ -70,19 +71,19 @@ def approve_song(repository: SubmissionRepository, operation_id: str, revision: 
                                    approval_source=ApprovalSource.OWNER, song_eligible=True))
 
 
-def test_distinct_reexamination_without_matching_kind_does_not_confirm_identity(persistence: tuple) -> None:
-    """@description: A distinct-version record that names no category leaves the identity unconfirmed and awards nothing.
+def test_uncategorized_reexamination_confirms_its_basic_identity_but_awards_nothing_while_pending(persistence: tuple) -> None:
+    """@description: An owner-confirmed record with no category establishes the basic version (version-unify rule); the reopened item still awards nothing.
     @param persistence: Offline repository fixture.
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, None))
+    seed_intake(repository, intake(1, None))
     approve_song(repository, "op-1", 1)
     video = repository.review_view(OWNER_ID, "op-1").review.video
     repository.reexamine(ReexaminationCommand("reexam-1", "op-1", OWNER_ID, "fresh owner inspection", 2,
                                              owner_evidence(video, "ev-cover", kind=None)))
     identity = repository.review_view(OWNER_ID, "op-1").identity
-    assert identity.status is VersionIdentityStatus.UNRESOLVED
+    assert identity.status is VersionIdentityStatus.CONFIRMED
     assert repository.settle("op-1").status is not Status.AWARDED
     assert not database.state["credit_ledger"]
 
@@ -94,7 +95,7 @@ def test_distinct_reexamination_with_matching_kind_confirms_identity_and_still_a
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, None))
+    seed_intake(repository, intake(1, None))
     approve_song(repository, "op-1", 1)
     video = repository.review_view(OWNER_ID, "op-1").review.video
     repository.reexamine(ReexaminationCommand("reexam-1", "op-1", OWNER_ID, "fresh owner inspection", 2,
@@ -112,7 +113,7 @@ def test_edit_reexamination_never_confirms_identity_and_awards_nothing(persisten
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, None))
+    seed_intake(repository, intake(1, None))
     approve_song(repository, "op-1", 1)
     video = repository.review_view(OWNER_ID, "op-1").review.video
     repository.reexamine(ReexaminationCommand("reexam-1", "op-1", OWNER_ID, "fresh owner inspection", 2,

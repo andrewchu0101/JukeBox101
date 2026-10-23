@@ -3,6 +3,7 @@
 These tests validate Python transaction intent and recovery only, never actual MySQL commits or isolation.
 """
 
+from tests.intake_fixture import seed_intake
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -72,10 +73,10 @@ def test_accept_assigns_transaction_order_and_retries_original_receipt(persisten
     @return: None.
     """
     database, repository = persistence  # [actual boundary]: Only connection creation is fake.
-    original = repository.accept(intake(2))
+    original = seed_intake(repository, intake(2))
     assert original.candidate.accepted_sequence == 1
     approve(repository, "op-2")
-    retry = repository.accept(replace(intake(2), source_url="https://youtube.com/watch?v=video000002&list=PL&t=3"))
+    retry = seed_intake(repository, replace(intake(2), source_url="https://youtube.com/watch?v=video000002&list=PL&t=3"))
     assert not retry.create_share_event and retry.reward == original.reward
     assert retry.candidate == original.candidate
     assert len(database.state["jb2_events"]) == 1
@@ -88,11 +89,11 @@ def test_technical_retry_cannot_change_user_or_video(persistence: tuple) -> None
     @return: None.
     """
     database, repository = persistence  # [original request]: Replays cannot change ownership.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     with pytest.raises(ValueError):
-        repository.accept(replace(intake(1), submitter_id=99))
+        seed_intake(repository, replace(intake(1), submitter_id=99))
     with pytest.raises(ValueError):
-        repository.accept(replace(intake(1), source_url="https://youtu.be/video000002"))
+        seed_intake(repository, replace(intake(1), source_url="https://youtu.be/video000002"))
     assert len(database.state["jb2_events"]) == 1
 
 
@@ -107,9 +108,9 @@ def test_accept_failure_rolls_back_counter_and_all_rows(persistence: tuple, fail
     before = deepcopy(database.state)
     database.sql_fault = failure
     with pytest.raises(ValueError, match="synthetic"):
-        repository.accept(intake(1))
+        seed_intake(repository, intake(1))
     assert database.state == before
-    assert repository.accept(intake(2)).candidate.accepted_sequence == 1
+    assert seed_intake(repository, intake(2)).candidate.accepted_sequence == 1
     assert all(connection.closed for connection in database.connections)
 
 
@@ -123,8 +124,8 @@ def test_unknown_accept_commit_is_resolved_by_same_key(persistence: tuple, fault
     database, repository = persistence  # [ambiguous commit]: Caller must not create a new operation key.
     database.commit_fault = fault
     with pytest.raises(CommitOutcomeUnknown):
-        repository.accept(intake(1))
-    result = repository.accept(intake(1))
+        seed_intake(repository, intake(1))
+    result = seed_intake(repository, intake(1))
     assert result.create_share_event is (fault == "before")
     assert len(database.state["jb2_events"]) == 1 and database.state["control"]["accepted_sequence"] == 1
 
@@ -136,7 +137,7 @@ def test_simulated_concurrent_acceptance_serializes_and_preserves_pending_priori
     """
     database, repository = persistence  # [cross-worker fake gate]: Each worker owns a separate connection.
     with ThreadPoolExecutor(max_workers=2) as workers:
-        futures = [workers.submit(repository.accept, intake(number)) for number in (1, 2)]
+        futures = [workers.submit(seed_intake, repository, intake(number)) for number in (1, 2)]
         results = [future.result(timeout=5) for future in futures]
     assert sorted(result.candidate.accepted_sequence for result in results) == [1, 2]
     earlier, later = sorted(results, key=lambda result: result.candidate.accepted_sequence)
@@ -153,8 +154,8 @@ def test_rejected_earlier_share_releases_next_claim(persistence: tuple) -> None:
     @return: None.
     """
     database, repository = persistence  # [ordered pair]: A pending before B is protected until rejection.
-    repository.accept(intake(1))
-    repository.accept(intake(2))
+    seed_intake(repository, intake(1))
+    seed_intake(repository, intake(2))
     approve(repository, "op-2")
     repository.review(ReviewCommand("reject-a", "op-1", OWNER_ID, "not eligible song", 1, song_eligible=False))
     assert repository.settle("op-2").status is Status.AWARDED
@@ -170,7 +171,7 @@ def test_settlement_failures_rollback_every_accounting_write(persistence: tuple,
     @return: None.
     """
     database, repository = persistence  # [approved claim]: No precomputed READY is supplied by the caller.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     before = deepcopy(database.state)
     database.sql_fault = failure
@@ -189,7 +190,7 @@ def test_unknown_reward_commit_never_credits_twice(persistence: tuple, fault: st
     @return: None.
     """
     database, repository = persistence  # [qualified intake]: Settlement runs the real evaluator again.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     database.commit_fault = fault
     with pytest.raises(CommitOutcomeUnknown):
@@ -207,7 +208,7 @@ def test_simulated_concurrent_settlement_uses_one_global_version_claim(persisten
     """
     database, repository = persistence  # [same recording]: MV and audio fixtures have different video IDs.
     for number in (1, 2):
-        repository.accept(intake(number))
+        seed_intake(repository, intake(number))
         approve(repository, f"op-{number}")
     with ThreadPoolExecutor(max_workers=2) as workers:
         results = list(workers.map(repository.settle, ("op-2", "op-1"), timeout=5))
@@ -223,7 +224,7 @@ def test_different_trusted_remixes_can_settle_independently(persistence: tuple) 
     """
     database, repository = persistence  # [trusted different arrangements]: No automatic matching is introduced.
     for number, version in ((1, "original"), (2, "official-edm-remix")):
-        repository.accept(intake(number, version))
+        seed_intake(repository, intake(number, version))
         approve(repository, f"op-{number}")
         assert repository.settle(f"op-{number}").status is Status.AWARDED
     assert len(database.state["jb2_claims"]) == 2
@@ -236,7 +237,7 @@ def test_unknown_legacy_and_unready_snapshot_block_rewards(persistence: tuple) -
     """
     database, repository = persistence  # [unmapped old catalog]: No historical event order is fabricated.
     database.state["songs"]["video999999"] = {"song_id": 50, "platform_track_id": "video999999"}
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     assert repository.settle("op-1").status is Status.WAITING_IDENTITY
     assert len(database.state["jb2_events"]) == 1
@@ -252,7 +253,8 @@ def test_known_legacy_mapping_never_receives_retroactive_reward(persistence: tup
     """
     database, repository = persistence  # [existing catalog song]: New share does not make it a new reward identity.
     database.state["songs"]["video000001"] = {"song_id": 50, "platform_track_id": "video000001"}
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
+    store_evidence(repository, "op-1", owner_record(intake(1).identity.video, "synthetic-identity", "original"))
     repository.review(ReviewCommand("legacy-map", "op-1", OWNER_ID, "confirmed historical recording", 1,
                                     identity=intake(1).identity, approval_source=ApprovalSource.OWNER, song_eligible=True))
     assert repository.settle("op-1").status is Status.INELIGIBLE
@@ -265,7 +267,7 @@ def test_owner_revision_and_hard_gates_are_enforced_before_overwrite(persistence
     @return: None.
     """
     database, repository = persistence  # [pending without evidence]: Owner cannot bypass hard qualification.
-    repository.accept(intake(1, seconds=None))
+    seed_intake(repository, intake(1, seconds=None))
     count = len(database.connections)
     with pytest.raises(PermissionError):
         repository.review(ReviewCommand("bad-owner", "op-1", 123, "unauthorized", 0))
@@ -283,7 +285,7 @@ def test_review_decision_replay_is_bound_to_original_intent(persistence: tuple) 
     @return: None.
     """
     database, repository = persistence  # [stable review key]: Original revision remains valid only for exact replay.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     first = approve(repository, "op-1")
     assert approve(repository, "op-1") == first
     with pytest.raises(ValueError, match="different intent"):
@@ -298,7 +300,7 @@ def test_merge_preserves_both_ledgers_and_records_historical_exception(persisten
     """
     database, repository = persistence  # [two previously distinct claims]: Both were valid under prior trusted identity.
     for number, version in ((1, "recording-a"), (2, "recording-b")):
-        repository.accept(intake(number, version))
+        seed_intake(repository, intake(number, version))
         approve(repository, f"op-{number}")
         repository.settle(f"op-{number}")
     ledger = deepcopy(database.state["credit_ledger"])
@@ -306,7 +308,7 @@ def test_merge_preserves_both_ledgers_and_records_historical_exception(persisten
     assert repository.merge("merge-1", OWNER_ID, "confirmed same recording", "recording-a", "recording-b") == result
     assert database.state["credit_ledger"] == ledger and len(database.state["jb2_claims"]) == 2
     assert len(database.state["jb2_exceptions"]) == 1
-    repository.accept(intake(3, "recording-a"))
+    seed_intake(repository, intake(3, "recording-a"))
     approve(repository, "op-3")
     assert repository.settle("op-3").status in (Status.CONFLICT, Status.INELIGIBLE)
     assert len(database.state["credit_ledger"]) == 2
@@ -318,10 +320,10 @@ def test_conflicting_evidence_freezes_and_does_not_revoke_awards(persistence: tu
     @return: None.
     """
     database, repository = persistence  # [prior award]: Original payment must remain immutable.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     repository.settle("op-1")
-    repository.accept(intake(2))
+    seed_intake(repository, intake(2))
     approve(repository, "op-2")
     proof = VersionExclusion(intake(1).identity.video, intake(1).identity.version, "contradictory-proof")
     repository.exclude("proof-action", OWNER_ID, "evidence conflict", proof)
@@ -336,7 +338,7 @@ def test_reminders_begin_after_24_hours_and_repeat_by_utc_day(persistence: tuple
     @return: None.
     """
     database, repository = persistence  # [accepted pending operation]: First due time is database intake plus 24h.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     original_sequence = database.state["jb2_events"]["op-1"]["accepted_sequence"]
     database.now += timedelta(hours=24) - timedelta(microseconds=1)
     assert repository.pending_reminders(OWNER_ID) == ()
@@ -355,7 +357,7 @@ def test_balance_mismatch_and_disabled_settlement_fail_closed(persistence: tuple
     @return: None.
     """
     database, repository = persistence  # [approved candidate]: Neither policy nor accounting safeguards are bypassed.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     database.state["users"][1]["credit_balance"] = 10
     with pytest.raises(LedgerBalanceMismatch):
@@ -372,7 +374,7 @@ def test_receipt_codec_roundtrip_and_unknown_type_rejection(persistence: tuple) 
     @return: None.
     """
     database, repository = persistence  # [receipt roundtrip]: Includes enums, exact evidence and tuple blockers.
-    result = repository.accept(intake(1))
+    result = seed_intake(repository, intake(1))
     assert decode_contract(encode_contract(result), SubmissionResult) == result
     with pytest.raises(ValueError):
         decode_contract('{"codec":1,"value":{"contract":"os.system","fields":{}}}', SubmissionResult)
@@ -400,10 +402,10 @@ def test_active_same_video_repeat_after_award_keeps_new_event(persistence: tuple
     @return: None.
     """
     database, repository = persistence  # [already awarded video]: Fresh sharing must not try to reopen its review.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     repository.settle("op-1")
-    result = repository.accept(replace(intake(1), operation_id="deliberate-repeat"))
+    result = seed_intake(repository, replace(intake(1), operation_id="deliberate-repeat"))
     assert result.create_share_event and result.reward.status is Status.INELIGIBLE
     assert len(database.state["jb2_events"]) == 2 and len(database.state["credit_ledger"]) == 1
 
@@ -414,7 +416,7 @@ def test_missing_join_row_or_counter_watermark_never_certifies_complete(persiste
     @return: None.
     """
     database, repository = persistence  # [complete accepted row]: Removing its join target simulates projection corruption.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     assert snapshot_is_complete(repository.snapshot())
     video = database.state["jb2_videos"].pop("video000001")
     assert not snapshot_is_complete(repository.snapshot())
@@ -430,7 +432,7 @@ def test_duplicate_version_claim_constraint_rolls_back_provisional_ledger(persis
     """
     database, repository = persistence  # [existing global claim]: Simulate the constraint winning after an invalid stale attempt.
     for number in (1, 2):
-        repository.accept(intake(number))
+        seed_intake(repository, intake(number))
         approve(repository, f"op-{number}")
     repository.settle("op-1")
     before = deepcopy(database.state)
@@ -446,8 +448,9 @@ def test_identity_only_decision_advances_review_revision(persistence: tuple) -> 
     @return: None.
     """
     database, repository = persistence  # [unknown identity]: Owner confirmation is a versioned decision too.
-    repository.accept(intake(1, None))
+    seed_intake(repository, intake(1, None))
     confirmed = intake(1).identity
+    store_evidence(repository, "op-1", owner_record(confirmed.video, "synthetic-identity", "original"))
     result = repository.review(ReviewCommand("identity-confirm", "op-1", OWNER_ID, "trusted recording proof", 1, identity=confirmed))
     assert result.version == 2 and result.status is ReviewStatus.PENDING_REVIEW
     with pytest.raises(StaleReviewVersion):
@@ -460,13 +463,14 @@ def test_awarded_mapping_change_preserves_original_claim_and_blocks_both_version
     @return: None.
     """
     database, repository = persistence  # [immutable original payment]: Identity correction cannot move its ledger.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     repository.settle("op-1")
     changed = replace(intake(2, "different").identity, video=intake(1).identity.video)
+    store_evidence(repository, "op-1", owner_record(changed.video, "synthetic-identity", "different"))
     repository.review(ReviewCommand("mapping-correction", "op-1", OWNER_ID, "conflicting new recording proof", 2, identity=changed))
     for number, version in ((3, "original"), (4, "different")):
-        repository.accept(intake(number, version))
+        seed_intake(repository, intake(number, version))
         approve(repository, f"op-{number}")
         assert repository.settle(f"op-{number}").status in (Status.INELIGIBLE, Status.CONFLICT)
     assert repository.settle("op-1").status is Status.AWARDED
@@ -479,7 +483,7 @@ def test_review_audits_each_validation_and_approval_revision(persistence: tuple)
     @return: None.
     """
     database, repository = persistence  # [unvalidated intake]: One Owner command can validate then approve atomically.
-    repository.accept(intake(1, seconds=None))
+    seed_intake(repository, intake(1, seconds=None))
     evidence = DurationEvidence(intake(1).identity.video, 180, "synthetic-owner-proof", True, True)
     result = repository.review(ReviewCommand("validate-approve", "op-1", OWNER_ID, "trusted song evidence", 0,
                                            duration=evidence, approval_source=ApprovalSource.OWNER, song_eligible=True))
@@ -497,7 +501,7 @@ def test_persisted_approvals_cannot_bypass_duration_limits(persistence: tuple, s
     @return: None.
     """
     database, repository = persistence  # [rejected hard duration]: No Owner override policy exists.
-    repository.accept(intake(1, seconds=seconds))
+    seed_intake(repository, intake(1, seconds=seconds))
     with pytest.raises(InvalidReviewTransition):
         repository.review(ReviewCommand("invalid-approve", "op-1", OWNER_ID, "attempted hard-gate bypass", 1,
                                        approval_source=source, song_eligible=True))
@@ -510,9 +514,9 @@ def test_approved_review_with_unresolved_identity_still_gets_pending_summary(per
     @return: None.
     """
     database, repository = persistence  # [identity unresolved]: Duration and song approval do not settle recording identity.
-    repository.accept(intake(1, None))
+    seed_intake(repository, intake(1, None))
     approve(repository, "op-1")
-    repository.accept(intake(2, "known-different"))
+    seed_intake(repository, intake(2, "known-different"))
     approve(repository, "op-2")
     database.now += timedelta(hours=24)
     assert repository.pending_reminders(OWNER_ID) == ("op-1",)
@@ -530,9 +534,9 @@ def test_other_intake_between_uncertain_commit_and_replay_has_fair_order(persist
     database, repository = persistence  # [ambiguous first request]: No order is promised for a rolled-back intake.
     database.commit_fault = fault
     with pytest.raises(CommitOutcomeUnknown):
-        repository.accept(intake(1))
-    second = repository.accept(intake(2))
-    first = repository.accept(intake(1))
+        seed_intake(repository, intake(1))
+    second = seed_intake(repository, intake(2))
+    first = seed_intake(repository, intake(1))
     assert [first.candidate.accepted_sequence, second.candidate.accepted_sequence] == expected
 
 
@@ -549,7 +553,8 @@ def test_old_ledger_duplicates_are_audited_without_fabricating_claims(persistenc
             "reason": "submission_award", "idempotency_key": f"old-award-{number}", "awarded_song_id": number}
     original = deepcopy(database.state["credit_ledger"])
     for number in (1, 2):
-        repository.accept(intake(number))
+        seed_intake(repository, intake(number))
+        store_evidence(repository, f"op-{number}", owner_record(intake(number).identity.video, "synthetic-identity", "original"))
         repository.review(ReviewCommand(f"old-confirm-{number}", f"op-{number}", OWNER_ID, "confirmed old recording", 1,
                                         identity=intake(number).identity, approval_source=ApprovalSource.OWNER, song_eligible=True))
     assert len(database.state["jb2_exceptions"]) == 1
@@ -567,7 +572,7 @@ def test_mixed_review_projection_is_rejected(persistence: tuple, field: str, val
     @return: None.
     """
     database, repository = persistence  # [inconsistent persisted projection]: Never select the more favorable representation.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     database.state["jb2_videos"]["video000001"][field] = value
     with pytest.raises(ValueError, match="projection"):
         repository.snapshot()
@@ -581,7 +586,7 @@ def test_missing_migration_blocks_and_still_closes_connection(persistence: tuple
     database, repository = persistence  # [unprepared schema]: No automatic migration is attempted.
     database.state["control"]["schema_version"] = "unprepared"
     with pytest.raises(RuntimeError, match="migration"):
-        repository.accept(intake(1))
+        seed_intake(repository, intake(1))
     assert not database.state["jb2_events"]
     assert all(connection.closed for connection in database.connections)
 
@@ -592,7 +597,7 @@ def test_reminder_batch_does_not_silently_change_owner_target(persistence: tuple
     @return: None.
     """
     database, repository = persistence  # [original Owner summary]: Reservation is an auditable intent, not delivery.
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     database.now += timedelta(hours=24)
     assert repository.pending_reminders(OWNER_ID) == ("op-1",)
     replacement = SubmissionRepository(database.connect, OWNER_ID + 1)
@@ -629,7 +634,7 @@ def test_reexamination_replay_with_different_evidence_is_refused(persistence: tu
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     first = _reexam_evidence("ev-first")
     second = _reexam_evidence("ev-second")
@@ -645,7 +650,7 @@ def test_reexamination_stores_the_full_evidence_record_beside_the_reopened_revis
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1))
+    seed_intake(repository, intake(1))
     approve(repository, "op-1")
     entry = _reexam_evidence("ev-first")
     repository.reexamine(ReexaminationCommand("reexam-key", "op-1", OWNER_ID, "fresh owner inspection", 2, entry))
@@ -666,3 +671,185 @@ def _reexam_evidence(evidence_id: str):
     return record_evidence(evidence_id, video, EvidenceSourceType.OWNER_REVIEW, "synthetic-reexam",
                            datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc), "fresh owner inspection", OWNER_ID,
                            RecordingVersionIdentity("original"), owner_confirmed=True)
+
+
+def owner_record(video, evidence_id: str, version: str | None, *, owner_confirmed: bool = True,
+                 source=None, hours: int = 0):
+    """@description: Create one synthetic evidence fact for a video, confirmed by the Owner unless a test says otherwise.
+    @param video: Video the fact describes.
+    @param evidence_id: Stable synthetic identifier that a confirmation may cite.
+    @param version: Asserted version name, or None for a note.
+    @param owner_confirmed: Whether the Owner confirmed the fact at the trusted boundary.
+    @param source: Source category, defaulting to an Owner review.
+    @param hours: Retrieval offset that orders records.
+    @return: Immutable evidence record.
+    """
+    from bot.evidence_record import EvidenceSourceType, record_evidence
+    from bot.version_identity import RecordingVersionIdentity
+
+    return record_evidence(evidence_id, video, source or EvidenceSourceType.OWNER_REVIEW, "synthetic-" + evidence_id,
+                           datetime(2026, 10, 20, 12, hours, tzinfo=timezone.utc), "synthetic inspection", OWNER_ID,
+                           RecordingVersionIdentity(version) if version is not None else None, owner_confirmed=owner_confirmed)
+
+
+def store_evidence(repository: SubmissionRepository, operation_id: str, record) -> None:
+    """@description: Persist one evidence fact through the audited Owner evidence entry, leaving review and identity unchanged.
+    @param repository: Repository under test.
+    @param operation_id: Accepted operation whose video the fact describes.
+    @param record: Evidence fact to store.
+    @return: None.
+    """
+    repository.record_reexamination_evidence(f"evidence:{operation_id}:{record.evidence_id}", operation_id, OWNER_ID,
+                                             "synthetic evidence", record)
+
+
+def test_ordinary_confirmed_identity_without_a_citation_is_refused_and_writes_nothing(persistence: tuple) -> None:
+    """@description: Write path ordinary ReviewCommand.identity with CONFIRMED and no evidence is refused before any write.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
+
+    database, repository = persistence
+    seed_intake(repository, intake(1, None))
+    before = deepcopy(database.state)
+    video = intake(1).identity.video
+    uncited = VersionAssignment(video, VersionIdentityStatus.CONFIRMED, RecordingVersionIdentity("original"), "synthetic-identity")
+    with pytest.raises(ValueError, match="stored owner-confirmed evidence"):
+        repository.review(ReviewCommand("identity-uncited", "op-1", OWNER_ID, "uncited mapping", 1, identity=uncited))
+    assert database.state == before
+
+
+def test_ordinary_confirmed_identity_citing_stored_owner_evidence_for_the_same_version_is_written(persistence: tuple) -> None:
+    """@description: Write path ordinary identity CONFIRMED is evidence-derived: the cited owner-confirmed record must establish that version.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
+
+    database, repository = persistence
+    seed_intake(repository, intake(1, None))
+    video = intake(1).identity.video
+    store_evidence(repository, "op-1", owner_record(video, "ev-cited", "original"))
+    cited = VersionAssignment(video, VersionIdentityStatus.CONFIRMED, RecordingVersionIdentity("original"), "ev-cited")
+    repository.review(ReviewCommand("identity-cited", "op-1", OWNER_ID, "cited mapping", 1, identity=cited))
+    assert repository.review_view(OWNER_ID, "op-1").identity == cited
+
+
+@pytest.mark.parametrize("cited_record, reason", [
+    (lambda video: owner_record(video, "ev-cited", "original", owner_confirmed=False), "pending evidence"),
+    (lambda video: owner_record(video, "ev-cited", "other"), "evidence for another version"),
+])
+def test_ordinary_confirmed_identity_citing_unconfirmed_or_mismatched_evidence_is_refused(persistence: tuple, cited_record, reason) -> None:
+    """@description: Write path ordinary identity CONFIRMED refuses a citation that is pending or names a different version, with no write.
+    @param persistence: Offline repository fixture.
+    @param cited_record: Builds the stored citation under test.
+    @param reason: Which refusal case the parameter represents.
+    @return: None.
+    """
+    from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
+
+    database, repository = persistence
+    seed_intake(repository, intake(1, None))
+    video = intake(1).identity.video
+    store_evidence(repository, "op-1", cited_record(video))
+    before = deepcopy(database.state)
+    cited = VersionAssignment(video, VersionIdentityStatus.CONFIRMED, RecordingVersionIdentity("original"), "ev-cited")
+    with pytest.raises(ValueError, match="stored owner-confirmed evidence"):
+        repository.review(ReviewCommand("identity-" + reason.replace(" ", "-"), "op-1", OWNER_ID, "cited mapping", 1, identity=cited))
+    assert database.state == before
+
+
+def test_ordinary_confirmed_identity_citing_another_videos_evidence_is_refused(persistence: tuple) -> None:
+    """@description: Write path ordinary identity CONFIRMED cannot borrow evidence stored for a different video.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
+
+    database, repository = persistence
+    seed_intake(repository, intake(1, None))
+    seed_intake(repository, intake(2, None))
+    other = intake(2).identity.video
+    store_evidence(repository, "op-2", owner_record(other, "ev-other", "original"))
+    before = deepcopy(database.state)
+    video = intake(1).identity.video
+    borrowed = VersionAssignment(video, VersionIdentityStatus.CONFIRMED, RecordingVersionIdentity("original"), "ev-other")
+    with pytest.raises(ValueError, match="stored owner-confirmed evidence"):
+        repository.review(ReviewCommand("identity-borrowed", "op-1", OWNER_ID, "borrowed evidence", 1, identity=borrowed))
+    assert database.state == before
+
+
+def test_ordinary_conflict_without_a_citation_stays_an_allowed_freeze(persistence: tuple) -> None:
+    """@description: Write path ordinary identity CONFLICT never creates a payable identity, so it stays allowed without a confirming citation.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.version_identity import VersionAssignment, VersionIdentityStatus
+
+    _, repository = persistence
+    seed_intake(repository, intake(1, "original"))
+    video = intake(1).identity.video
+    freeze = VersionAssignment(video, VersionIdentityStatus.CONFLICT, None, "synthetic-freeze")
+    repository.review(ReviewCommand("identity-freeze", "op-1", OWNER_ID, "freeze for inspection", 1, identity=freeze))
+    assert repository.review_view(OWNER_ID, "op-1").identity.status is VersionIdentityStatus.CONFLICT
+
+
+def test_ordinary_unresolved_downgrade_without_a_citation_writes_no_version(persistence: tuple) -> None:
+    """@description: Write path ordinary identity UNRESOLVED removes a version and never asserts one, so no evidence is needed.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
+
+    _, repository = persistence
+    seed_intake(repository, intake(1, None))
+    video = intake(1).identity.video
+    store_evidence(repository, "op-1", owner_record(video, "ev-cited", "original"))
+    cited = VersionAssignment(video, VersionIdentityStatus.CONFIRMED, RecordingVersionIdentity("original"), "ev-cited")
+    repository.review(ReviewCommand("identity-cited", "op-1", OWNER_ID, "cited mapping", 1, identity=cited))
+    repository.review(ReviewCommand("identity-clear", "op-1", OWNER_ID, "clear mapping", 2, identity=VersionAssignment(video)))
+    assert repository.review_view(OWNER_ID, "op-1").identity == VersionAssignment(video)
+
+
+def test_legacy_replay_returns_an_uncited_confirmation_unchanged_without_rechecking_it(persistence: tuple) -> None:
+    """@description: Historical replay: a stored decision with the same digest returns its original result and never re-runs the new gate.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.database.submission_codec import encode_contract
+    from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus
+
+    database, repository = persistence
+    seed_intake(repository, intake(1, None))
+    video = intake(1).identity.video
+    uncited = VersionAssignment(video, VersionIdentityStatus.CONFIRMED, RecordingVersionIdentity("original"), "synthetic-identity")
+    command = ReviewCommand("legacy-uncited", "op-1", OWNER_ID, "historical mapping", 1, identity=uncited)
+    original = ReviewSnapshot(video, version=2)
+    database.state["jb2_decisions"]["legacy-uncited"] = {
+        "decision_id": "legacy-uncited", "request_digest": review_command_digest(command), "actor_id": OWNER_ID,
+        "decision_reason": "historical mapping", "result_json": encode_contract(original)}
+    before = deepcopy(database.state)
+    assert repository.review(command) == original
+    assert database.state == before
+
+
+def test_version_confirmation_without_a_confirming_record_is_refused_before_any_write(persistence: tuple) -> None:
+    """@description: Write path version confirmation refuses a record that establishes no version, with no row written.
+    @param persistence: Offline repository fixture.
+    @return: None.
+    """
+    from bot.database.review_persistence import VersionConfirmationCommand
+    from bot.evidence_record import EvidenceSourceType, VersionClaimKind, record_evidence
+    from bot.version_identity import RecordingVersionIdentity
+
+    database, repository = persistence
+    seed_intake(repository, intake(1, None))
+    video = intake(1).identity.video
+    clip = record_evidence("ev-clip", video, EvidenceSourceType.OWNER_REVIEW, "synthetic-clip",
+                           datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc), "clip note", OWNER_ID,
+                           RecordingVersionIdentity("original"), owner_confirmed=True, version_kind=VersionClaimKind.EDIT)
+    before = deepcopy(database.state)
+    with pytest.raises(ValueError, match="nothing to confirm"):
+        repository.confirm_version(VersionConfirmationCommand("vc-clip", "op-1", OWNER_ID, "clip note", 1, clip))
+    assert database.state == before

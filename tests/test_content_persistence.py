@@ -3,6 +3,7 @@
 Offline fake database only: real SubmissionRepository and review projection, no MySQL, Discord or network access.
 """
 
+from tests.intake_fixture import seed_intake
 import json
 from datetime import datetime, timezone
 
@@ -44,7 +45,7 @@ def accepted_video(repository: SubmissionRepository, version: str | None):
     """
     candidate = make_candidate(1, version, review_status=ReviewStatus.PENDING_VALIDATION)
     duration = DurationEvidence(candidate.identity.video, 180, "synthetic", True, True)
-    repository.accept(SubmissionRequest(f"https://youtu.be/{candidate.identity.video.video_id}", candidate.operation_id,
+    seed_intake(repository, SubmissionRequest(f"https://youtu.be/{candidate.identity.video.video_id}", candidate.operation_id,
                                         candidate.submitter_id, 999, candidate.identity, candidate.review, 0, duration))
     return candidate.identity.video
 

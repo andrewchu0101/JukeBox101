@@ -8,13 +8,22 @@ from dataclasses import dataclass
 from typing import Any
 
 from bot.database.persisted_snapshot import decode_current_identity, decode_current_review
-from bot.database.review_persistence import decision_digest, replay_decision, save_decision
-from bot.database.review_persistence import load_content_judgements
+from bot.database.review_persistence import conflict_reason, decision_digest, load_content_judgements, replay_decision, save_decision
 from bot.song_judgement import ContentJudgement
 from bot.database.submission_codec import decode_contract, encode_contract
 from bot.evidence_record import EvidenceRecord
-from bot.review import ReviewSnapshot
+from bot.review import ReviewSnapshot, ReviewStatus
 from bot.version_identity import VersionAssignment
+
+
+@dataclass(frozen=True)
+class ReviewHistoryEntry:
+    """Name one persisted review revision together with the Owner and reason that produced it."""
+
+    revision: int  # [revision number]: Same value as the review version it records.
+    status: ReviewStatus  # [review state]: Status the revision persisted.
+    actor_id: int  # [audit actor]: Owner Discord identity that made the decision.
+    reason: str  # [audit explanation]: Reason stored with the revision, including any citation.
 
 
 @dataclass(frozen=True)
@@ -27,7 +36,10 @@ class ReviewProjection:
     review: ReviewSnapshot  # [current review]: Authoritative revision and status for the video.
     evidence: tuple[EvidenceRecord, ...]  # [audit evidence]: Reexamination facts only, oldest first.
     history: tuple[ReviewSnapshot, ...]  # [review history]: Every persisted revision, oldest first.
-    content_judgements: tuple[ContentJudgement, ...] = ()  # [song judgements]: Complete approval judgements, oldest first.
+    content_judgements: tuple[ContentJudgement, ...]  # [song judgements]: Complete approval judgements, oldest first.
+    source_url: str  # [submitted link]: The URL as accepted, so the Owner can open the song.
+    history_entries: tuple[ReviewHistoryEntry, ...]  # [audit trail]: Each revision with its actor and reason, oldest first.
+    conflict_reason: str | None  # [freeze explanation]: Cited contradiction, set only while the identity is CONFLICT.
 
 
 def review_projection(cursor: Any, operation_id: str) -> ReviewProjection:
@@ -41,13 +53,18 @@ def review_projection(cursor: Any, operation_id: str) -> ReviewProjection:
     row = cursor.fetchone()  # [current subject]: Missing operations are never inferred from history.
     if row is None:
         raise ValueError("Unknown review operation")
-    cursor.execute("SELECT review_json FROM jb2_review_history WHERE video_id=%s ORDER BY revision", (row["video_id"],))
-    history = tuple(decode_contract(item["review_json"], ReviewSnapshot) for item in cursor.fetchall())
+    cursor.execute("SELECT revision,review_json,actor_id,decision_reason FROM jb2_review_history WHERE video_id=%s ORDER BY revision",
+                   (row["video_id"],))
+    audit_rows = cursor.fetchall()
+    history = tuple(decode_contract(item["review_json"], ReviewSnapshot) for item in audit_rows)
+    history_entries = tuple(ReviewHistoryEntry(item["revision"], decode_contract(item["review_json"], ReviewSnapshot).status,
+                                               item["actor_id"], item["decision_reason"]) for item in audit_rows)
     cursor.execute("SELECT evidence_json FROM jb2_evidence WHERE video_id=%s ORDER BY evidence_id", (row["video_id"],))
     evidence = tuple(_evidence_records(cursor.fetchall()))
-    return ReviewProjection(row["operation_id"], row["accepted_sequence"], decode_current_identity(row),
-                            decode_current_review(row), evidence, history,
-                            load_content_judgements(cursor, row["video_id"]))
+    identity = decode_current_identity(row)
+    return ReviewProjection(row["operation_id"], row["accepted_sequence"], identity, decode_current_review(row), evidence, history,
+                            load_content_judgements(cursor, row["video_id"]), row["source_url"], history_entries,
+                            conflict_reason(identity))
 
 
 def append_evidence(cursor: Any, decision_id: str, operation_id: str, actor_id: int, reason: str,

@@ -3,6 +3,7 @@
 Real service -> repository -> fake DB path; synthetic data only.
 """
 
+from tests.intake_fixture import seed_intake
 from datetime import datetime, timedelta, timezone
 
 from bot.database.review_persistence import ReviewCommand
@@ -45,7 +46,7 @@ def approved_with_confirmed_identity():
     repository = SubmissionRepository(database.connect, OWNER_ID)
     service = OwnerReviewService(repository, OWNER_ID, Clock(), token_ttl=timedelta(minutes=5))
     video = VideoIdentity("Synth0001X1")
-    repository.accept(SubmissionRequest(f"https://youtu.be/{video.video_id}", "op-1", 101, 999, VersionAssignment(video),
+    seed_intake(repository, SubmissionRequest(f"https://youtu.be/{video.video_id}", "op-1", 101, 999, VersionAssignment(video),
                                         ReviewSnapshot(video), 0,
                                         DurationEvidence(video, 180, "synthetic-duration", True, True)))
     judgement = ContentJudgement(video, OWNER_ID, "synthetic song judgement", START, "demo-content-op-1", True)
@@ -53,6 +54,9 @@ def approved_with_confirmed_identity():
                             content=judgement).token_id
     service.confirm(OWNER_ID, token)
     revision = service.view(OWNER_ID, "op-1").review.version
+    cited = record_evidence("ev-a", video, EvidenceSourceType.OWNER_REVIEW, "synthetic-ev-a", START, "synthetic inspection",
+                            OWNER_ID, RecordingVersionIdentity("synth-version-A"), owner_confirmed=True)
+    repository.record_reexamination_evidence("evidence:op-1:ev-a", "op-1", OWNER_ID, "synthetic owner evidence", cited)
     repository.review(ReviewCommand("seed-identity-a", "op-1", OWNER_ID, "synthetic confirmed mapping", revision,
                                     identity=VersionAssignment(video, VersionIdentityStatus.CONFIRMED,
                                                                RecordingVersionIdentity("synth-version-A"), "ev-a")))

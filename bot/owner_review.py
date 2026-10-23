@@ -13,7 +13,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 from bot.database.review_persistence import (
-    ReexaminationCommand, ReviewCommand, content_judgement_digest, decision_digest, require_owner,
+    MAX_PENDING_PAGE, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
+    decision_digest, require_owner,
 )
 from bot.database.review_projection import ReviewProjection
 from bot.database.submission_repository import SubmissionRepository
@@ -25,12 +26,16 @@ from bot.review import (
 )
 from bot.review_gate import evaluate_approval_gate
 from bot.song_judgement import ContentJudgement
-from bot.version_identity import VersionIdentityStatus, require_reference
+from bot.version_identity import VersionAssignment, VersionIdentityStatus, require_reference
 
 NO_AWARD_EFFECT = "不發 Nickel，不寫入 credit_ledger，點數餘額不變。"  # [financial preview]: Shown before every confirmation.
 REEXAMINATION_EFFECT = "重審會保留原決策與受理順序，且重審期間不得直接核准。" + NO_AWARD_EFFECT  # [reexamination preview]: Explains the block.
+VERSION_CONFIRMATION_EFFECT = "版本確認不重開審核，不改變受理順序。" + NO_AWARD_EFFECT  # [version preview]: Identity only, never a payout.
 UNRESOLVED_IDENTITY_NOTE = "版本未確認：此次決定不會確認錄音版本。"  # [identity preview]: Approval never proves the recording.
 CONFLICT_IDENTITY_NOTE = "版本衝突：維持凍結，此次決定不會清除衝突。"  # [identity preview]: Conflicts stay frozen.
+TRACEABLE_SOURCE_MIN_LENGTH = 8  # [source reference floor]: Shorter text cannot name a URL, document or manual check.
+TRACEABLE_SOURCE_MAX_LENGTH = 512  # [source reference ceiling]: Keeps provenance text to a bounded, reviewable size.
+NON_TRACEABLE_SOURCE_PREFIXES = ("discord:", "interaction:", "interaction-")  # [interaction ids]: Bot-internal identifiers are not evidence.
 
 
 class ReviewAction(Enum):
@@ -39,6 +44,7 @@ class ReviewAction(Enum):
     APPROVE = "approve"  # [song decision]: Explicit positive song eligibility, still award-free.
     REJECT = "reject"  # [song decision]: Explicit negative song eligibility after duration validation.
     REEXAMINE = "reexamine"  # [formal reopen]: Confirmed only with a reliable evidence record bound into the token.
+    CONFIRM_VERSION = "confirm_version"  # [version identity]: Confirmed only with reliable evidence; never reopens review or pays.
 
 
 class UnknownReviewToken(LookupError):
@@ -68,6 +74,27 @@ class ReviewPreview:
     expires_at: datetime  # [token deadline]: After this instant the token is refused.
     evidence_digest: str | None = None  # [evidence fingerprint]: Set for reexamination, which cites a full evidence record.
     content_digest: str | None = None  # [content fingerprint]: Set for approval, which cites the Owner's content judgement.
+    source_reference: str | None = None  # [traceable source]: Set for evidence-citing previews, so the Owner sees where the claim came from.
+    reason: str = ""  # [audit explanation]: The Owner's stated reason, bound into the confirmation intent.
+    current_identity: VersionAssignment | None = None  # [identity before]: Persisted version state the decision starts from.
+    projected_identity: VersionAssignment | None = None  # [identity after]: Version state the decision would store, or None when it is recomputed at confirmation.
+
+
+def require_traceable_source(source_text: str) -> str:
+    """@description: Accept only a URL, document name or manual check reference as evidence provenance, never a bare or interaction-style id.
+    This is a source reference rule, not a reliability proof; reliability stays with assess_evidence and Owner confirmation.
+    @param source_text: Source reference the Owner typed or the evidence record carries.
+    @return: The same text, unchanged, when it is traceable.
+    """
+    if not isinstance(source_text, str) or source_text.strip() != source_text:
+        raise ValueError("A source reference must be unpadded text")
+    if not TRACEABLE_SOURCE_MIN_LENGTH <= len(source_text) <= TRACEABLE_SOURCE_MAX_LENGTH:
+        raise ValueError("A source reference must be 8 to 512 characters")
+    if source_text.isdigit():
+        raise ValueError("A bare numeric id is not a traceable source")  # [snowflake pattern]: Discord ids are numeric.
+    if source_text.lower().startswith(NON_TRACEABLE_SOURCE_PREFIXES):
+        raise ValueError("An interaction-style id is not a traceable source")
+    return source_text
 
 
 @dataclass
@@ -135,6 +162,8 @@ class OwnerReviewService:
         require_reference(evidence_reference)
         if action is ReviewAction.REEXAMINE:
             raise ValueError("Reexamination previews must cite a full evidence record")
+        if action is ReviewAction.CONFIRM_VERSION:
+            raise ValueError("Version confirmations must cite a full evidence record")
         if content is not None and action is not ReviewAction.APPROVE:
             raise ValueError("Only an approval may cite a content judgement")
         projection = self._repository.review_view(actor_id, operation_id)
@@ -148,7 +177,8 @@ class OwnerReviewService:
             self._tokens[token_id] = issued
         return ReviewPreview(token_id, operation_id, action, expected_revision, evidence_reference,
                              projection.review.status, projected.status, _financial_effect(projection.identity.status),
-                             expires_at, content_digest=content_judgement_digest(content) if content is not None else None)
+                             expires_at, content_digest=content_judgement_digest(content) if content is not None else None,
+                             reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
 
     def confirm(self, actor_id: int, token_id: str) -> ReviewSnapshot:
         """@description: Apply a previewed decision exactly once and replay its original result on repeat.
@@ -169,6 +199,59 @@ class OwnerReviewService:
             issued.result = self._apply(issued)
             return issued.result
 
+    def list_pending(self, actor_id: int, *, after_sequence: int | None = None, limit: int = MAX_PENDING_PAGE) -> PendingPage:
+        """@description: Show one keyset page of operations that still need a decision, a version or a conflict review, read-only.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @param after_sequence: Last accepted sequence the Owner already saw, from the previous page's next cursor, or None for the first page.
+        @param limit: Requested page size, capped at the maximum page size.
+        @return: One page in acceptance order with the cursor for the next page.
+        """
+        require_owner(actor_id, self._owner_id, "owner pending list")
+        if after_sequence is not None and (type(after_sequence) is not int or after_sequence < 0):
+            raise ValueError("A paging cursor must be a non-negative accepted sequence")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("A positive page size is required")
+        return self._repository.pending_items(actor_id, after_sequence, min(limit, MAX_PENDING_PAGE))
+
+    def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
+        """@description: Return a stored Owner evidence record for the operation's video so the Owner can cite it again.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @param operation_id: Accepted operation whose video the citation must describe.
+        @param evidence_id: Evidence identifier to cite.
+        @return: The stored record; unknown or foreign-video identifiers are refused with ValueError.
+        """
+        require_owner(actor_id, self._owner_id, "owner stored evidence lookup")
+        return self._repository.stored_evidence(actor_id, operation_id, evidence_id)
+
+    def preview_version_confirmation(self, actor_id: int, operation_id: str, evidence: EvidenceRecord, reason: str,
+                                     expected_revision: int) -> ReviewPreview:
+        """@description: The single version-confirmation entry: refuse before any token when the evidence establishes no version, else preview the identity it would stamp.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner.
+        @param operation_id: Accepted operation whose video the evidence describes.
+        @param evidence: Evidence record; the Owner's preview confirms it, so owner_confirmed is set here.
+        @param reason: Audit explanation.
+        @param expected_revision: Review revision the Owner examined.
+        @return: Preview with the unchanged review status, the no-award effect and expiry.
+        """
+        require_owner(actor_id, self._owner_id, reason)
+        require_traceable_source(evidence.source_reference)  # [traceable citation]: Refuse before any read or token exists.
+        confirmed = replace(evidence, owner_confirmed=True)  # [trusted confirmation]: The Owner's formal preview is the confirmation.
+        current = self.view(actor_id, operation_id).identity  # [identity before]: Read before the preview changes nothing.
+        review, identity = self._repository.preview_version_confirmation(actor_id, operation_id, confirmed, expected_revision)
+        token_id = secrets.token_urlsafe(24)
+        expires_at = self._clock() + self._token_ttl
+        issued = _IssuedToken(actor_id, operation_id, ReviewAction.CONFIRM_VERSION, reason, expected_revision,
+                              confirmed.evidence_id, uuid.uuid4().hex, expires_at, evidence=confirmed)
+        with self._token_lock:
+            self._tokens[token_id] = issued
+        return ReviewPreview(token_id, operation_id, ReviewAction.CONFIRM_VERSION, expected_revision, confirmed.evidence_id,
+                             review.status, review.status, _version_effect(identity.status), expires_at,
+                             evidence_digest=decision_digest((confirmed,)), source_reference=confirmed.source_reference,
+                             reason=reason, current_identity=current, projected_identity=identity)
+
     def preview_reexamination(self, actor_id: int, operation_id: str, evidence: EvidenceRecord, reason: str,
                               expected_revision: int) -> ReviewPreview:
         """@description: Formal reexamination entry: preview the reopen for the Owner, binding the exact evidence and revision.
@@ -182,6 +265,7 @@ class OwnerReviewService:
         @return: Preview with the evidence fingerprint, expiry and the no-award effect.
         """
         require_owner(actor_id, self._owner_id, reason)
+        require_traceable_source(evidence.source_reference)  # [traceable citation]: Refuse before any read or token exists.
         confirmed = replace(evidence, owner_confirmed=True)  # [trusted confirmation]: The Owner's formal preview is the confirmation.
         if assess_evidence(confirmed) is not EvidenceReliability.RELIABLE:
             raise ValueError("Reexamination requires reliable Owner-confirmed evidence")
@@ -198,7 +282,8 @@ class OwnerReviewService:
             self._tokens[token_id] = issued
         return ReviewPreview(token_id, operation_id, ReviewAction.REEXAMINE, expected_revision, confirmed.evidence_id,
                              projection.review.status, projected.status, REEXAMINATION_EFFECT, expires_at,
-                             evidence_digest=decision_digest((confirmed,)))
+                             evidence_digest=decision_digest((confirmed,)), source_reference=confirmed.source_reference,
+                             reason=reason, current_identity=projection.identity, projected_identity=None)
 
     def add_reexamination_evidence(self, actor_id: int, operation_id: str, evidence: EvidenceRecord, reason: str,
                                    decision_id: str) -> EvidenceRecord:
@@ -212,6 +297,7 @@ class OwnerReviewService:
         @return: Original or newly stored evidence record.
         """
         require_owner(actor_id, self._owner_id, reason)
+        require_traceable_source(evidence.source_reference)  # [traceable citation]: Only a traceable source may enter the audit trail.
         confirmed = replace(evidence, owner_confirmed=True)  # [trusted confirmation]: The Owner's submission here is the confirmation.
         with _unknown_outcome_boundary():
             return self._repository.record_reexamination_evidence(decision_id, operation_id, actor_id, reason, confirmed)
@@ -223,6 +309,8 @@ class OwnerReviewService:
         @return: Persisted or replayed review revision.
         """
         with _unknown_outcome_boundary():
+            if issued.action is ReviewAction.CONFIRM_VERSION:
+                return self._repository.confirm_version(_version_confirmation_for(issued))
             if issued.action is ReviewAction.REEXAMINE:
                 return self._repository.reexamine(_reexamination_for(issued))
             return self._repository.review(_command_for(issued))
@@ -280,6 +368,24 @@ def _reexamination_for(issued: _IssuedToken) -> ReexaminationCommand:
     """
     return ReexaminationCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason,
                                 issued.expected_revision, issued.evidence)
+
+
+def _version_confirmation_for(issued: _IssuedToken) -> VersionConfirmationCommand:
+    """@description: Translate a previewed version confirmation into the repository's audited command with its original key.
+    @param issued: Token holding the fixed confirmation intent and its evidence record.
+    @return: Command that stamps the identity and never issues Nickel.
+    """
+    return VersionConfirmationCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason,
+                                      issued.expected_revision, issued.evidence)
+
+
+def _version_effect(identity_status: VersionIdentityStatus) -> str:
+    """@description: State the identity result of a version confirmation together with its no-award effect.
+    @param identity_status: Identity status the confirmation would persist.
+    @return: Owner-facing summary in Traditional Chinese.
+    """
+    conflict = CONFLICT_IDENTITY_NOTE if identity_status is VersionIdentityStatus.CONFLICT else ""
+    return " ".join(part for part in (VERSION_CONFIRMATION_EFFECT, conflict) if part)
 
 
 def _financial_effect(identity_status: VersionIdentityStatus) -> str:

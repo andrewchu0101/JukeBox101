@@ -1,7 +1,7 @@
 """Verify version resolution from evidence: unresolved, confirmed and conflicting, with no title or ID inference.
 
-Offline synthetic evidence only; the reward evaluator is not invoked here. A record confirms a version only when the Owner
-marked it with a category that can confirm it (TK-23); a record with no category or an edit category never confirms.
+Offline synthetic evidence only; the reward evaluator is not invoked here. A reliable record confirms its basic version when it
+declares no category, or when the Owner marked it with a category that can confirm it (TK-23); an edit category never confirms.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -67,20 +67,22 @@ def test_single_reliable_version_with_matching_kind_confirms_with_latest_evidenc
         VersionIdentityStatus.CONFIRMED, ORIGINAL, "ev-2")
 
 
-def test_reliable_record_without_version_kind_does_not_confirm_a_version():
-    """@description: A record that names no category is not enough to confirm a recording version (TK-23, Q18).
+def test_reliable_record_without_version_kind_confirms_the_basic_version():
+    """@description: A reliable owner-confirmed record with no declared category establishes the basic recording version (S3, Q18).
     @param: none
     @return: None.
     """
-    assert resolve_video_version(VIDEO, [evidence("ev-1", kind=None)]) == VersionAssignment(VIDEO)
+    assert resolve_video_version(VIDEO, [evidence("ev-1", kind=None)]) == VersionAssignment(
+        VIDEO, VersionIdentityStatus.CONFIRMED, ORIGINAL, "ev-1")
 
 
-def test_reliable_record_without_version_kind_does_not_confirm_a_distinct_version():
-    """@description: A plain record asserting a distinct recording stays unconfirmed until its category is marked.
+def test_reliable_record_without_version_kind_confirms_a_basic_distinct_version():
+    """@description: A basic record asserting a distinct recording identity confirms that identity without a declared category (S3).
     @param: none
     @return: None.
     """
-    assert resolve_video_version(VIDEO, [evidence("ev-1", COVER, kind=None)]) == VersionAssignment(VIDEO)
+    assert resolve_video_version(VIDEO, [evidence("ev-1", COVER, kind=None)]) == VersionAssignment(
+        VIDEO, VersionIdentityStatus.CONFIRMED, COVER, "ev-1")
 
 
 @pytest.mark.parametrize("kind", [VersionClaimKind.REMIX, VersionClaimKind.LIVE, VersionClaimKind.COVER,
@@ -102,13 +104,14 @@ def test_edit_category_never_confirms_a_version():
     assert resolve_video_version(VIDEO, [evidence("ev-1", kind=VersionClaimKind.EDIT)]) == VersionAssignment(VIDEO)
 
 
-def test_edit_record_does_not_confirm_when_a_matching_record_is_absent():
-    """@description: An edit record beside a plain record leaves the identity unresolved, not confirmed by the edit.
+def test_edit_record_is_ignored_beside_a_basic_record():
+    """@description: An edit record beside a basic record is ignored; the basic record alone confirms the version (Q17).
     @param: none
     @return: None.
     """
     records = [evidence("ev-1", kind=VersionClaimKind.EDIT), evidence("ev-2", kind=None, hours=1)]
-    assert resolve_video_version(VIDEO, records) == VersionAssignment(VIDEO)
+    assert resolve_video_version(VIDEO, records) == VersionAssignment(
+        VIDEO, VersionIdentityStatus.CONFIRMED, ORIGINAL, "ev-2")
 
 
 def test_unconfirmed_owner_inspection_leaves_identity_unresolved():

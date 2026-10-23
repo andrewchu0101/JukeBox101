@@ -3,6 +3,7 @@
 Scenarios use synthetic submissions, the real OwnerReviewService and SubmissionRepository over the offline fake; no MySQL, Discord or Gateway is involved.
 """
 
+from tests.intake_fixture import seed_intake
 import json
 from datetime import datetime, timezone
 
@@ -104,8 +105,8 @@ def test_legacy_rejected_row_reopened_through_service_does_not_block_a_later_sam
     @return: None.
     """
     database, repository, service = world
-    repository.accept(intake(1))
-    repository.accept(intake(2))
+    seed_intake(repository, intake(1))
+    seed_intake(repository, intake(2))
     video = make_candidate(1).identity.video
     reject(repository, "op-1", 1)
     strip_priority_released(database, video.video_id)
@@ -130,7 +131,7 @@ def test_duration_rejected_reopen_preview_projects_the_status_the_confirmed_reop
     @return: None.
     """
     _, repository, service = world
-    repository.accept(intake(1, seconds=999))
+    seed_intake(repository, intake(1, seconds=999))
     video = make_candidate(1).identity.video
     rejected = repository.review_view(OWNER_ID, "op-1").review
     assert rejected.status is ReviewStatus.REJECTED

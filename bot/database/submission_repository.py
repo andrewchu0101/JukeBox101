@@ -9,7 +9,10 @@ from dataclasses import replace
 from typing import Any
 
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
-from bot.database.review_persistence import ReexaminationCommand, ReviewCommand, apply_reexamination, apply_review, require_owner
+from bot.database.review_persistence import (
+    PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, apply_reexamination, apply_review,
+    apply_version_confirmation, page_pending, pending_review_items, plan_version_confirmation, require_owner, stored_evidence_record,
+)
 from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
 from bot.database.reward_settlement import settle_reward
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
@@ -23,7 +26,7 @@ from bot.urls import parse_youtube_url
 from bot.reward_candidates import RewardDecision
 from bot.submission_snapshot import SubmissionSnapshot
 from bot.submission_workflow import SubmissionRequest, SubmissionResult
-from bot.version_identity import VersionAssignment, VersionExclusion, require_reference
+from bot.version_identity import VersionAssignment, VersionExclusion, VersionIdentityStatus, require_reference
 
 
 class SubmissionRepository:
@@ -50,6 +53,8 @@ class SubmissionRepository:
         require_reference(request.operation_id)
         if request.approval_source is not None or request.song_eligible is not None:
             raise ValueError("Approval must use the audited review boundary after acceptance")
+        if request.identity.status is not VersionIdentityStatus.UNRESOLVED:
+            raise ValueError("Intake cannot assert a version identity; identity is confirmed only from evidence")
         with submission_transaction(self._factory) as (cursor, control):
             return accept_submission(cursor, control, request)
 
@@ -125,6 +130,55 @@ class SubmissionRepository:
         require_owner(command.actor_id, self._owner_id, command.reason)
         with submission_transaction(self._factory) as (cursor, control):
             return apply_reexamination(cursor, control, command)
+
+    def confirm_version(self, command: VersionConfirmationCommand) -> ReviewSnapshot:
+        """@description: Stamp an Owner-confirmed recording version through the audited boundary, leaving the review and money untouched.
+        @param self: Repository retaining deployment Owner identity.
+        @param command: Authenticated Owner confirmation with its evidence record and revision.
+        @return: Original or current unchanged review.
+        """
+        require_owner(command.actor_id, self._owner_id, command.reason)
+        with submission_transaction(self._factory) as (cursor, control):
+            return apply_version_confirmation(cursor, control, command)
+
+    def preview_version_confirmation(self, actor_id: int, operation_id: str, evidence: EvidenceRecord,
+                                     expected_revision: int) -> tuple[ReviewSnapshot, VersionAssignment]:
+        """@description: Compute, without writing, what a version confirmation would produce so the Owner preview can refuse early.
+        @param self: Repository retaining deployment Owner identity.
+        @param actor_id: Authenticated caller that must be the configured Owner.
+        @param operation_id: Accepted operation whose video the evidence confirms.
+        @param evidence: Owner-stamped evidence fact.
+        @param expected_revision: Review revision the Owner examined.
+        @return: Current review and the identity the confirmation would persist.
+        """
+        require_owner(actor_id, self._owner_id, "owner version confirmation preview")
+        with submission_transaction(self._factory) as (cursor, _control):
+            return plan_version_confirmation(cursor, operation_id, evidence, actor_id, expected_revision)
+
+    def pending_items(self, actor_id: int, after_sequence: int | None, limit: int) -> PendingPage:
+        """@description: Read one keyset page of the Owner's queue of open, failed, unconfirmed-approved and conflict-frozen items without writing.
+        @param self: Repository retaining deployment Owner identity.
+        @param actor_id: Authenticated caller that must be the configured Owner.
+        @param after_sequence: Last accepted sequence already shown, or None for the first page.
+        @param limit: Page size already capped by the service.
+        @return: One page of pending items in acceptance order.
+        """
+        require_owner(actor_id, self._owner_id, "owner pending list")
+        with submission_transaction(self._factory) as (cursor, _control):
+            return page_pending(pending_review_items(cursor), after_sequence, limit)
+
+    def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
+        """@description: Return a stored Owner evidence record of the operation's video so the Owner can cite it again without retyping.
+        @param self: Repository retaining deployment Owner identity.
+        @param actor_id: Authenticated caller that must be the configured Owner.
+        @param operation_id: Accepted operation whose video the citation must describe.
+        @param evidence_id: Evidence identifier to cite.
+        @return: The stored record; unknown or foreign-video identifiers are refused.
+        """
+        require_owner(actor_id, self._owner_id, "owner stored evidence lookup")
+        require_reference(evidence_id)
+        with submission_transaction(self._factory) as (cursor, _control):
+            return stored_evidence_record(cursor, operation_id, evidence_id)
 
     def review_view(self, actor_id: int, operation_id: str) -> ReviewProjection:
         """@description: Show the Owner one operation's current review, identity and audit trail without writing.

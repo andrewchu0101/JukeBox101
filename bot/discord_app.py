@@ -4,11 +4,15 @@ Construction needs no credentials or network; remote synchronization requires an
 """
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from collections.abc import Awaitable, Callable
 
 import discord
 from discord import app_commands
 
+from bot.discord_owner_review import build_owner_group
+from bot.owner_review import OwnerReviewService
 from bot.services import MusicService, ServiceUnavailable
 from bot.urls import InvalidVideoUrl
 
@@ -58,17 +62,32 @@ class SafeCommandTree(app_commands.CommandTree):
 class JukeBoxClient(discord.Client):
     """Own a local command tree with no automatic remote sync or background delivery."""
 
-    def __init__(self, service: MusicService, *, interaction_guard: Callable[[discord.Interaction], Awaitable[bool]] | None = None) -> None:
+    def __init__(self, service: MusicService, *, interaction_guard: Callable[[discord.Interaction], Awaitable[bool]] | None = None,
+                 owner_review: "OwnerReviewWiring | None" = None) -> None:
         """@description: Build a minimal-intent client independently of login and credentials.
         @param self: Discord application instance.
         @param service: Discord-independent application operations.
         @param interaction_guard: Optional listener-specific command admission policy.
+        @param owner_review: Optional Owner review wiring; when given, the guild-scoped owner group is registered locally.
         @return: None.
         """
         super().__init__(intents=discord.Intents.none(), allowed_mentions=discord.AllowedMentions.none())
         self.tree = SafeCommandTree(self, interaction_guard=interaction_guard)  # [command registry]: Local registration only.
         self.handlers = CommandHandlers(service)
         register_commands(self.tree, self.handlers)
+        if owner_review is not None:
+            self.tree.add_command(build_owner_group(owner_review.service_provider, owner_review.owner_id,
+                                                    owner_review.guild_id, owner_review.now))
+
+
+@dataclass(frozen=True)
+class OwnerReviewWiring:
+    """Carry the Owner review collaborators the client needs; the group itself is built by discord_owner_review."""
+
+    service_provider: Callable[[], OwnerReviewService]  # [review service]: Returns the synchronous review service.
+    owner_id: int  # [Owner identity]: Configured Discord user id checked on every Owner command.
+    guild_id: int  # [private guild]: The only guild where the owner group is registered.
+    now: Callable[[], datetime]  # [clock]: Supplies timestamps for evidence and judgements.
 
 
 class CommandHandlers:

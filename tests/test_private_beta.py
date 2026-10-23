@@ -3,6 +3,7 @@
 Tests trap external boundaries and distinguish durable replay from an uncertain acknowledgement.
 """
 
+from tests.intake_fixture import seed_intake
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -137,7 +138,7 @@ def test_repeat_of_reviewed_video_preserves_evidence(beta_context):
     """
     database, submissions, reader, service = beta_context
     request = intake(1)
-    submissions.accept(request)
+    seed_intake(submissions, request)
     approve(submissions, request.operation_id)
     video_id = request.identity.video.video_id
     before = deepcopy(database.state["jb2_videos"][video_id])
@@ -242,7 +243,7 @@ def test_repository_history_excludes_other_users_and_tracks_review(beta_context)
     """
     database, submissions, reader, service = beta_context
     request = intake(1)
-    submissions.accept(request)
+    seed_intake(submissions, request)
     submissions.accept_pending(123, URL, "discord:456")
     submissions.accept_pending(999, URL, "discord:789")
     approve(submissions, request.operation_id)

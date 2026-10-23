@@ -3,6 +3,7 @@
 Scenarios use synthetic accepted submissions and the production review and settlement transactions; no MySQL or Discord is involved.
 """
 
+from tests.intake_fixture import seed_intake
 from datetime import datetime, timezone
 
 import pytest
@@ -106,7 +107,7 @@ def test_reopened_approved_item_settles_as_waiting_with_no_ledger_row(persistenc
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     reexamine(repository, "op-1", 2)
     decision = repository.settle("op-1")
@@ -121,7 +122,7 @@ def test_approve_after_reopen_is_refused_and_writes_nothing(persistence: tuple) 
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     reexamine(repository, "op-1", 2)
     before = {name: dict(rows) for name, rows in database.state.items() if name.startswith(("jb2_", "credit"))}
@@ -137,7 +138,7 @@ def test_reject_after_reopen_is_allowed_and_still_awards_nothing(persistence: tu
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     reexamine(repository, "op-1", 2)
     rejected = reject(repository, "op-1", 3)
@@ -154,8 +155,8 @@ def test_reopen_keeps_the_original_accepted_sequence(persistence: tuple) -> None
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
-    repository.accept(intake(2, "B"))
+    seed_intake(repository, intake(1, "A"))
+    seed_intake(repository, intake(2, "B"))
     before = repository.review_view(OWNER_ID, "op-1").accepted_sequence
     approve(repository, "op-1", 1)
     reexamine(repository, "op-1", 2)
@@ -171,7 +172,7 @@ def test_reopening_an_awarded_item_keeps_the_award_and_adds_no_ledger_row(persis
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     assert repository.settle("op-1").status is Status.AWARDED
     reexamine(repository, "op-1", 2)
@@ -186,8 +187,8 @@ def test_unrelated_later_submission_is_not_blocked_by_a_reopened_item(persistenc
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
-    repository.accept(intake(2, "B"))
+    seed_intake(repository, intake(1, "A"))
+    seed_intake(repository, intake(2, "B"))
     approve(repository, "op-1", 1)
     approve(repository, "op-2", 1)
     reexamine(repository, "op-1", 2)
@@ -203,8 +204,8 @@ def test_later_same_recording_waits_behind_reopened_item_until_it_is_rejected(pe
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
-    repository.accept(intake(3, "A"))
+    seed_intake(repository, intake(1, "A"))
+    seed_intake(repository, intake(3, "A"))
     approve(repository, "op-1", 1)
     approve(repository, "op-3", 1)
     reexamine(repository, "op-1", 2)
@@ -223,7 +224,7 @@ def test_owner_confirmed_conflict_blocks_settlement_even_when_approved(persisten
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     video = VideoIdentity("video000001")
     conflict = resolve_video_version(video, [owner_evidence(video, "ev-a", "orig-A"), owner_evidence(video, "ev-b", "cover-B", hours=1)])
@@ -239,7 +240,7 @@ def test_reexamination_replays_the_same_decision_key_without_a_second_revision(p
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     first = reexamine(repository, "op-1", 2)
     history = len(database.state["jb2_review_history"])
@@ -253,7 +254,7 @@ def test_reexamination_refuses_a_stale_revision_without_writing(persistence: tup
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     history = len(database.state["jb2_review_history"])
     with pytest.raises(StaleReviewVersion):
@@ -268,7 +269,7 @@ def test_reexamination_refuses_evidence_that_is_not_owner_confirmed_or_about_ano
     @return: None.
     """
     database, repository = persistence
-    repository.accept(intake(1, "A"))
+    seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     video = VideoIdentity("video000001")
     unconfirmed = record_evidence("ev-raw", video, EvidenceSourceType.OWNER_REVIEW, "synthetic-raw", SYNTHETIC_TIME,

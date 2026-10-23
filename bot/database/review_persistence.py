@@ -15,7 +15,7 @@ from bot.database.submission_codec import decode_contract, encode_contract
 from bot.database.submission_store import ensure_version, persist_review
 from bot.eligibility import DurationEvidence
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
-from bot.review import ApprovalSource, ReviewSnapshot, ValidationError, reopen_for_reexamination
+from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError, reopen_for_reexamination
 from bot.song_identity import VideoIdentity
 from bot.song_judgement import ContentJudgement
 from bot.submission_workflow import SubmissionRequest, _review_request
@@ -40,7 +40,7 @@ class ReviewCommand:
     approval_source: ApprovalSource | None = None  # [approval path]: AUTO still requires trusted internal invocation.
     song_eligible: bool | None = None  # [explicit decision]: Duration passing alone never approves a song.
     validation_error: ValidationError | None = None  # [retryable error]: Not a rejection policy.
-    identity: VersionAssignment | None = None  # [new evidence]: Owner-confirmed mapping or conflict.
+    identity: VersionAssignment | None = None  # [new evidence]: CONFIRMED must cite stored owner evidence; CONFLICT freezes.
     clear_conflict_freeze: bool = False  # [explicit resolution]: Never automatically clears historical conflicts.
     evidence_reference: str | None = None  # [decision citation]: Unset references keep older digests.
     content_judgement: ContentJudgement | None = None  # [content verdict]: Owner's song judgement an approval relied on.
@@ -76,10 +76,38 @@ class ReexaminationCommand:
         @param self: Trusted internal Owner reexamination action.
         @return: None.
         """
-        require_reference(self.decision_id)
-        require_reference(self.operation_id)
-        if max(len(self.decision_id), len(self.operation_id)) > 128:
-            raise ValueError("Decision identifiers exceed storage limits")
+        _require_decision_keys(self.decision_id, self.operation_id)
+
+
+@dataclass(frozen=True)
+class VersionConfirmationCommand:
+    """Carry one Owner confirmation that a reliable evidence fact establishes a recording version, without reopening the review."""
+
+    decision_id: str  # [idempotency key]: Retries with identical intent replay the original result.
+    operation_id: str  # [review subject]: Accepted operation whose video the evidence confirms.
+    actor_id: int  # [audit actor]: Compared to the immutable configured Owner at the boundary.
+    reason: str  # [audit explanation]: Required for every confirmation.
+    expected_revision: int  # [optimistic concurrency]: The review revision the Owner examined.
+    evidence: EvidenceRecord  # [version evidence]: Must be reliable and describe the operation's video.
+
+    def __post_init__(self) -> None:
+        """@description: Reject malformed confirmation identities before any transaction begins.
+        @param self: Trusted internal Owner confirmation action.
+        @return: None.
+        """
+        _require_decision_keys(self.decision_id, self.operation_id)
+
+
+def _require_decision_keys(decision_id: str, operation_id: str) -> None:
+    """@description: Keep Owner action keys valid and within storage limits for every decision-type command.
+    @param decision_id: Idempotency key of the action.
+    @param operation_id: Accepted operation the action targets.
+    @return: None.
+    """
+    require_reference(decision_id)
+    require_reference(operation_id)
+    if max(len(decision_id), len(operation_id)) > 128:
+        raise ValueError("Decision identifiers exceed storage limits")
 
 
 def require_owner(actor_id: int, owner_id: int, reason: str) -> None:
@@ -133,6 +161,14 @@ def reexamination_digest(command: ReexaminationCommand) -> str:
     @return: Digest stored with the audited reexamination.
     """
     return decision_digest(("reexamination",) + tuple(getattr(command, field) for field in command.__dataclass_fields__))
+
+
+def version_confirmation_digest(command: VersionConfirmationCommand) -> str:
+    """@description: Keep version confirmations distinct from other decisions so a retry must repeat the same evidence and revision.
+    @param command: Authenticated Owner version confirmation.
+    @return: Digest stored with the audited confirmation.
+    """
+    return decision_digest(("version_confirmation",) + tuple(getattr(command, field) for field in command.__dataclass_fields__))
 
 
 def replay_decision(cursor: Any, decision_id: str, digest: str) -> str | None:
@@ -193,11 +229,12 @@ def apply_review(cursor: Any, control: dict, command: ReviewCommand) -> ReviewSn
     if previous is not None:
         return decode_contract(previous, ReviewSnapshot)
     # [authoritative review subject]: Input cannot supply a replacement current revision.
-    request = _current_request(cursor, command)
-    identity = command.identity or request.identity  # [trusted mapping update]: Never inferred from titles.
-    if identity.video != request.identity.video:
+    request = _current_request(cursor, command.operation_id, command.expected_revision)
+    proposed = command.identity or request.identity  # [trusted mapping update]: Never inferred from titles.
+    if proposed.video != request.identity.video:
         raise ValueError("Identity update targets another video")
     _require_content_subject(command, request.identity.video)
+    identity = request.identity if command.identity is None else check_identity_write(cursor, request.identity, proposed, request.identity.video)
     ensure_version(cursor, identity)
     review = _apply_transitions(cursor, request, command, identity, audit_reason(command))
     _record_identity_resolution(cursor, command, identity)
@@ -246,11 +283,11 @@ def apply_reexamination(cursor: Any, control: dict, command: ReexaminationComman
     previous = replay_decision(cursor, command.decision_id, digest)  # [replay]: A repeated key returns the original revision.
     if previous is not None:
         return decode_contract(previous, ReviewSnapshot)
-    request = _current_request(cursor, command)
-    _require_reliable_evidence(command, request.identity.video)
+    request = _current_request(cursor, command.operation_id, command.expected_revision)
+    _require_reliable_evidence(command.evidence, command.actor_id, request.identity.video)
     reopened = reopen_for_reexamination(request.review, command.expected_revision, command.evidence.evidence_id)
+    identity = _reconciled_identity(cursor, command.evidence, request.identity)  # [new contradiction]: Owner evidence can freeze the reward.
     _append_evidence_record(cursor, command)
-    identity = _reconciled_identity(cursor, command, request.identity)  # [new contradiction]: Owner evidence can freeze the reward.
     ensure_version(cursor, identity)
     persist_review(cursor, reopened, command.actor_id, command.reason, identity)
     cursor.execute("UPDATE jb2_control SET revision=revision+1 WHERE singleton_id=1")
@@ -260,39 +297,197 @@ def apply_reexamination(cursor: Any, control: dict, command: ReexaminationComman
     return reopened
 
 
-def _require_reliable_evidence(command: ReexaminationCommand, video: VideoIdentity) -> None:
-    """@description: Refuse reopening on evidence that is unreliable, judged by someone else, or about another video.
-    @param command: Reexamination action carrying the evidence record.
+def apply_version_confirmation(cursor: Any, control: dict, command: VersionConfirmationCommand) -> ReviewSnapshot:
+    """@description: Stamp the recording version a reliable Owner evidence fact establishes, leaving review status, order and money untouched.
+    The only write is the identity, its audit evidence and the candidate scheduling it implies; this slice never issues Nickel.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param control: Current database read revision.
+    @param command: Previously authenticated Owner version confirmation.
+    @return: Original or current unchanged review, so the review itself is never reopened.
+    """
+    digest = version_confirmation_digest(command)
+    previous = replay_decision(cursor, command.decision_id, digest)  # [replay]: A retried key returns the original result and writes nothing.
+    if previous is not None:
+        return decode_contract(previous, ReviewSnapshot)
+    review, identity = plan_version_confirmation(cursor, command.operation_id, command.evidence, command.actor_id,
+                                                 command.expected_revision)
+    _append_evidence_record(cursor, command)
+    ensure_version(cursor, identity)
+    persist_review(cursor, review, command.actor_id, command.reason, identity)
+    _mirror_legacy_identity(cursor, identity)
+    cursor.execute("UPDATE jb2_control SET revision=revision+1 WHERE singleton_id=1")
+    control = dict(control, revision=control["revision"] + 1)
+    persist_decisions(cursor, current_decisions(cursor, control))  # [candidate state]: Conflicts freeze; confirmations never award.
+    save_decision(cursor, command.decision_id, digest, command.actor_id, command.reason, review)
+    return review
+
+
+def plan_version_confirmation(cursor: Any, operation_id: str, evidence: EvidenceRecord, actor_id: int,
+                              expected_revision: int) -> tuple[ReviewSnapshot, VersionAssignment]:
+    """@description: Compute, without writing, the review and identity a version confirmation would produce, so previews and confirmations agree.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param operation_id: Accepted operation whose video the evidence confirms.
+    @param evidence: Owner-stamped evidence fact the confirmation relies on.
+    @param actor_id: Authenticated Owner who judged the evidence.
+    @param expected_revision: Review revision the Owner examined.
+    @return: Current review and the identity that confirming it would persist.
+    """
+    request = _current_request(cursor, operation_id, expected_revision)
+    _require_reliable_evidence(evidence, actor_id, request.identity.video)
+    _require_current_revision(request.review, expected_revision)
+    identity = _reconciled_identity(cursor, evidence, request.identity)
+    if _confirms_nothing(cursor, evidence, request.identity.video):
+        raise ValueError("Version confirmation has nothing to confirm: the evidence establishes no recording version")
+    return request.review, identity
+
+
+def _confirms_nothing(cursor: Any, evidence: EvidenceRecord, video: VideoIdentity) -> bool:
+    """@description: Ask the TK-23 rules whether the stored and new evidence together establish any version at all.
+    @param cursor: Transaction-owned cursor.
+    @param evidence: Owner-stamped evidence the confirmation relies on.
+    @param video: Video whose records are recomputed.
+    @return: True when no reliable record in the set confirms a version.
+    """
+    roots = _canonical_roots(cursor)
+    records = [_canonical_record(record, roots) for record in _stored_evidence(cursor, video.video_id)]
+    records.append(_canonical_record(evidence, roots))
+    return resolve_video_version(video, records).status is VersionIdentityStatus.UNRESOLVED
+
+
+def _require_current_revision(review: ReviewSnapshot, expected_revision: int) -> None:
+    """@description: Refuse a confirmation whose previewed revision no longer matches, so the Owner must preview again.
+    @param review: Current authoritative review.
+    @param expected_revision: Revision the Owner examined.
+    @return: None.
+    """
+    if review.version != expected_revision:
+        raise StaleReviewVersion("Review version no longer matches; preview the confirmation again")
+
+
+def _require_reliable_evidence(evidence: EvidenceRecord, judge_id: int, video: VideoIdentity) -> None:
+    """@description: Refuse Owner evidence that is unreliable, judged by someone else, or about another video.
+    @param evidence: Evidence record the Owner cites.
+    @param judge_id: Authenticated Owner identity that must have judged the record.
     @param video: Video of the accepted operation.
     @return: None.
     """
-    if command.evidence.video != video or command.evidence.judged_by != command.actor_id:
-        raise ValueError("Reexamination evidence must describe this video and be judged by its Owner")
-    if assess_evidence(command.evidence) is not EvidenceReliability.RELIABLE:
-        raise ValueError("Reexamination requires reliable Owner-confirmed evidence")
+    if evidence.video != video or evidence.judged_by != judge_id:
+        raise ValueError("Evidence must describe this video and be judged by its Owner")
+    if assess_evidence(evidence) is not EvidenceReliability.RELIABLE:
+        raise ValueError("Evidence requires reliable Owner-confirmed evidence")
 
 
-def _reconciled_identity(cursor: Any, command: ReexaminationCommand, current: VersionAssignment) -> VersionAssignment:
-    """@description: Recompute the video's version from all stored Owner evidence, freezing any contradiction with a confirmed version.
-    @param cursor: Transaction-owned cursor after the new evidence record has been appended.
-    @param command: Formal reexamination whose evidence is the newest fact.
-    @param current: Persisted identity before the reopen.
+def check_identity_write(cursor: Any, current: VersionAssignment, proposed: VersionAssignment, video: VideoIdentity,
+                         *, pending_evidence: EvidenceRecord | None = None) -> VersionAssignment:
+    """@description: Decide which identity a write may store, so ordinary review commands and formal confirmations share one rule set.
+    CONFIRMED needs a cited Owner record that resolves over all Owner evidence to the same canonical root; a different confirmed
+    root than the current one becomes CONFLICT citing the new record, so A is never overwritten by B; CONFLICT and UNRESOLVED pass through as freezes.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param current: Identity persisted before the write.
+    @param proposed: Identity the write asks to store.
+    @param video: Video of the accepted operation.
+    @param pending_evidence: Owner-stamped record that the formal path has not stored yet, or None when every citation is stored.
+    @return: The identity that may be stored; never a payable identity without matching Owner evidence.
+    """
+    if current.status is VersionIdentityStatus.CONFLICT:
+        return current  # [frozen conflict]: No ordinary or formal write lifts or downgrades it; resolution is not opened in this stage.
+    if proposed.status is not VersionIdentityStatus.CONFIRMED:
+        return proposed  # [safe directions]: Conflicts freeze and unresolved states never create a payable identity.
+    roots = _canonical_roots(cursor)
+    cited = _cited_owner_record(cursor, proposed, video, pending_evidence)
+    proposed_root = _canonical_version(proposed.version, roots)
+    if _canonical_version(cited.version, roots) != proposed_root:
+        raise ValueError("A confirmed identity must cite stored owner-confirmed evidence that asserts that version")
+    if current.status is VersionIdentityStatus.CONFIRMED and _canonical_version(current.version, roots) != proposed_root:
+        return VersionAssignment(video, VersionIdentityStatus.CONFLICT, None, cited.evidence_id)  # [A is never overwritten by B]: Freeze instead.
+    _require_resolution_to(cursor, video, proposed_root, pending_evidence, roots)
+    return proposed
+
+
+def _cited_owner_record(cursor: Any, proposed: VersionAssignment, video: VideoIdentity,
+                        pending_evidence: EvidenceRecord | None) -> EvidenceRecord:
+    """@description: Find the Owner record a proposed confirmation cites, among stored records and the not-yet-stored formal evidence.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param proposed: Confirmed identity assertion carrying the cited evidence identifier.
+    @param video: Video the citation must describe.
+    @param pending_evidence: Formal evidence not yet stored, or None.
+    @return: The cited record for this video.
+    """
+    cited = [record for record in _owner_records(cursor, video, pending_evidence) if record.evidence_id == proposed.evidence_reference]
+    if not cited:
+        raise ValueError("A confirmed identity must cite stored owner-confirmed evidence for this video")
+    return cited[-1]  # [most recent citation]: A pending formal record is appended last, so it wins a tie.
+
+
+def _require_resolution_to(cursor: Any, video: VideoIdentity, expected_root: RecordingVersionIdentity, pending_evidence: EvidenceRecord | None,
+                           roots: dict[str, str]) -> None:
+    """@description: Refuse a confirmed write unless all Owner evidence for the video, taken together, still resolves to the same canonical version.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param video: Video whose records are recomputed.
+    @param expected_root: Canonical version the write confirms.
+    @param pending_evidence: Formal evidence not yet stored, or None.
+    @param roots: Flattened canonical identity map from the writer-gated transaction.
+    @return: None.
+    """
+    records = [_canonical_record(record, roots) for record in _owner_records(cursor, video, pending_evidence)]
+    resolved = resolve_video_version(video, records)
+    if resolved.status is not VersionIdentityStatus.CONFIRMED or resolved.version != expected_root:
+        raise ValueError("A confirmed identity must resolve from all stored owner-confirmed evidence to the same version")
+
+
+def _owner_records(cursor: Any, video: VideoIdentity, pending_evidence: EvidenceRecord | None) -> list[EvidenceRecord]:
+    """@description: Collect every Owner evidence fact for one video, plus the formal record that is not stored yet.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param video: Video whose records are collected.
+    @param pending_evidence: Formal evidence not yet stored, or None.
+    @return: Stored records in stored order, followed by the pending record when given.
+    """
+    records = _stored_evidence(cursor, video.video_id)
+    return records if pending_evidence is None else [*records, pending_evidence]
+
+
+def stored_evidence_record(cursor: Any, operation_id: str, evidence_id: str) -> EvidenceRecord:
+    """@description: Return one stored Owner evidence record for the operation's video, so the Owner can cite it again.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param operation_id: Accepted operation whose video the citation must describe.
+    @param evidence_id: Evidence identifier the Owner wants to cite.
+    @return: The stored evidence record; unknown or foreign-video identifiers are refused.
+    """
+    request = _current_request(cursor, operation_id, 0)  # [video subject]: The expected revision is not needed for a read.
+    matches = [record for record in _stored_evidence(cursor, request.identity.video.video_id) if record.evidence_id == evidence_id]
+    if not matches:
+        raise ValueError("Evidence id is not stored for this operation's video")
+    return matches[-1]
+
+
+def _reconciled_identity(cursor: Any, evidence: EvidenceRecord, current: VersionAssignment) -> VersionAssignment:
+    """@description: Recompute the video's version from all stored Owner evidence plus the new fact, freezing any contradiction with a confirmed version.
+    @param cursor: Transaction-owned cursor holding the writer gate; the new fact need not be stored yet.
+    @param evidence: Owner-stamped evidence that is the newest fact.
+    @param current: Persisted identity before the decision.
     @return: Unchanged conflict, a conflict against the prior confirmed version, or the recomputed assignment.
     """
     if current.status is VersionIdentityStatus.CONFLICT:
         return current  # [explicit resolution]: Only an explicit Owner clear may remove a historical conflict.
-    # [canonical roots]: Merged aliases name the same recording, so comparisons use the flattened roots.
-    roots = {row["version_id"]: row["canonical_id"] for row in fetch_all(cursor, "SELECT version_id,canonical_id FROM jb2_versions")}
+    roots = _canonical_roots(cursor)
     records = [_canonical_record(record, roots) for record in _stored_evidence(cursor, current.video.video_id)]
-    recomputed = resolve_video_version(current.video, records)
+    recomputed = resolve_video_version(current.video, [*records, _canonical_record(evidence, roots)])
     if recomputed.status is VersionIdentityStatus.UNRESOLVED:
         return current  # [missing support]: Evidence that confirms nothing never erases or freezes an existing identity.
     current_root = _canonical_version(current.version, roots)
     contradicts_confirmed = current.status is VersionIdentityStatus.CONFIRMED and (
         recomputed.status is VersionIdentityStatus.CONFLICT or recomputed.version != current_root)
-    if contradicts_confirmed:
-        return VersionAssignment(current.video, VersionIdentityStatus.CONFLICT, None, command.evidence.evidence_id)
-    return recomputed
+    proposed = (VersionAssignment(current.video, VersionIdentityStatus.CONFLICT, None, evidence.evidence_id)
+                if contradicts_confirmed else recomputed)
+    return check_identity_write(cursor, current, proposed, current.video, pending_evidence=evidence)
+
+
+def _canonical_roots(cursor: Any) -> dict[str, str]:
+    """@description: Flatten the version alias map so merged aliases compare as the same recording.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @return: Mapping from each version identifier to its canonical root.
+    """
+    return {row["version_id"]: row["canonical_id"] for row in fetch_all(cursor, "SELECT version_id,canonical_id FROM jb2_versions")}
 
 
 def _canonical_record(record: EvidenceRecord, roots: dict[str, str]) -> EvidenceRecord:
@@ -355,7 +550,7 @@ def _is_evidence_payload(payload: str) -> bool:
     return _contract_of(payload) == EvidenceRecord.__name__
 
 
-def _append_evidence_record(cursor: Any, command: ReexaminationCommand) -> None:
+def _append_evidence_record(cursor: Any, command: ReexaminationCommand | VersionConfirmationCommand) -> None:
     """@description: Append the full evidence fact beside the reopened revision so the Owner can audit its source.
     @param cursor: Transaction-owned cursor.
     @param command: Reexamination action with its validated evidence.
@@ -365,19 +560,20 @@ def _append_evidence_record(cursor: Any, command: ReexaminationCommand) -> None:
                    (command.evidence.video.video_id, encode_contract(command.evidence), command.actor_id, command.reason))
 
 
-def _current_request(cursor: Any, command: ReviewCommand | ReexaminationCommand) -> SubmissionRequest:
+def _current_request(cursor: Any, operation_id: str, expected_revision: int) -> SubmissionRequest:
     """@description: Load the current video revision shared by all accepted operations for that video.
     @param cursor: Globally serialized cursor.
-    @param command: Review command naming an existing operation.
+    @param operation_id: Accepted operation named by the Owner action.
+    @param expected_revision: Review revision the Owner examined.
     @return: Request ready for the existing pure version checks.
     """
     cursor.execute("SELECT e.*,v.identity_json,v.review_json,v.review_revision,v.review_status FROM jb2_events e "
-                   "JOIN jb2_videos v ON v.video_id=e.video_id WHERE e.operation_id=%s", (command.operation_id,))
+                   "JOIN jb2_videos v ON v.video_id=e.video_id WHERE e.operation_id=%s", (operation_id,))
     row = cursor.fetchone()  # [current projection]: Never take the current review from command payload.
     if row is None:
         raise ValueError("Unknown review operation")
     return SubmissionRequest(row["source_url"], row["operation_id"], row["discord_user_id"], row["accepted_sequence"],
-                             decode_current_identity(row), decode_current_review(row), command.expected_revision)
+                             decode_current_identity(row), decode_current_review(row), expected_revision)
 
 
 def _apply_transitions(cursor: Any, request: SubmissionRequest, command: ReviewCommand, identity: VersionAssignment,
@@ -411,7 +607,94 @@ def _record_identity_resolution(cursor: Any, command: ReviewCommand, identity: V
     @return: None.
     """
     if command.identity is not None:
-        cursor.execute("UPDATE jb2_legacy l JOIN jb2_videos v ON v.song_id=l.song_id SET l.identity_json=%s WHERE v.video_id=%s",
-                       (encode_contract(identity), identity.video.video_id))
+        _mirror_legacy_identity(cursor, identity)
     if command.clear_conflict_freeze is True:
         cursor.execute("UPDATE jb2_events SET conflict_frozen=FALSE WHERE video_id=%s", (identity.video.video_id,))
+
+
+def _mirror_legacy_identity(cursor: Any, identity: VersionAssignment) -> None:
+    """@description: Keep a legacy song's identity mirror equal to the video's persisted identity after an Owner identity write.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param identity: Identity just persisted for the video.
+    @return: None.
+    """
+    cursor.execute("UPDATE jb2_legacy l JOIN jb2_videos v ON v.song_id=l.song_id SET l.identity_json=%s WHERE v.video_id=%s",
+                   (encode_contract(identity), identity.video.video_id))
+
+
+MAX_PENDING_PAGE = 20  # [page size cap]: Keeps each Owner queue reply inside one Discord message.
+
+
+@dataclass(frozen=True)
+class PendingItem:
+    """Summarize one accepted operation that still needs an Owner decision or conflict review, without private payloads."""
+
+    operation_id: str  # [queue subject]: Accepted operation waiting for the Owner.
+    source_url: str  # [submitted link]: The URL as accepted, shown so the Owner can find the song.
+    accepted_sequence: int  # [queue position]: Database-assigned acceptance order, also the paging cursor.
+    review_status: ReviewStatus  # [review state]: Current Hybrid Review status of the video.
+    identity_status: VersionIdentityStatus  # [identity state]: Current version identity status of the video.
+    revision: int  # [expected revision]: The value a later preview and confirmation must present.
+    evidence_count: int  # [audit size]: Owner evidence records stored for the video.
+    conflict_reason: str | None  # [freeze explanation]: Cited contradiction, set only while the identity is CONFLICT.
+
+
+@dataclass(frozen=True)
+class PendingPage:
+    """Carry one bounded slice of the Owner queue plus the cursor for the next slice."""
+
+    items: tuple[PendingItem, ...]  # [page rows]: At most the capped page size, in acceptance order.
+    next_after_sequence: int | None  # [keyset cursor]: Pass back as the after-sequence; None when no later pending item exists.
+
+
+def pending_review_items(cursor: Any) -> tuple[PendingItem, ...]:
+    """@description: List operations whose review is still open, whose approval awaits a version, or whose identity is frozen, in acceptance order.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @return: Pending items with counts and conflict reasons; clean terminal reviews are omitted.
+    """
+    rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.video_id,v.identity_json,v.review_json,"
+                             "v.review_revision,v.review_status FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
+                             "ORDER BY e.accepted_sequence")
+    items = []
+    for row in rows:
+        review = decode_current_review(row)
+        identity = decode_current_identity(row)
+        if not _awaits_owner(review.status, identity.status):
+            continue
+        items.append(PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status,
+                                 review.version, len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity)))
+    return tuple(items)
+
+
+def page_pending(items: tuple[PendingItem, ...], after_sequence: int | None, limit: int) -> PendingPage:
+    """@description: Cut one keyset page from the acceptance-ordered queue, so items never shift when earlier ones leave the queue.
+    @param items: Complete pending queue in acceptance order.
+    @param after_sequence: Last accepted sequence the Owner already saw, or None for the first page.
+    @param limit: Page size already capped by the service.
+    @return: Page of items after the cursor, with the next cursor when more items remain.
+    """
+    remaining = tuple(item for item in items if after_sequence is None or item.accepted_sequence > after_sequence)
+    page = remaining[:limit]
+    more_follow = len(remaining) > limit
+    return PendingPage(page, page[-1].accepted_sequence if more_follow else None)
+
+
+def _awaits_owner(review_status: ReviewStatus, identity_status: VersionIdentityStatus) -> bool:
+    """@description: Decide whether an operation needs the Owner's attention, using only its current statuses.
+    @param review_status: Current Hybrid Review status.
+    @param identity_status: Current version identity status.
+    @return: True for open or failed reviews, approvals still waiting for a confirmed version, and identities frozen by a conflict.
+    """
+    open_review = review_status in {ReviewStatus.PENDING_VALIDATION, ReviewStatus.PENDING_REVIEW, ReviewStatus.VALIDATION_FAILED}
+    approved_unconfirmed = review_status is ReviewStatus.APPROVED and identity_status is VersionIdentityStatus.UNRESOLVED
+    return open_review or approved_unconfirmed or identity_status is VersionIdentityStatus.CONFLICT
+
+
+def conflict_reason(identity: VersionAssignment) -> str | None:
+    """@description: Explain a frozen identity by naming the evidence that caused the contradiction.
+    @param identity: Current identity of the video.
+    @return: Owner-facing reason for a conflict, or None when the identity is not in conflict.
+    """
+    if identity.status is not VersionIdentityStatus.CONFLICT:
+        return None
+    return f"版本衝突：引用證據 {identity.evidence_reference}"

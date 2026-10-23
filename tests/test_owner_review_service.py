@@ -3,6 +3,7 @@
 Every scenario uses synthetic submissions and an in-memory token store; no Discord, MySQL or Gateway is involved.
 """
 
+from tests.intake_fixture import seed_intake
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -121,7 +122,7 @@ def seed_pending(repository: SubmissionRepository, number: int = 1) -> None:
     @param number: Synthetic submission number.
     @return: None.
     """
-    repository.accept(submission(number))
+    seed_intake(repository, submission(number))
 
 
 def test_non_owner_cannot_preview_or_confirm_and_no_review_is_written(world):
@@ -304,7 +305,7 @@ def test_preview_refuses_an_approval_the_hard_gates_would_reject(world):
     @return: None.
     """
     database, repository, service, _ = world
-    repository.accept(submission(2, seconds=30))
+    seed_intake(repository, submission(2, seconds=30))
     with pytest.raises(InvalidReviewTransition):
         service.preview(OWNER_ID, "op-2", ReviewAction.APPROVE, "attempted bypass", 1, EVIDENCE_REFERENCE,
                         content=approval_content(submission(2).identity.video))
@@ -659,6 +660,20 @@ def test_the_decision_evidence_reference_is_readable_in_the_audit_trail(world, a
     assert service.view(OWNER_ID, "op-1").review.status is expected_status
 
 
+def cite_owner_evidence(repository: SubmissionRepository, operation_id: str, video: VideoIdentity, version: str,
+                        evidence_id: str) -> None:
+    """@description: Store the Owner-confirmed record that an ordinary identity confirmation must cite, leaving the review revision unchanged.
+    @param repository: Real repository over the fake.
+    @param operation_id: Accepted operation whose video the record describes.
+    @param video: Video whose recording version is being confirmed.
+    @param version: Canonical recording version the stored record establishes.
+    @param evidence_id: Identifier that the confirmation will cite.
+    @return: None.
+    """
+    record = evidence(video, evidence_id, version, owner_confirmed=True)
+    repository.record_reexamination_evidence(f"evidence:{operation_id}:{evidence_id}", operation_id, OWNER_ID, "owner evidence", record)
+
+
 def confirmed_identity(video: VideoIdentity, version: str, evidence_id: str) -> VersionAssignment:
     """@description: Build the trusted identity an Owner records through the ordinary review identity path.
     @param video: Video whose recording version is confirmed.
@@ -677,6 +692,7 @@ def test_formal_reexamination_contradicting_a_confirmed_version_settles_as_confl
     database, repository, service, _ = world
     seed_pending(repository)
     video = submission(1).identity.video
+    cite_owner_evidence(repository, "op-1", video, "orig-A", "ev-a")
     repository.review(ReviewCommand("identity-orig-a", "op-1", OWNER_ID, "owner confirmed original recording", 1,
                                     identity=confirmed_identity(video, "orig-A", "ev-a")))
     repository.review(ReviewCommand("approve-op-1", "op-1", OWNER_ID, "synthetic verified song", 2,
@@ -718,6 +734,7 @@ def test_supplementary_contradicting_evidence_leaves_identity_and_settlement_unc
     seed_pending(repository)
     video = submission(1).identity.video
     confirmed = confirmed_identity(video, "orig-A", "ev-a")
+    cite_owner_evidence(repository, "op-1", video, "orig-A", "ev-a")
     repository.review(ReviewCommand("identity-orig-a", "op-1", OWNER_ID, "owner confirmed original recording", 1,
                                     identity=confirmed))
     before = repository.settle("op-1")
@@ -879,8 +896,10 @@ def merged_a_into_b(world) -> VideoIdentity:
     seed_pending(repository, 1)
     seed_pending(repository, 2)
     video = submission(1).identity.video
+    cite_owner_evidence(repository, "op-2", submission(2).identity.video, "B", "ev-b")
     repository.review(ReviewCommand("identity-b", "op-2", OWNER_ID, "owner confirmed B", 1,
                                     identity=confirmed_identity(submission(2).identity.video, "B", "ev-b")))
+    cite_owner_evidence(repository, "op-1", video, "A", "ev-a")
     repository.review(ReviewCommand("identity-a", "op-1", OWNER_ID, "owner confirmed A", 1,
                                     identity=confirmed_identity(video, "A", "ev-a")))
     repository.review(ReviewCommand("approve-op-1", "op-1", OWNER_ID, "synthetic verified song",
