@@ -18,6 +18,7 @@ from bot.database.exchange_delivery_store import (
     pending_refund_ids,
     recover_interrupted,
     record_result,
+    user_balance,
     refund_undelivered,
     user_results,
 )
@@ -196,6 +197,15 @@ class SubmissionRepository:
         """
         with submission_transaction(self._factory) as (cursor, _):
             return user_results(cursor, discord_user_id)
+
+    def user_exchange_balance(self, discord_user_id: int) -> int | None:
+        """@description: Show one requester their own spendable credits, or None for an unknown account.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param discord_user_id: Authenticated requester.
+        @return: Credits of that account, or None.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return user_balance(cursor, discord_user_id)
 
     def owner_exchange_summary(self) -> dict:
         """@description: Give the Owner aggregate exchange counts that expose no identifier granting access.

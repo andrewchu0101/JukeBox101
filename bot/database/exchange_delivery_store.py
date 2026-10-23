@@ -155,10 +155,21 @@ def user_results(cursor: Any, discord_user_id: int) -> list[dict]:
     @param discord_user_id: Requester whose results are shown.
     @return: Operation code, delivery state and financial state per reservation, oldest first.
     """
-    cursor.execute("SELECT recommendation_id,status,released_at FROM recommendations WHERE discord_user_id=%s", (discord_user_id,))
+    cursor.execute("SELECT recommendation_id,song_id,status,released_at FROM recommendations WHERE discord_user_id=%s", (discord_user_id,))
     rows = sorted(cursor.fetchall(), key=lambda row: row["recommendation_id"])  # [caller scope]: Only this user's rows are selected.
-    return [{"operation_code": row["recommendation_id"], "delivery_state": row["status"], "refund_state": _refund_state(row)}
-            for row in rows]
+    return [{"operation_code": row["recommendation_id"], "song_id": row["song_id"], "delivery_state": row["status"],
+             "refund_state": _refund_state(row)} for row in rows]
+
+
+def user_balance(cursor: Any, discord_user_id: int) -> int | None:
+    """@description: Read one requester's own spendable credits, or None when no account exists.
+    @param cursor: Cursor inside the transaction.
+    @param discord_user_id: Requester whose balance is shown.
+    @return: Credits held by that account, or None for an unknown account.
+    """
+    cursor.execute("SELECT credit_balance FROM users WHERE discord_user_id=%s", (discord_user_id,))
+    row = cursor.fetchone()  # [caller scope]: Only the caller's own row is selected.
+    return None if row is None else row["credit_balance"]
 
 
 def owner_summary(cursor: Any) -> dict:

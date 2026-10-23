@@ -258,7 +258,7 @@ def test_the_owner_summary_and_the_requester_view_expose_no_token_or_link_and_no
     run(service_for(repository), Dm(DmResult.not_sent("dm_closed_50007")), Reply(), 101, "discord:11")
     mine = repository.user_exchange_results(101)
     theirs = repository.user_exchange_results(102)
-    assert mine and all(set(item) == {"operation_code", "delivery_state", "refund_state"} for item in mine)
+    assert mine and all(set(item) == {"operation_code", "song_id", "delivery_state", "refund_state"} for item in mine)
     assert mine[0]["refund_state"] == "refunded" and theirs == []
     summary = repository.owner_exchange_summary()
     assert set(summary) == {"reserved", "sending", "delivered", "failed", "uncertain", "refund_pending"}
