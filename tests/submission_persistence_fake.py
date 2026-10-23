@@ -224,7 +224,22 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
     if "COALESCE(SUM" in sql:
         return [{"total": sum(row["credit_delta"] for row in connection.working["credit_ledger"].values()
                               if row["discord_user_id"] == parameters[0])}]
+    if "FROM jb2_review_history WHERE video_id=%s ORDER BY revision" in sql:
+        return _video_rows(connection.working["jb2_review_history"], parameters[0], "revision")
+    if "FROM jb2_evidence WHERE video_id=%s ORDER BY evidence_id" in sql:
+        return _video_rows(connection.working["jb2_evidence"], parameters[0], "evidence_id")
     return _simple_rows(connection, sql, parameters)
+
+
+def _video_rows(table: dict, video_id: str, order_key: str) -> list[dict]:
+    """@description: Return one video's append-only audit rows in their stable database order.
+    @param table: Committed or working fake audit table.
+    @param video_id: Bound video identifier filter.
+    @param order_key: Column that orders revisions or evidence rows.
+    @return: Matching rows sorted by the requested key.
+    """
+    rows = [row for row in table.values() if row["video_id"] == video_id]
+    return sorted(rows, key=lambda row: row[order_key])
 
 
 def _award_audit_rows(connection: FakeConnection) -> list[dict]:

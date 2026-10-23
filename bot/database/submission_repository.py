@@ -10,10 +10,12 @@ from typing import Any
 
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import ReviewCommand, apply_review, require_owner
+from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
 from bot.database.reward_settlement import settle_reward
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
 from bot.database.submission_store import accept_submission
 from bot.database.submission_transaction import PersistenceNotReady, submission_transaction
+from bot.evidence_record import EvidenceRecord
 from bot.models import HISTORY_LIMIT
 from bot.review import ReviewSnapshot
 from bot.song_identity import VideoIdentity
@@ -113,6 +115,36 @@ class SubmissionRepository:
         require_owner(command.actor_id, self._owner_id, command.reason)
         with submission_transaction(self._factory) as (cursor, control):
             return apply_review(cursor, control, command)
+
+    def review_view(self, actor_id: int, operation_id: str) -> ReviewProjection:
+        """@description: Show the Owner one operation's current review, identity and audit trail without writing.
+        @param self: Repository retaining deployment Owner identity.
+        @param actor_id: Authenticated caller that must be the configured Owner.
+        @param operation_id: Accepted operation chosen for inspection.
+        @return: Consistent read-only projection of the operation's video.
+        """
+        require_owner(actor_id, self._owner_id, "owner review view")
+        require_reference(operation_id)
+        with submission_transaction(self._factory) as (cursor, _control):
+            return review_projection(cursor, operation_id)
+
+    def record_reexamination_evidence(self, decision_id: str, operation_id: str, actor_id: int, reason: str,
+                                      evidence: EvidenceRecord) -> EvidenceRecord:
+        """@description: Append Owner-judged evidence without changing review status, identity or accepted order.
+        @param self: Repository retaining deployment Owner identity.
+        @param decision_id: Idempotent reexamination entry key.
+        @param operation_id: Accepted operation whose video the evidence describes.
+        @param actor_id: Authenticated Owner identity.
+        @param reason: Required audit explanation.
+        @param evidence: Validated evidence record about the same video.
+        @return: Original or newly stored evidence record.
+        """
+        require_owner(actor_id, self._owner_id, reason)
+        require_reference(decision_id)
+        if len(decision_id) > 128:
+            raise ValueError("Decision identifiers exceed storage limits")
+        with submission_transaction(self._factory) as (cursor, _control):
+            return append_evidence(cursor, decision_id, operation_id, actor_id, reason, evidence)
 
     def merge(self, decision_id: str, actor_id: int, reason: str, source: str, target: str) -> tuple[str, str]:
         """@description: Persist an Owner-confirmed identity merge while preserving original awards.
