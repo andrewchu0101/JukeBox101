@@ -69,7 +69,7 @@ def _award(cursor: Any, control: dict, operation_id: str) -> RewardDecision:
     # [qualified subject]: All current identity and review facts came from the guarded snapshot.
     snapshot = load_snapshot(cursor, control)
     candidate = next(item for item in snapshot.candidates if item.operation_id == operation_id)
-    _lock_reconciled_account(cursor, candidate.submitter_id)
+    lock_reconciled_account(cursor, candidate.submitter_id)
     cursor.execute("SELECT song_id FROM jb2_videos WHERE video_id=%s", (candidate.identity.video.video_id,))
     song_id = cursor.fetchone()["song_id"]  # [legacy ledger FK]: Preserve the original six-table constraints.
     ledger_key = "jb2:" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()  # [ledger idempotency]: Bounded and deterministic.
@@ -90,11 +90,11 @@ def _award(cursor: Any, control: dict, operation_id: str) -> RewardDecision:
     return decision
 
 
-def _lock_reconciled_account(cursor: Any, discord_user_id: int) -> None:
-    """@description: Refuse to compound preexisting ledger and balance inconsistencies.
+def lock_reconciled_account(cursor: Any, discord_user_id: int) -> int:
+    """@description: Refuse to compound preexisting ledger and balance inconsistencies before any point changes.
     @param cursor: Transaction cursor holding the global gate before the user lock.
-    @param discord_user_id: Intended reward recipient.
-    @return: None.
+    @param discord_user_id: Intended reward or exchange account.
+    @return: Locked, reconciled available credits.
     """
     cursor.execute("SELECT credit_balance FROM users WHERE discord_user_id=%s FOR UPDATE", (discord_user_id,))
     account = cursor.fetchone()  # [locked available credits]: Cannot change during this reward transaction.
@@ -102,6 +102,7 @@ def _lock_reconciled_account(cursor: Any, discord_user_id: int) -> None:
     ledger = cursor.fetchone()  # [audit balance]: No direct balance repair is authorized.
     if account is None or account["credit_balance"] != ledger["total"]:
         raise LedgerBalanceMismatch("Account requires audited ledger reconciliation")
+    return account["credit_balance"]
 
 
 def persist_decisions(cursor: Any, decisions: tuple[RewardDecision, ...]) -> None:

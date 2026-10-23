@@ -6,8 +6,22 @@ Construction performs no I/O; an explicit injected connection factory is invoked
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import replace
+from random import Random
 from typing import Any
 
+from bot.database.exchange_delivery_store import (
+    DeliveryClaim,
+    RefundContradiction,
+    RefundOutcome,
+    claim_reservation,
+    owner_summary,
+    pending_refund_ids,
+    recover_interrupted,
+    record_result,
+    refund_undelivered,
+    user_results,
+)
+from bot.database.exchange_reservation import ExchangeOutcome, reserve_exchange
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import (
     PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, apply_reexamination, apply_review,
@@ -110,6 +124,96 @@ class SubmissionRepository:
         require_reference(operation_id)
         with submission_transaction(self._factory) as (cursor, control):
             return settle_reward(cursor, control, operation_id)
+
+    def exchange(self, discord_user_id: int, request_key: str, rng: Random) -> ExchangeOutcome:
+        """@description: Reserve one exchange recommendation and debit one point atomically, or report why nothing changed.
+        @param self: Synchronous repository boundary, not a public Discord command.
+        @param discord_user_id: Authenticated requesting user.
+        @param request_key: Technical idempotency key that retries must reuse.
+        @param rng: Injected random source for the uniform draw.
+        @return: Reserved, replayed or unchanged outcome from the locked transaction.
+        """
+        require_reference(request_key)
+        with submission_transaction(self._factory) as (cursor, control):
+            return reserve_exchange(cursor, control, discord_user_id, request_key, rng)
+
+    def claim_delivery(self, recommendation_id: int, claim_token: str, now: Any) -> tuple:
+        """@description: Move one reserved exchange recommendation to sending under this attempt's token before any DM is attempted.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param recommendation_id: Reservation identifier.
+        @param claim_token: Unique token of this attempt.
+        @param now: Time the attempt starts.
+        @return: Current status, message identifier, and a claim only for this caller.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return claim_reservation(cursor, recommendation_id, claim_token, now)
+
+    def record_delivery(self, claim: DeliveryClaim, status: str, message_id: int | None, delivered_at: Any) -> str:
+        """@description: Record the classified outcome of one claimed direct-message attempt, never overwriting a newer state.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param claim: Claim returned by claim_delivery to the caller that sent.
+        @param status: Delivered, failed or uncertain.
+        @param message_id: Accepted DM identifier, or None.
+        @param delivered_at: Acceptance time, or None.
+        @return: The status the database holds afterwards.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return record_result(cursor, claim, status, message_id, delivered_at)
+
+    def recover_interrupted_deliveries(self, now: Any) -> int:
+        """@description: At startup, mark attempts whose sending lease has expired as uncertain without resending them.
+        @param self: Synchronous repository boundary.
+        @param now: Current time.
+        @return: Number of reservations moved to uncertain.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return recover_interrupted(cursor, now)
+
+    def retry_pending_refunds(self, now: Any) -> list[RefundOutcome]:
+        """@description: Retry refunds that a previous request could not commit, each still at most once.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param now: Release time for refunds that commit now.
+        @return: Outcome per pending reservation attempted in this sweep.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            ids = pending_refund_ids(cursor)
+        outcomes = []
+        for recommendation_id in ids:  # [one transaction each]: A failure on one never blocks the others.
+            try:
+                with submission_transaction(self._factory) as (cursor, _):
+                    outcomes.append(refund_undelivered(cursor, recommendation_id, now))
+            except RefundContradiction:
+                outcomes.append(RefundOutcome("contradiction", 0))  # [stop]: Human review; nothing is credited or released.
+            except Exception:
+                outcomes.append(RefundOutcome("pending", 0))  # [retry later]: Nothing is released or credited here.
+        return outcomes
+
+    def user_exchange_results(self, discord_user_id: int) -> list[dict]:
+        """@description: Show one requester only their own exchange results, with no token, link or other user's data.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param discord_user_id: Authenticated requester.
+        @return: Projected results for that requester.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return user_results(cursor, discord_user_id)
+
+    def owner_exchange_summary(self) -> dict:
+        """@description: Give the Owner aggregate exchange counts that expose no identifier granting access.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @return: Counts per delivery state and pending refunds.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return owner_summary(cursor)
+
+    def refund_undelivered(self, recommendation_id: int, now: Any) -> RefundOutcome:
+        """@description: Refund one point for a reservation proven unsent, from its authoritative original debit only.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param recommendation_id: Reservation whose refund is requested.
+        @param now: Release time.
+        @return: Refund outcome from the locked transaction.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return refund_undelivered(cursor, recommendation_id, now)
 
     def review(self, command: ReviewCommand) -> ReviewSnapshot:
         """@description: Authorize Owner decisions before entering the database transaction.

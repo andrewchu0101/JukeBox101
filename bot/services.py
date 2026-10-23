@@ -5,20 +5,65 @@ Injected synchronous persistence runs outside the event loop; unapproved award a
 
 import asyncio
 import logging
+import random
 from collections.abc import Callable
-from datetime import timezone
-from typing import TypeVar
+from dataclasses import replace
+from datetime import datetime, timezone
+from typing import Any, TypeVar
 
 import pymysql
 
 from bot.database.repository import MusicRepository
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
+from bot.exchange_delivery import ExchangeFlowResult, exchange_and_deliver
 from bot.models import DeliveryHistoryEntry, HISTORY_LIMIT, MAX_REPLY_LENGTH
 from bot.urls import InvalidVideoUrl, parse_youtube_url
 
 OperationResult = TypeVar("OperationResult")
 LOGGER = logging.getLogger(__name__)
+SYNTHETIC_LABEL = "【合成測試】"  # [acceptance marker]: Every synthetic reply and DM carries it; production text never does.
+
+
+class _LabelledSender:
+    """Prefix every direct message of the synthetic acceptance flow with the synthetic label."""
+
+    def __init__(self, inner: Any) -> None:
+        """@description: Wrap the real or mock DM adapter.
+        @param self: Labelling wrapper.
+        @param inner: Direct-message adapter.
+        @return: None.
+        """
+        self._inner = inner
+
+    async def send(self, discord_user_id: int, text: str) -> Any:
+        """@description: Send the labelled text through the wrapped adapter.
+        @param self: Labelling wrapper.
+        @param discord_user_id: Recipient.
+        @param text: Message body.
+        @return: The inner adapter's classified result.
+        """
+        return await self._inner.send(discord_user_id, SYNTHETIC_LABEL + text)
+
+
+class _LabelledReplier:
+    """Prefix every ephemeral reply of the synthetic acceptance flow with the synthetic label."""
+
+    def __init__(self, inner: Any) -> None:
+        """@description: Wrap the real or mock ephemeral adapter.
+        @param self: Labelling wrapper.
+        @param inner: Ephemeral reply adapter.
+        @return: None.
+        """
+        self._inner = inner
+
+    async def send_ephemeral(self, text: str) -> None:
+        """@description: Send the labelled reply through the wrapped adapter.
+        @param self: Labelling wrapper.
+        @param text: Reply body.
+        @return: None.
+        """
+        await self._inner.send_ephemeral(SYNTHETIC_LABEL + text)
 
 
 class ServiceUnavailable(RuntimeError):
@@ -28,15 +73,45 @@ class ServiceUnavailable(RuntimeError):
 class MusicService:
     """Coordinate command use cases with an injected worker-local repository."""
 
-    def __init__(self, repository: MusicRepository, submission_repository: SubmissionRepository | None = None) -> None:
+    def __init__(self, repository: MusicRepository, submission_repository: SubmissionRepository | None = None,
+                 synthetic_exchange: bool = False) -> None:
         """@description: Keep Discord-independent business operations injectable for tests.
         @param self: Application service instance.
         @param repository: Synchronous persistence collaborator, including test replacements.
         @param submission_repository: Optional Batch B public intake boundary; mandatory at private startup.
+        @param synthetic_exchange: Explicit acceptance-only switch that routes /exchange to the labelled synthetic flow; never set by production startup.
         @return: None.
         """
         self.submission_repository = submission_repository  # [Beta persistence]: Never instantiate a second service or award worker.
         self.repository = repository  # [persistence boundary]: Complete operations run in workers.
+        self._synthetic_exchange = synthetic_exchange  # [explicit acceptance route]: Off unless the caller selects it.
+
+    @property
+    def synthetic_exchange_enabled(self) -> bool:
+        """@description: Tell the Discord layer whether /exchange is routed to the labelled synthetic acceptance flow.
+        @param self: Application service instance.
+        @return: True only for an explicitly selected synthetic acceptance service.
+        """
+        return self._synthetic_exchange and self.submission_repository is not None
+
+    async def synthetic_exchange(self, discord_user_id: int, request_key: str, sender: Any, replier: Any) -> Any:
+        """@description: Run the exchange, delivery and refund flow over the injected repository, labelling every message as synthetic.
+        @param self: Application service with the explicit synthetic route enabled.
+        @param discord_user_id: Requesting user.
+        @param request_key: Technical idempotency key for retries.
+        @param sender: Direct-message adapter, awaited on the event loop.
+        @param replier: Ephemeral reply adapter, awaited on the event loop.
+        @return: Flow result whose reply text starts with the synthetic label.
+        """
+        if not self.synthetic_exchange_enabled:
+            raise ServiceUnavailable("交換功能尚未開放。")
+        try:
+            flow = await exchange_and_deliver(self.submission_repository, _LabelledSender(sender), _LabelledReplier(replier),
+                                              discord_user_id, request_key, random.Random(), datetime.now(timezone.utc))
+            return replace(flow, reply_text=SYNTHETIC_LABEL + flow.reply_text)  # [labelled result]: The returned text is labelled too, not only the sent copy.
+        except (pymysql.MySQLError, CommitOutcomeUnknown, PersistenceNotReady):
+            LOGGER.error("Synthetic exchange stopped at persistence boundary")  # [no payload]: Class-level only.
+            return ExchangeFlowResult(SYNTHETIC_LABEL + "資料服務暫時無法使用，本次交換未完成，請稍後再試。", False, None, None, None)
 
     async def share(self, discord_user_id: int, source_url: str, operation_id: str | None = None) -> str:
         """@description: Save a pending attempt while withholding unapproved music verification.

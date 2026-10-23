@@ -13,6 +13,7 @@ from discord import app_commands
 
 from bot.discord_owner_review import build_owner_group
 from bot.owner_review import OwnerReviewService
+from bot.discord_exchange import DiscordDirectMessageSender, DiscordEphemeralReplier
 from bot.services import MusicService, ServiceUnavailable
 from bot.urls import InvalidVideoUrl
 
@@ -111,12 +112,18 @@ class CommandHandlers:
         await _respond(interaction, self.service.share, interaction.user.id, url, f"discord:{interaction.id}")
 
     async def exchange(self, interaction: discord.Interaction) -> None:
-        """@description: Explain the pending exchange gate without spending credits.
+        """@description: Keep the public exchange gate, or run the explicitly selected labelled synthetic flow.
         @param self: Handler routing this command.
         @param interaction: Discord request carrying the recipient identity.
         @return: None.
         """
-        await _respond(interaction, self.service.exchange, interaction.user.id)
+        if getattr(self.service, "synthetic_exchange_enabled", False) is not True:  # [strict route]: Only an explicit boolean True selects the synthetic flow.
+            await _respond(interaction, self.service.exchange, interaction.user.id)  # [production gate]: Unchanged; no debit.
+            return
+        await interaction.response.defer(ephemeral=True)  # [bounded acknowledgement]: DM work may exceed the initial response window.
+        await self.service.synthetic_exchange(interaction.user.id, f"discord:{interaction.id}",
+                                              DiscordDirectMessageSender(interaction.client),
+                                              DiscordEphemeralReplier(interaction))
 
     async def balance(self, interaction: discord.Interaction) -> None:
         """@description: Reply privately with the requesting recipient's credit balance.
