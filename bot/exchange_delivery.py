@@ -17,6 +17,7 @@ from bot.database.submission_transaction import CommitOutcomeUnknown
 
 LOGGER = logging.getLogger(__name__)
 DM_TIMEOUT_SECONDS = 20.0  # [bounded attempt]: Must stay far below DELIVERY_LEASE so a live attempt is never mistaken for a lost one.
+PENDING_REVIEW_TEXT = "你有一筆交換尚待確認（已保留但尚未派送），目前暫停新的交換。請聯絡 Owner 處理。"  # [owner contact]: No link, no balance detail.
 NO_CANDIDATE_TEXT = "目前沒有符合條件的歌曲"  # [reviewed wording]: S25 reply when no eligible song exists; nothing is charged.
 INSUFFICIENT_TEXT = "點數不足，交換一首歌曲需要 1 Nickel。"  # [reviewed wording]: Shown before any candidate work is reported.
 
@@ -28,6 +29,7 @@ class DeliveryStatus(Enum):
     FAILED = "failed"  # [proven unsent]: Refund is attempted by the same flow and recorded separately.
     UNCERTAIN = "uncertain"  # [unknown outcome]: Kept with its association; never refunded or resent automatically.
     IN_PROGRESS = "in_progress"  # [claimed elsewhere]: Another attempt owns the delivery; this entry sends nothing.
+    HELD = "held_for_review"  # [compensation incident]: The order is held for the Owner; nothing is sent and nothing is refunded here.
 
 
 class DmKind(Enum):
@@ -119,7 +121,8 @@ class ExchangeFlowResult:
 
 _KIND_TO_STATE = {DmKind.DELIVERED: "delivered", DmKind.NOT_SENT: "failed", DmKind.UNKNOWN: "uncertain"}
 _STATE_TO_STATUS = {"delivered": DeliveryStatus.DELIVERED, "failed": DeliveryStatus.FAILED,
-                    "uncertain": DeliveryStatus.UNCERTAIN, "sending": DeliveryStatus.IN_PROGRESS}
+                    "uncertain": DeliveryStatus.UNCERTAIN, "sending": DeliveryStatus.IN_PROGRESS,
+                    "held_for_review": DeliveryStatus.HELD}
 
 
 async def deliver_recommendation(repository: Any, sender: DirectMessageSender, recommendation_id: int, now: datetime,
@@ -179,6 +182,8 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
         return await _finish(replier, ExchangeFlowResult(NO_CANDIDATE_TEXT, False, None, None, None))
     if exchange.status is ExchangeStatus.INSUFFICIENT_CREDITS:
         return await _finish(replier, ExchangeFlowResult(INSUFFICIENT_TEXT, False, None, None, None))
+    if exchange.status is ExchangeStatus.PENDING_REVIEW:
+        return await _finish(replier, ExchangeFlowResult(PENDING_REVIEW_TEXT, False, None, None, None))  # [no DM]: Nothing reserved, nothing sent.
     outcome = await deliver_recommendation(repository, sender, exchange.recommendation_id, now, new_token())
     refund = await _refund_if_unsent(repository, outcome, now)
     flow = ExchangeFlowResult(_delivery_text(outcome, refund), False, outcome.recommendation_id, outcome.status, refund)
@@ -239,6 +244,8 @@ def _delivery_text(outcome: DeliveryOutcome, refund: str | None) -> str:
         if refund == "contradiction":
             return f"私訊未能送出，此筆紀錄需人工查核，尚未退款。{code}"
         return f"私訊未能送出，退款待處理，請稍後查詢。{code}"
+    if outcome.status is DeliveryStatus.HELD:
+        return f"此訂單待 Owner 處理，目前未派送，也未重複扣點；請聯絡 Owner。{code}"  # [never delivered]: Not reported as sent.
     if outcome.status is DeliveryStatus.UNCERTAIN:
         return f"私訊送出結果未知，系統已保留此筆紀錄，不會自動重送；扣點與交付待確認。{code}"
     return f"此交換仍在交付中，請稍後查詢，不會重複送出。{code}"

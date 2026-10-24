@@ -4,8 +4,10 @@ Construction performs no I/O; an explicit injected connection factory is invoked
 """
 
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import closing, contextmanager
+import logging
 from dataclasses import replace
+from datetime import datetime, timezone
 from random import Random
 from typing import Any
 
@@ -23,6 +25,12 @@ from bot.database.exchange_delivery_store import (
     user_results,
 )
 from bot.database.exchange_reservation import ExchangeOutcome, reserve_exchange
+from bot.database.compensation_schema import CompensationDisabled, require_schema
+from bot.database.compensation_store import (
+    approve_incident, claim_grant, record_not_system_fault, expire_grant_claims, open_grants, record_grant_delivery,
+    pending_incident_rows, record_owner_disposition, settle_incident, user_incident_summary, close_non_fault_refund,
+)
+from bot.database.pending_review import owner_stranded_rows
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import (
     PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, apply_reexamination, apply_review,
@@ -44,20 +52,24 @@ from bot.submission_workflow import SubmissionRequest, SubmissionResult
 from bot.version_identity import VersionAssignment, VersionExclusion, VersionIdentityStatus, require_reference
 
 
+LOGGER = logging.getLogger(__name__)  # [sweep diagnostics]: Class names and reservation identifiers only.
+
 class SubmissionRepository:
     """Own complete synchronous transactions without changing the existing Discord-facing MusicRepository."""
 
-    def __init__(self, connection_factory: Callable[[], Any], owner_discord_user_id: int) -> None:
+    def __init__(self, connection_factory: Callable[[], Any], owner_discord_user_id: int, *, compensation_enabled: bool = False) -> None:
         """@description: Keep connection creation deferred and Owner identity outside user-controlled requests.
         @param self: New persistent submission boundary.
         @param connection_factory: Existing worker-local PyMySQL creator or offline fake.
         @param owner_discord_user_id: Deployment-configured Owner Discord user ID, not a role or nickname.
-        @return: None.
+            @param compensation_enabled: Feature switch, off by default; when off no compensation table is ever read or written.
+    @return: None.
         """
         if type(owner_discord_user_id) is not int or owner_discord_user_id <= 0:
             raise ValueError("A configured Owner identity is required")
         self._factory = connection_factory  # [worker connection]: Never retain or share a live connection.
         self._owner_id = owner_discord_user_id  # [authorization authority]: Must not be taken from command options.
+        self._compensation_enabled = compensation_enabled  # [feature switch]: Off by default; when off no compensation table is ever touched.
 
     def accept(self, request: SubmissionRequest) -> SubmissionResult:
         """@description: Accept one share or replay its original receipt without issuing Nickel.
@@ -126,17 +138,185 @@ class SubmissionRepository:
         with submission_transaction(self._factory) as (cursor, control):
             return settle_reward(cursor, control, operation_id)
 
-    def exchange(self, discord_user_id: int, request_key: str, rng: Random) -> ExchangeOutcome:
+    def exchange(self, discord_user_id: int, request_key: str, rng: Random, now: datetime | None = None) -> ExchangeOutcome:
         """@description: Reserve one exchange recommendation and debit one point atomically, or report why nothing changed.
         @param self: Synchronous repository boundary, not a public Discord command.
         @param discord_user_id: Authenticated requesting user.
         @param request_key: Technical idempotency key that retries must reuse.
         @param rng: Injected random source for the uniform draw.
+        @param now: Optional naive UTC clock; defaults to the current time.
         @return: Reserved, replayed or unchanged outcome from the locked transaction.
         """
         require_reference(request_key)
+        clock = now if now is not None else datetime.now(timezone.utc).replace(tzinfo=None)  # [naive UTC]: Matches the stored timestamps.
         with submission_transaction(self._factory) as (cursor, control):
-            return reserve_exchange(cursor, control, discord_user_id, request_key, rng)
+            return reserve_exchange(cursor, control, discord_user_id, request_key, rng, clock, compensation_enabled=self._compensation_enabled)
+
+    def owner_pending_reservations(self, requester_id: int, now: datetime) -> list[dict]:
+        """@description: Show the Owner the stranded reservations, refusing every other identity before any read.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the configured Owner.
+        @param now: Current time, naive UTC.
+        @return: Stranded reservation rows, bounded and without links, tokens or balances.
+        """
+        if requester_id != self._owner_id:
+            raise PermissionError("OWNER_ONLY")  # [authority]: Checked before any database work.
+        with self._compensation_transaction() as (cursor, _):
+            return owner_stranded_rows(cursor, now)
+
+    @contextmanager
+    def _compensation_transaction(self):
+        """@description: Open a gated transaction for a compensation operation only when the feature is switched on and its tables exist.
+        @param self: Synchronous repository boundary.
+        @return: Context yielding the cursor and control row of a gated transaction.
+        """
+        if not self._compensation_enabled:
+            raise CompensationDisabled("COMPENSATION_DISABLED")  # [explicit]: Refused before any database work.
+        with submission_transaction(self._factory) as (cursor, control):
+            require_schema(cursor)  # [explicit]: A missing table refuses the operation; nothing is continued.
+            yield cursor, control
+
+    def _require_owner(self, requester_id: int) -> None:
+        """@description: Refuse any identity other than the configured Owner before any database work.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request.
+        @return: None; a non-Owner raises PermissionError with a code only.
+        """
+        if requester_id != self._owner_id:
+            raise PermissionError("OWNER_ONLY")  # [authority]: Never taken from command options.
+
+    def owner_approve_incident(self, requester_id: int, recommendation_id: int, reason_code: str, now: datetime) -> dict:
+        """@description: Record the Owner's approval for one stranded reservation; repeated approvals create nothing new.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param recommendation_id: Stranded reservation.
+        @param reason_code: Reviewed reason code.
+        @param now: Current time, naive UTC.
+        @return: Incident identifier, state and whether it was created now.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return approve_incident(cursor, recommendation_id, self._owner_id, reason_code, now)
+
+    def owner_record_not_system_fault(self, requester_id: int, recommendation_id: int, reason_code: str, now: datetime) -> dict:
+        """@description: Record that a stranded reservation is not a system fault; no refund or redelivery follows, the debit stays and the block lifts.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param recommendation_id: Stranded reservation.
+        @param reason_code: Reviewed reason code.
+        @param now: Current time, naive UTC.
+        @return: Incident identifier and state.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return record_not_system_fault(cursor, recommendation_id, self._owner_id, reason_code, now)
+
+    def owner_settle_incident(self, requester_id: int, incident_id: int, redelivery_approved: bool, now: datetime) -> dict:
+        """@description: Atomically refund the bound original debit once and record the Owner's separate redelivery decision.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param incident_id: Approved incident.
+        @param redelivery_approved: Whether to issue the free redelivery grant; declining it still refunds.
+        @param now: Current time, naive UTC.
+        @return: Settlement outcome.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return settle_incident(cursor, incident_id, redelivery_approved, now)
+
+    def owner_record_disposition(self, requester_id: int, grant_id: int, disposition: str, now: datetime) -> dict:
+        """@description: Record the Owner's closing decision for a not-sent or unknown grant without changing the delivery fact.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param grant_id: Grant being closed.
+        @param disposition: Reviewed closing decision.
+        @param now: Current time, naive UTC.
+        @return: Grant identifier and whether the song remains held.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return record_owner_disposition(cursor, grant_id, self._owner_id, disposition, now)
+
+    def owner_open_grants(self, requester_id: int, now: datetime) -> list[dict]:
+        """@description: Show the Owner the open compensation grants, with identifiers, state, times and an overdue flag only.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param now: Current time, naive UTC, used only for the overdue flag.
+        @return: Bounded list of open grants.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return open_grants(cursor, now)
+
+    def owner_user_incident_summary(self, requester_id: int, user: int) -> list[dict]:
+        """@description: Show the Owner one requester's most recent incidents for manual judgement; no score or automatic limit is computed.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param user: Requester whose incidents are shown.
+        @return: Up to ten recent incidents with state, grant state and delivery fact.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return user_incident_summary(cursor, user)
+
+    def owner_close_non_fault_refund(self, requester_id: int, incident_id: int, confirmed_undelivered: bool, now: datetime) -> dict:
+        """@description: Close a not-system-fault incident by refunding its original debit once, only when the Owner confirmed non-delivery; no free redelivery is created.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param incident_id: Not-system-fault incident.
+        @param confirmed_undelivered: Explicit confirmation that the original order was never delivered; no default.
+        @param now: Current time, naive UTC.
+        @return: Outcome and the refund ledger identifier.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return close_non_fault_refund(cursor, incident_id, self._owner_id, confirmed_undelivered, now)
+
+    def owner_pending_incidents(self, requester_id: int, now: datetime) -> list[dict]:
+        """@description: Show the Owner the incidents still awaiting a decision (approved, or judged not a system fault), with an overdue flag only.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param now: Current time, naive UTC, used only for the overdue flag.
+        @return: Bounded list of pending incidents.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return pending_incident_rows(cursor, now)
+
+    def owner_expire_grant_claims(self, requester_id: int, now: datetime) -> int:
+        """@description: Turn expired grant claims into unknown deliveries; nothing is sent again.
+        @param self: Synchronous repository boundary.
+        @param requester_id: Identity making the request; must be the Owner.
+        @param now: Current time, naive UTC.
+        @return: Number of claims moved to uncertain.
+        """
+        self._require_owner(requester_id)
+        with self._compensation_transaction() as (cursor, _):
+            return expire_grant_claims(cursor, now)
+
+    def claim_grant(self, grant_id: int, claim_token: str, now: datetime) -> tuple:
+        """@description: Claim one open grant for dispatch before any direct message is attempted; a grant in any other state sends nothing.
+        @param self: Synchronous repository boundary.
+        @param grant_id: Grant to dispatch.
+        @param claim_token: Unique token of this attempt.
+        @param now: Attempt start time, naive UTC.
+        @return: State, and the recipient and link only for the caller that made the claim.
+        """
+        with self._compensation_transaction() as (cursor, _):
+            return claim_grant(cursor, grant_id, claim_token, now)
+
+    def record_grant_delivery(self, grant_id: int, claim_token: str, result: str, message_id: int | None, now: datetime) -> str:
+        """@description: Record the classified result of one grant dispatch against the claim that made the attempt.
+        @param self: Synchronous repository boundary.
+        @param grant_id: Dispatched grant.
+        @param claim_token: Token of the claim that performed the attempt.
+        @param result: One of sent, not_sent or unknown.
+        @param message_id: Accepted message identifier, or None.
+        @param now: Result time, naive UTC.
+        @return: Stored grant state.
+        """
+        with self._compensation_transaction() as (cursor, _):
+            return record_grant_delivery(cursor, grant_id, claim_token, result, message_id, now)
 
     def claim_delivery(self, recommendation_id: int, claim_token: str, now: Any) -> tuple:
         """@description: Move one reserved exchange recommendation to sending under this attempt's token before any DM is attempted.
@@ -147,7 +327,7 @@ class SubmissionRepository:
         @return: Current status, message identifier, and a claim only for this caller.
         """
         with submission_transaction(self._factory) as (cursor, _):
-            return claim_reservation(cursor, recommendation_id, claim_token, now)
+            return claim_reservation(cursor, recommendation_id, claim_token, now, guard_incidents=self._compensation_enabled)
 
     def record_delivery(self, claim: DeliveryClaim, status: str, message_id: int | None, delivered_at: Any) -> str:
         """@description: Record the classified outcome of one claimed direct-message attempt, never overwriting a newer state.
@@ -184,8 +364,10 @@ class SubmissionRepository:
                 with submission_transaction(self._factory) as (cursor, _):
                     outcomes.append(refund_undelivered(cursor, recommendation_id, now))
             except RefundContradiction:
+                LOGGER.error("Refund sweep contradiction: reservation needs human review; nothing refunded")  # [explicit]: Never skipped silently.
                 outcomes.append(RefundOutcome("contradiction", 0))  # [stop]: Human review; nothing is credited or released.
-            except Exception:
+            except Exception as error:
+                LOGGER.error("Refund sweep deferred one reservation: %s", type(error).__name__)  # [class only]: Nothing is released or credited here.
                 outcomes.append(RefundOutcome("pending", 0))  # [retry later]: Nothing is released or credited here.
         return outcomes
 

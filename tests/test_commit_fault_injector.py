@@ -155,3 +155,40 @@ def test_unknown_mode_is_refused_before_any_wrapping() -> None:
     """
     with pytest.raises(ValueError):
         FaultInjectingConnection(RecordingConnection(), "lost_ack_after_comit")
+
+
+class RecordingRepository:
+    """Record which named operations reach this repository, without any database."""
+
+    def __init__(self, name: str, calls: list) -> None:
+        """@description: Name the repository and share the call log.
+        @param name: Label recorded with each call.
+        @param calls: Shared list of (label, operation) records.
+        @return: None.
+        """
+        self._name = name
+        self._calls = calls
+
+    def __getattr__(self, operation: str):
+        """@description: Return a function that records the operation under this repository's label.
+        @param operation: Operation name requested by the caller.
+        @return: Recording function.
+        """
+        def record(*args, **kwargs):
+            self._calls.append((self._name, operation))
+        return record
+
+
+def test_operation_router_sends_only_the_named_operation_to_the_faulted_repository() -> None:
+    """@description: Only the exchange operation reaches the faulted repository, so a fault can target the reservation commit and nothing earlier.
+    @return: None.
+    """
+    from tests.commit_fault_injector import OperationRouter
+    calls: list = []
+    router = OperationRouter(RecordingRepository("faulted", calls), RecordingRepository("clean", calls), "exchange")
+    router.recover_interrupted_deliveries("t")
+    router.retry_pending_refunds("t")
+    router.exchange(1, "key", None)
+    router.claim_delivery(7, "token", "t")
+    assert calls == [("clean", "recover_interrupted_deliveries"), ("clean", "retry_pending_refunds"),
+                     ("faulted", "exchange"), ("clean", "claim_delivery")]

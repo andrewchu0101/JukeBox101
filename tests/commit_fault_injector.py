@@ -101,3 +101,26 @@ class _FaultCursor:
         @return: The real cursor's attribute.
         """
         return getattr(self._cursor, name)
+
+
+class OperationRouter:
+    """Send one named repository operation to the faulted repository and every other operation to the clean one. Test-only."""
+
+    def __init__(self, faulted, clean, operation: str) -> None:
+        """@description: Bind the two repositories and the single operation that may carry the fault.
+        @param faulted: Repository whose first connection carries the fault.
+        @param clean: Repository used by every other operation, including the lease sweep and refund sweep.
+        @param operation: Name of the one operation routed to the faulted repository.
+        @return: None.
+        """
+        self._faulted = faulted
+        self._clean = clean
+        self._operation = operation
+
+    def __getattr__(self, name: str):
+        """@description: Resolve each operation name to the repository that owns the fault stage.
+        @param name: Operation name requested by the caller.
+        @return: The attribute of the selected repository.
+        """
+        target = self._faulted if name == self._operation else self._clean
+        return getattr(target, name)

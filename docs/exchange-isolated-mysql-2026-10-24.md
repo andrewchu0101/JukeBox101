@@ -569,3 +569,142 @@ S1 的六個案例已驗證，但不等於交換所有可能路徑或正式上�
 > 執行後：正常 SHUTDOWN，確認 3307 無 Listen 狀態（TIME_WAIT 不算），保留資料目錄與證據檔，新輸出使用新檔名（建議 `pytest-unknown-commit.log`、`unknown-commit-report.json`）。
 >
 > 判定：只有實機執行的 passed 與斷言結果可作為通過依據；離線結果不得作為實機通過的依據。
+
+## checkpoint 4f1e3f1 的 22 項實機驗證（2026-10-24）
+
+**性質**：在既有隔離 3307 實例上，以 checkpoint `4f1e3f1` 的乾淨快照驗證 22 項 MySQL 測試。**結果：21 passed、1 failed，退出碼 1。** 失敗的是呼叫端案例，原因是測試的故障路由錯誤（已在離線修正，尚未實機重驗）。未放寬任何斷言，未反覆重跑。
+
+### 測試來源
+
+- 快照：`git archive 4f1e3f1` 匯出至 `.local/mysql-test/snapshots/4f1e3f1/`（由 Git 忽略，不含 `.git`，不含 `.env`、憑證或資料目錄）。
+- 來源確認：啟動器在執行前斷言 `bot.exchange_delivery` 與 `tests.isolated_mysql_target` 都從快照匯入；pytest 的工作目錄為快照。
+- 資料目錄與 pin 仍指向原實例 `.local/mysql-test/20261024-122528/data`，快照路徑未被當成資料目錄。
+- 啟動器：`.local/mysql-test/verify_checkpoint_authorized.py`（新檔，未修改舊啟動器）。
+- 收集：在快照中以 `-m mysql --collect-only` 收集 **22 項**，無匯入錯誤。
+
+### 結果
+
+- 命令：`tests/test_exchange_mysql_integration.py`、`tests/test_exchange_repository_mysql.py`、`tests/test_exchange_cross_process_mysql.py`、`tests/test_unknown_commit_mysql.py`，`-m mysql -v`。
+- 收集 22，**passed 21、failed 1、skipped 0、error 0**，pytest 退出碼 1，耗時 48.04 秒。
+- 證據：`pytest-verify-4f1e3f1.log`、`verify-4f1e3f1-report.json`、`verify-4f1e3f1-console.log`（均為新檔）。
+
+**未知提交四案例逐項**
+
+| 案例 | 結果 | 說明 |
+| --- | --- | --- |
+| lost-ack：真實 COMMIT 後的客戶端故障注入 | PASSED | 第一次得 `CommitOutcomeUnknown`，注入器 `fired == 1`；同 key 重放得 `REPLAYED`，同一 rid，餘額 0，歸因通過。這是客戶端故障注入，不是真實網路中斷。 |
+| before-commit：COMMIT 之前失敗 | PASSED | 得 `CommitOutcomeUnknown`，真實回滾後前後集合不變；同 key 重試得 `RESERVED`，只保留一次。 |
+| statement：扣款插入前的語句錯誤 | PASSED | 保留原資料庫錯誤 1213，**不冒充 `CommitOutcomeUnknown`**；前後集合不變；同 key 重試得 `RESERVED`。 |
+| 呼叫端重放並派送（FakeSender） | **FAILED** | 見下方失敗分析。 |
+
+### 呼叫端案例的失敗分析（測試缺陷，非交換邏輯錯誤）
+
+- 錯誤：`pymysql 2013 injected: COMMIT completed but the acknowledgement was lost`，然後 `CommitOutcomeUnknown` 從 `recover_interrupted_deliveries` 拋出。
+- 根因：`exchange_and_deliver` 在交換之前會先執行 lease sweep，它也會開啟交易並提交。原測試把故障綁在 repository 的**第一條連線**上，因此注入的 lost-ack 落在 sweep 的 commit，而不是交換的 commit。
+- 修正（離線，未實機重驗）：新增 `OperationRouter`，只把 `exchange` 路由到故障 repository，其餘操作（包括 lease sweep 與 refund sweep）都走乾淨 repository。
+  - 離線 TDD：先寫 `test_operation_router_sends_only_the_named_operation_to_the_faulted_repository`，紅燈後實作，綠燈。
+  - 離線結果：`test_unknown_commit_mysql.py`、`test_commit_fault_injector.py`、`test_exchange_unknown_commit.py` 合計 **13 passed、4 skipped**（4 項為未開啟開關的 MySQL 案例）。
+- 修正只改測試的故障路由，沒有改正式程式，也沒有放寬任何斷言。修正後的測試檔尚未被提交，也未在 3307 上執行。
+
+### 新發現：sweep 的未知提交會讓整個請求回報未確認（正式流程，未修改）
+
+- `exchange_and_deliver` 在 `exchange` 之前的 `recover_interrupted_deliveries` 與 `retry_pending_refunds` 也會提交交易。若這兩步的提交結果未知，整個請求會以 `CommitOutcomeUnknown` 結束，**即使交換根本還沒開始**。
+- 後果：回覆「交換結果未確認，請勿重新執行」會偏保守，但不會造成重複扣點。沒有保留被建立，也沒有派送。
+- 處置：本輪不修改正式程式。可能的修正是把 sweep 與交換分開，各自處理未知結果；這需要設計決策，列為下一步之一。
+
+### baseline 雜湊失敗（獨立結論，與 22 項分開）
+
+- `tests/test_batch_b_recovery_write.py::test_contract_pins_journal_and_manifest` 在父提交 `213fb4b` 與本提交 `4f1e3f1` 的快照中，以相同命令各失敗一次（`1 failed, 35 passed`）。
+- 證據：兩者的 `docs/batch-b-recovery-manifest.json` 都是 blob `09df2f4`，sha256 `d04c4d5b2d12a43c…`；測試釘選的是 `10cf5cac90d8fa47…`，即未提交工作樹版本的雜湊。
+- 結論：這項失敗在父子提交上完全相同，與本次交換提交無關，也不是本輪引入的。本輪**沒有**更新釘選雜湊，也沒有提交那個 manifest。
+
+### 停止與清理
+
+- 伺服器正常 SHUTDOWN：`server_stopped=true`，`server_exit_code=0`，沒有 `normal_stop_timed_out`，沒有 shutdown 錯誤。
+- worker：`worker_processes_left_after_run=[]`，沒有殘留的 worker 程序。
+- 3307：沒有 Listen 狀態的監聽程序。
+- 資料清理：基線檢查通過（測試前 `recommendations=0`）。夾具的 teardown 沒有出現 ERROR，因此每個測試的合成資料都已清除。兩筆經核對的合成版本根 `(s1-original-a, s1-original-a, s1-proof-1)` 與 `(s1-original-b, s1-original-b, s1-proof-2)` 留存，屬已知限制。
+- 未觸及的程序：MySQL80 服務（PID 5040）及其子程序（PID 4956）持續執行。
+- 憑證：DPAPI 密文只讀取，未修改，明文只在記憶體中。pytest 輸出與報告未包含 password 字樣（已確認）。
+
+### 剩餘風險
+
+- 呼叫端案例尚未在實機上通過；離線修正已完成，需要一次針對性的實機重驗。
+- 兩次確認都未知時，已提交的 `reserved` 仍可能滯留，沒有恢復或補償流程。
+- sweep 的未知提交會讓整個請求回報未確認（見上）。
+- 鎖等待位置仍是推論；1205 的 lost-ack 與 before-commit 注入都是客戶端故障，不是真實網路中斷。
+- 22 項即使全數通過，也不代表恢復機制或正式上線已完成。
+
+### 下一個最小步驟
+
+1. **需要你授權的一次針對性實機重驗**：只重跑 `test_caller_replays_once_and_delivers_the_original_through_a_fake_adapter` 一項，使用修正後的測試檔（非 `4f1e3f1` 快照，而是包含路由修正的工作樹版本或新的快照）。預期：第一次 `CommitOutcomeUnknown`，注入器 `fired == 1`，重放 `REPLAYED`，一次假 DM，保留 1、餘額 0。停止條件與資料影響與先前的授權相同。
+2. 決定 sweep 與交換的未知結果是否要分開處理（設計決策，不在本輪範圍）。
+3. 在 1 完成後，才考慮提交測試路由修正（新的 commit，不 amend、不 force push）。
+
+## 測試路由修正後，呼叫端單項重驗結果（2026-10-24）
+
+**性質**：針對性重驗，只執行一項實機 MySQL 案例。**這不是同一快照、同一次執行的 22 passed。** 原始 `4f1e3f1` 的結果保留為 **21 passed、1 failed**（見上節），本節為另一個來源的單獨結果。
+
+### 1. 測試缺陷與修正
+
+- **缺陷**：呼叫端案例把故障綁在 repository 的第一條連線。`exchange_and_deliver` 在交換前會先執行 lease sweep，它也會開啟並提交交易，因此注入的 lost-ack 落在 sweep 的 commit，而不是交換的 commit。
+- **修正**：`OperationRouter`（`tests/commit_fault_injector.py`）只把 `exchange` 路由到故障 repository，lease sweep、refund sweep、派送與清理一律走乾淨 repository。
+- **審核**：
+  - 只有 `exchange` 使用故障 repository。故障連線只會被交換使用（包括重放），因此 `fired == 1` 證明故障落在交換的 commit。
+  - 沒有修改正式程式，沒有放寬任何斷言。
+  - 離線 TDD：路由測試先紅燈後綠燈；`tests/test_commit_fault_injector.py` 與 `tests/test_exchange_unknown_commit.py` 合計 13 passed（於重驗來源中執行）。
+
+### 2. 重驗來源（精確範圍）
+
+- 基底：`git archive 4f1e3f1`，即 checkpoint，`bot/` 與其餘檔案完全來自該 commit。
+- 疊加（只有三個測試檔，雜湊與工作樹相同）：
+
+| 檔案 | 4f1e3f1 的 sha256（前 16 碼） | 重驗來源（前 16 碼） |
+| --- | --- | --- |
+| `tests/commit_fault_injector.py` | `71673c1ed643c7f8` | `658164bb4875b345` |
+| `tests/test_commit_fault_injector.py` | `cf9c3fd0149d806e` | `7bf821a82787e41a` |
+| `tests/test_unknown_commit_mysql.py` | `544bbe28b1c595d0` | `ffd8c057f93bef93` |
+
+- 與 4f1e3f1 的實際差異：上述三個檔案；`bot/` 的 `.py` 檔沒有差異。
+- 來源位置：`.local/mysql-test/snapshots/4f1e3f1+route/`（由 Git 忽略，不含 `.git`）。
+- 差異內容：`test_unknown_commit_mysql.py` 只改動三行：import `OperationRouter`，把 `repository` 改為路由，並加入註解；`commit_fault_injector.py` 新增 `OperationRouter`；`test_commit_fault_injector.py` 新增路由測試。
+
+### 3. 實機執行
+
+- 啟動器：`.local/mysql-test/verify_single_route_authorized.py`（新檔，由已審核的 checkpoint 啟動器複製並替換來源與節點）。它在執行前斷言：快照含 `OperationRouter`、匯入的 `bot` 與 `tests` 都來自快照、收集結果恰好一項。
+- 節點：`tests/test_unknown_commit_mysql.py::test_caller_replays_once_and_delivers_the_original_through_a_fake_adapter`。
+- 實例與帳號：同一個 127.0.0.1:3307、`jukebox101_test`、原資料目錄 `.local/mysql-test/20261024-122528/data`、既有 `jukebox101_test_exchange` 帳號。root 只用於身分核對與 SHUTDOWN。
+- 身分與基線：身分核對通過；基線為空，只保留兩筆合成版本根。
+- 收集：**1 項**，與預期相符。
+
+### 4. 結果
+
+- **1 passed in 5.03s，pytest 退出碼 0。**
+- 此案例驗證的內容：
+  - 交換 commit 之後注入客戶端故障（lost-ack），`fired == 1`。
+  - 同 key 重放得 `REPLAYED`，保留與扣款各一筆，餘額 0，全部帳務不變條件成立。
+  - 呼叫端只送出一次 FakeSender DM，派送狀態為 `DELIVERED`。
+- 證據檔（新檔）：`pytest-verify-4f1e3f1-route.log`、`verify-4f1e3f1-route-report.json`、`verify-4f1e3f1-route-console.log`。日誌與報告中沒有 password 字樣。
+
+### 5. 停止與清理
+
+- 伺服器正常 SHUTDOWN：`server_stopped=true`，`server_exit_code=0`，沒有逾時，沒有 shutdown 錯誤。
+- worker 殘留：無（`worker_processes_left_after_run=[]`）。
+- 3307：沒有 Listen 狀態的監聽程序。
+- 資料：夾具 teardown 沒有錯誤，基線檢查通過，本案例的合成資料已清除；兩筆合成版本根留存（已知限制）。
+- 未觸及的程序：MySQL80 服務持續執行。
+
+### 6. 更正文案
+
+- **1205 的性質**：S2 的超過上限案例中，1205 是**實際的 MySQL 鎖逾時**，由子程序從真實資料庫回報。它不是故障注入。
+- **lost-ack 與 before-commit 的性質**：兩者都是**故障注入**，不是真實網路中斷。
+  - lost-ack：真實 COMMIT 成功後，客戶端收到失敗。
+  - before-commit：COMMIT 之前注入失敗，未呼叫真實 commit，之後由正式流程回滾。
+- **22 項的敘述**：目前 22 個案例是**分批完成驗證**：21 項於 `4f1e3f1` 一次執行中通過，1 項（呼叫端）於路由修正來源中單獨通過。不得寫成同一快照、同一次執行的 22 passed。
+- **baseline manifest 雜湊失敗**：已證實存在於父提交 `213fb4b`（與 `4f1e3f1` 完全相同的 manifest blob `09df2f4`、sha256 `d04c4d5b…`，測試釘選 `10cf5cac…`）。這是**獨立的已知問題**，與交換測試分開。本輪沒有改動 hash，也沒有提交那個 manifest。
+
+### 7. 剩餘風險
+
+- 兩次確認都未知時，已提交的 `reserved` 可能滯留，恢復機制尚未完成（見下一份設計文件）。
+- sweep 的未知提交仍會讓整個請求回報未確認（正式流程，未修改）。
+- 22 項中只有呼叫端案例是在路由修正來源單獨執行；其餘 21 項的結果來自 `4f1e3f1`。

@@ -50,7 +50,8 @@ FIXED_TEST_LINK = "https://www.youtube.com/watch?v={video_id}"  # [reviewed fixe
 SYNTHETIC_NOTICE = "合成資料：案件只存在於此程序記憶體，不寫入 MySQL，不代表真實投稿，不動用真實點數，不實際發送 DM；連結為固定測試格式，不代表影片可播放。"
 ORIGINAL_A = "synthetic-version-a"
 ORIGINAL_B = "synthetic-version-b"
-DELIVERY_LABELS = {"delivered": "已交付（合成）", "failed": "未送出（注入）", "uncertain": "結果未知（注入，保留）", "sending": "交付中"}
+DELIVERY_LABELS = {"delivered": "已交付（合成）", "failed": "未送出（注入）", "uncertain": "結果未知（注入，保留）", "sending": "交付中",
+                 "reserved": "已保留，待確認（尚未派送）"}  # [reserved]: Never claimed; shown as awaiting confirmation, not as delivered.
 REFUND_LABELS = {"refunded": "已退回 1 點", "pending": "退款待處理", "none": "無退款"}
 
 

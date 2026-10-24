@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+from bot.database.compensation_schema import require_schema
 from bot.database.reward_settlement import lock_reconciled_account
 
 DELIVERY_LEASE = timedelta(minutes=10)  # [single-process lease]: A sending row younger than this may still be owned by a live worker.
@@ -31,12 +32,13 @@ class DeliveryClaim:
     youtube_url: str  # [delivery link]: Verified at reservation time and never recomputed here.
 
 
-def claim_reservation(cursor: Any, recommendation_id: int, claim_token: str, now: datetime) -> tuple[str, int | None, DeliveryClaim | None]:
+def claim_reservation(cursor: Any, recommendation_id: int, claim_token: str, now: datetime, guard_incidents: bool = False) -> tuple[str, int | None, DeliveryClaim | None]:
     """@description: Move one reserved recommendation to sending under this attempt's token, or report its current state without any new send.
     @param cursor: Cursor inside the locked transaction.
     @param recommendation_id: Reservation identifier from the exchange result.
     @param claim_token: Unique token of this attempt.
     @param now: Time the attempt started, used by the restart lease.
+    @param guard_incidents: Refuse the claim while the reservation belongs to a compensation incident; only a switched-on repository sets it.
     @return: Current status, message identifier, and a claim only when this call moved it to sending.
     """
     cursor.execute("SELECT r.status,r.discord_message_id,r.discord_user_id,s.youtube_url FROM recommendations r "
@@ -46,11 +48,38 @@ def claim_reservation(cursor: Any, recommendation_id: int, claim_token: str, now
         raise ValueError("Unknown exchange reservation")
     if row["status"] != "reserved":
         return row["status"], row["discord_message_id"], None
+    if guard_incidents:
+        require_schema(cursor)  # [explicit]: A guarded claim never proceeds on a schema without the incident table.
+    if guard_incidents and _has_incident(cursor, recommendation_id):
+        _record_hold(cursor, recommendation_id, now)  # [audit]: Every held claim leaves an event; the incident row is the only link.
+        return "held_for_review", None, None  # [Owner decision pending or not a system fault]: The original order is never claimed while an incident exists; nothing is sent.
     cursor.execute("UPDATE recommendations SET status='sending',claim_token=%s,claimed_at=%s "
                    "WHERE recommendation_id=%s AND status='reserved'", (claim_token, now, recommendation_id))
     if cursor.rowcount != 1:
         raise DeliveryStateMismatch("Reservation changed during claim")  # [atomic claim]: Never a silent second sender.
     return "sending", None, DeliveryClaim(recommendation_id, claim_token, row["discord_user_id"], row["youtube_url"])
+
+
+def _record_hold(cursor: Any, recommendation_id: int, now: datetime) -> None:
+    """@description: Append one audit event to the incident of a held reservation, inside the same gated transaction as the refusal.
+    @param cursor: Cursor inside the locked transaction.
+    @param recommendation_id: Reservation whose claim was held.
+    @param now: Time of the refusal, naive UTC.
+    @return: None.
+    """
+    cursor.execute("INSERT INTO exchange_incident_events (incident_id, action, actor, at, detail) "
+                   "SELECT incident_id, 'claim_held', NULL, %s, 'original_order' FROM exchange_incidents WHERE recommendation_id = %s",
+                   (now, recommendation_id))
+
+
+def _has_incident(cursor: Any, recommendation_id: int) -> bool:
+    """@description: Tell whether the reservation belongs to a compensation incident, checked inside the claim's gated transaction.
+    @param cursor: Cursor inside the locked transaction.
+    @param recommendation_id: Reservation under claim.
+    @return: True when any incident, in any state, refers to this reservation.
+    """
+    cursor.execute("SELECT 1 FROM exchange_incidents WHERE recommendation_id = %s LIMIT 1", (recommendation_id,))
+    return cursor.fetchone() is not None
 
 
 def record_result(cursor: Any, claim: DeliveryClaim, status: str, message_id: int | None, delivered_at: Any) -> str:

@@ -4,9 +4,11 @@ This fake checks application write coordination and failure recovery, not MySQL 
 """
 
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
 from threading import RLock
+
+from bot.database.compensation_schema import SCHEMA_SPEC
 
 TABLES = ("users", "songs", "credit_ledger", "jb2_versions", "jb2_videos", "jb2_legacy", "jb2_events",
           "jb2_receipts", "jb2_claims", "jb2_settlements", "jb2_review_history", "jb2_evidence", "jb2_decisions",
@@ -137,6 +139,7 @@ class FakeCursor:
         self.rows = []  # [query result]: Explicit dictionaries matching DictCursor output.
         self.rowcount = 0  # [affected rows]: Checked by the production balance update.
         self.lastrowid = 0  # [generated identifier]: Never used as acceptance order.
+        self.description = None  # [column names]: Set only by the reviewed-schema probe that the compensation guard runs.
 
     def __enter__(self) -> "FakeCursor":
         """@description: Match the production connection's cursor lifetime protocol.
@@ -166,6 +169,8 @@ class FakeCursor:
         self.rowcount = 1
         self.rows = []
         if statement.startswith("SET "):
+            return
+        if _answer_schema_probe(self, statement, parameters):
             return
         if statement.startswith("SELECT * FROM jb2_control"):
             self.connection.acquire()
@@ -197,6 +202,26 @@ class FakeCursor:
         @return: Current complete fake query result.
         """
         return self.rows
+
+
+def _answer_schema_probe(cursor: "FakeCursor", statement: str, parameters: tuple) -> bool:
+    """@description: Answer the compensation guard's catalogue probes from the reviewed specification, so a fake worker runs the real guard.
+    @param cursor: Fake cursor receiving the probe.
+    @param statement: Probe statement text.
+    @param parameters: Bound values; the table name for catalogue probes.
+    @return: True when the statement was a schema probe and has been answered.
+    """
+    if statement.startswith("SELECT * FROM exchange_") and statement.endswith("LIMIT 0"):
+        table = statement.split()[3]
+        cursor.description = [(name,) for name in SCHEMA_SPEC[table]["columns"]]
+        return True
+    if "information_schema.STATISTICS" in statement:
+        cursor.rows = [{"index_name": "_".join(keys), "column_name": column} for keys in SCHEMA_SPEC[parameters[0]]["unique"] for column in keys]
+        return True
+    if "information_schema.TABLE_CONSTRAINTS" in statement:
+        cursor.rows = [{"name": name} for name in SCHEMA_SPEC[parameters[0]]["checks"]]
+        return True
+    return False
 
 
 def _claim_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[dict]:
@@ -240,6 +265,19 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
         return [row for row in connection.working["credit_ledger"].values() if row.get("recommendation_id") == parameters[0]]
     if "FROM recommendations r JOIN songs s" in sql:
         return _claim_reservation_rows(connection, parameters[0])
+    if sql.startswith("SELECT 1 FROM exchange_"):  # [claim guard]: The offline fake has no incident rows, so the guard sees none.
+        return []
+    if "exchange_redelivery_grants" in sql:  # [compensation grants]: The offline fake keeps no grants, so the queries see none.
+        return [{"total": 0}] if "COUNT(*)" in sql else []
+    if "AND status='reserved' AND claim_token IS NULL" in sql and "discord_user_id=%s" in sql:
+        threshold = parameters[1]  # [stranded check]: Same predicate as the production block, counted for one requester.
+        return [{"total": sum(1 for row in connection.working["recommendations"].values()
+                              if row["discord_user_id"] == parameters[0] and _unclaimed_before(row, threshold))}]
+    if sql.startswith("SELECT recommendation_id,discord_user_id,song_id,created_at FROM recommendations WHERE status='reserved'"):
+        threshold, limit = parameters  # [owner list]: Oldest stranded rows first, bounded like the production query.
+        rows = sorted((row for row in connection.working["recommendations"].values() if _unclaimed_before(row, threshold)),
+                      key=lambda row: row["recommendation_id"])
+        return [{key: row[key] for key in ("recommendation_id", "discord_user_id", "song_id", "created_at")} for row in rows[:limit]]
     if "FROM recommendations WHERE discord_user_id=%s" in sql:
         return [row for row in connection.working["recommendations"].values() if row["discord_user_id"] == parameters[0]]
     if "FROM credit_ledger l JOIN recommendations" in sql:
@@ -270,6 +308,15 @@ def _claim_reservation_rows(connection: FakeConnection, recommendation_id: int) 
     song = next(row for row in connection.working["songs"].values() if row["song_id"] == reservation["song_id"])
     return [{"status": reservation["status"], "discord_message_id": reservation["discord_message_id"],
              "discord_user_id": reservation["discord_user_id"], "youtube_url": song["youtube_url"]}]
+
+
+def _unclaimed_before(row: dict, threshold) -> bool:
+    """@description: Apply the production stranded predicate to one fake reservation row.
+    @param row: Fake reservation row.
+    @param threshold: Creation cutoff, strictly earlier than which a row is stranded.
+    @return: True when the row is reserved, never claimed, not released and created before the cutoff.
+    """
+    return row["status"] == "reserved" and row["claim_token"] is None and row["released_at"] is None and row["created_at"] < threshold
 
 
 def _update_recommendations(state: dict, sql: str, parameters: tuple) -> int:
@@ -469,7 +516,8 @@ def _insert_defaults(connection: FakeConnection, table: str, row: dict, paramete
     if table in ("credit_ledger", "jb2_evidence", "jb2_exceptions", "recommendations"):
         row[PRIMARY_KEYS[table]] = len(connection.working[table]) + 1
     if table == "recommendations":
-        row.update(discord_message_id=None, delivered_at=None, claim_token=None, claimed_at=None, released_at=None)
+        row.update(discord_message_id=None, delivered_at=None, claim_token=None, claimed_at=None, released_at=None,
+                   created_at=datetime.now(timezone.utc).replace(tzinfo=None))  # [creation time]: Real naive UTC, as the reservation insert would stamp it.
     if table == "songs":
         row["song_id"] = len(connection.working[table]) + 1
     if table == "users":

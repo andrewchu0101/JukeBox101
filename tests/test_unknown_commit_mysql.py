@@ -23,7 +23,7 @@ from bot.database.exchange_reservation import ExchangeStatus
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown
 from bot.exchange_delivery import DeliveryStatus, exchange_and_deliver
-from tests.commit_fault_injector import FaultInjectingConnection
+from tests.commit_fault_injector import FaultInjectingConnection, OperationRouter
 from tests.financial_invariants import attribution_violations
 from tests.isolated_mysql_target import ISOLATION_SWITCH, open_verified_connection
 from tests.test_exchange_mysql_integration import USER_A, fixture_footprint, fixture_snapshot, isolated
@@ -148,7 +148,8 @@ def test_caller_replays_once_and_delivers_the_original_through_a_fake_adapter(fu
             return wrapped
         return connection
 
-    repository = SubmissionRepository(factory, OWNER_ID)
+    faulted = SubmissionRepository(factory, OWNER_ID)
+    repository = OperationRouter(faulted, clean_repository(target), "exchange")  # [stage]: Only the reservation commit carries the fault; the lease and refund sweeps run clean.
     sender, replier = FakeSender(), FakeReplier()
     flow = asyncio.run(exchange_and_deliver(repository, sender, replier, USER_A, "s-caller-replay",
                                                           random.Random(1), datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc),
