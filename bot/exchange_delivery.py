@@ -13,6 +13,7 @@ from typing import Any, Callable, Protocol
 
 from bot.database.exchange_delivery_store import RefundContradiction
 from bot.database.exchange_reservation import ExchangeStatus
+from bot.database.submission_transaction import CommitOutcomeUnknown
 
 LOGGER = logging.getLogger(__name__)
 DM_TIMEOUT_SECONDS = 20.0  # [bounded attempt]: Must stay far below DELIVERY_LEASE so a live attempt is never mistaken for a lost one.
@@ -173,7 +174,7 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
     """
     await asyncio.to_thread(repository.recover_interrupted_deliveries, now)  # [lease sweep]: Expired sending rows are found on the next request too.
     await asyncio.to_thread(repository.retry_pending_refunds, now)  # [refund retry]: A failed earlier refund is retried, still once.
-    exchange = await asyncio.to_thread(repository.exchange, discord_user_id, request_key, rng)  # [reservation first]: Debit and reservation commit together.
+    exchange = await _exchange_with_one_replay(repository, discord_user_id, request_key, rng)  # [reservation first]: Debit and reservation commit together.
     if exchange.status is ExchangeStatus.NO_CANDIDATE:
         return await _finish(replier, ExchangeFlowResult(NO_CANDIDATE_TEXT, False, None, None, None))
     if exchange.status is ExchangeStatus.INSUFFICIENT_CREDITS:
@@ -182,6 +183,25 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
     refund = await _refund_if_unsent(repository, outcome, now)
     flow = ExchangeFlowResult(_delivery_text(outcome, refund), False, outcome.recommendation_id, outcome.status, refund)
     return await _finish(replier, flow)
+
+
+async def _exchange_with_one_replay(repository: Any, discord_user_id: int, request_key: str, rng: Any):
+    """@description: Repeat the same durable request once after an unknown commit, so a commit that already happened is found by its key instead of debited again.
+    @param repository: Repository exposing the exchange transition.
+    @param discord_user_id: Requesting user.
+    @param request_key: Durable technical identity, reused unchanged for the replay.
+    @param rng: Injected random source.
+    @return: Exchange outcome of the attempt that confirmed the durable state.
+    """
+    try:
+        return await asyncio.to_thread(repository.exchange, discord_user_id, request_key, rng)
+    except CommitOutcomeUnknown as first_unknown:
+        try:
+            return await asyncio.to_thread(repository.exchange, discord_user_id, request_key, rng)  # [same key, fresh connection]: Exactly one repeat.
+        except Exception as replay_error:
+            unknown = CommitOutcomeUnknown("Replay after an unknown commit did not confirm the outcome")
+            unknown.add_note(f"replay failed with {type(replay_error).__name__}")  # [class only]: Never the message, which may echo database detail.
+            raise unknown from first_unknown  # [original kept]: The first unknown commit remains the cause.
 
 
 async def _refund_if_unsent(repository: Any, outcome: DeliveryOutcome, now: datetime) -> str | None:

@@ -109,7 +109,10 @@ class MusicService:
             flow = await exchange_and_deliver(self.submission_repository, _LabelledSender(sender), _LabelledReplier(replier),
                                               discord_user_id, request_key, random.Random(), datetime.now(timezone.utc))
             return replace(flow, reply_text=SYNTHETIC_LABEL + flow.reply_text)  # [labelled result]: The returned text is labelled too, not only the sent copy.
-        except (pymysql.MySQLError, CommitOutcomeUnknown, PersistenceNotReady):
+        except CommitOutcomeUnknown:
+            LOGGER.error("Synthetic exchange commit outcome is unknown")  # [no payload]: Class-level only.
+            return ExchangeFlowResult(SYNTHETIC_LABEL + "交換結果未確認，請勿重新執行 /exchange；稍後以 /history 查詢。", False, None, None, None)
+        except (pymysql.MySQLError, PersistenceNotReady):
             LOGGER.error("Synthetic exchange stopped at persistence boundary")  # [no payload]: Class-level only.
             return ExchangeFlowResult(SYNTHETIC_LABEL + "資料服務暫時無法使用，本次交換未完成，請稍後再試。", False, None, None, None)
 

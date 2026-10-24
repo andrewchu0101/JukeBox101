@@ -17,3 +17,5 @@ htmlcov/
 # IDE
 .vscode/
 .idea/
+# Isolated local MySQL test instance (data, logs, pid); never commit
+/.local/mysql-test/

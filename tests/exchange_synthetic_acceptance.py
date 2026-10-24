@@ -185,6 +185,7 @@ class SyntheticExchangeService:
         self._injection = injection
         self._accounts = accounts
         self._transport = GatewayAcceptanceService()
+        self._refund_fault_armed = injection == "refund_fail"  # [one refund failure]: Armed once per process so a later retry can succeed.
 
     @property
     def synthetic_exchange_enabled(self) -> bool:
@@ -214,8 +215,9 @@ class SyntheticExchangeService:
         del sender  # [no real DM]: The handler's adapter is never called in this entry.
         if discord_user_id not in self._accounts.callers:
             return await self._say(replier, ExchangeFlowResult(UNCONFIGURED_TEXT, False, None, None, None))
-        if self._injection == "refund_fail":
+        if self._refund_fault_armed:
             self._database.sql_fault = "UPDATE recommendations SET released_at"  # [one refund failure]: Pending path only.
+            self._refund_fault_armed = False
         flow = await self._exchange.synthetic_exchange(discord_user_id, request_key, InjectedDm(self._injection), _Silent())
         return await self._say(replier, replace(flow, reply_text=_exchange_text(flow)))
 

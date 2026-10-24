@@ -159,6 +159,19 @@ def test_scripted_refund_failure_is_pending_and_never_reported_as_returned() -> 
     assert "退款待處理" in history(service, OWNER)
 
 
+def test_scripted_refund_failure_is_injected_once_so_the_next_request_retries_and_refunds() -> None:
+    """@description: The refund failure fires only on the first request; the next request retries the pending refund and returns the point.
+    @param: none
+    @return: None.
+    """
+    service = entry.build_exchange_service("refund_fail", ACCOUNTS)
+    run_exchange(service, OWNER)
+    assert balance(service, OWNER).endswith("假餘額：0 點（合成資料，未動真實點數）。")
+    run_exchange(service, OWNER)
+    assert balance(service, OWNER).endswith("假餘額：1 點（合成資料，未動真實點數）。")
+    assert "已退回 1 點" in history(service, OWNER) and "退款待處理" not in history(service, OWNER)
+
+
 def test_scripted_uncertain_outcome_keeps_its_code_and_never_refunds() -> None:
     """@description: The scripted uncertain outcome shows its operation code, keeps the debit, and never refunds or resends.
     @param: none
