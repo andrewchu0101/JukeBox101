@@ -4,6 +4,7 @@ Validated settings feed explicit application boundaries without exposing credent
 """
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +12,28 @@ from dotenv import load_dotenv
 
 DEFAULT_MYSQL_PORT = 3306
 MAX_TCP_PORT = 65535
+
+
+FORMAL_EXCHANGE_ENV = "JUKEBOX_FORMAL_EXCHANGE"  # [formal /exchange switch]: Absent or a disabling value keeps the route closed; anything else refuses startup.
+_ENABLING_VALUES = frozenset({"1", "true", "yes", "on"})  # [explicit enable]: The only values that open the formal route.
+_DISABLING_VALUES = frozenset({"0", "false", "no", "off"})  # [explicit disable]: Stated closed, not merely unrecognised.
+
+
+def load_formal_exchange_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """@description: Read the formal /exchange switch so an unrecognised value can never open the route by accident.
+    @param environ: Mapping to read; None reads the process environment. No dotenv file is ever consulted here.
+    @return: True only for an explicit enabling value; False when absent or explicitly disabled.
+    """
+    source = os.environ if environ is None else environ
+    raw = source.get(FORMAL_EXCHANGE_ENV)
+    if raw is None:
+        return False  # [default closed]: The absence of the setting is the closed state.
+    value = raw.strip().lower()
+    if value in _ENABLING_VALUES:
+        return True
+    if value in _DISABLING_VALUES:
+        return False
+    raise ConfigurationError(f"{FORMAL_EXCHANGE_ENV} must be one of 1, true, yes, on, 0, false, no, off")
 
 
 class ConfigurationError(ValueError):

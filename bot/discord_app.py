@@ -112,18 +112,24 @@ class CommandHandlers:
         await _respond(interaction, self.service.share, interaction.user.id, url, f"discord:{interaction.id}")
 
     async def exchange(self, interaction: discord.Interaction) -> None:
-        """@description: Keep the public exchange gate, or run the explicitly selected labelled synthetic flow.
+        """@description: Route /exchange: the explicit synthetic flow first, then the formal flow when its switch is on, otherwise the existing fixed reply.
         @param self: Handler routing this command.
         @param interaction: Discord request carrying the recipient identity.
         @return: None.
         """
-        if getattr(self.service, "synthetic_exchange_enabled", False) is not True:  # [strict route]: Only an explicit boolean True selects the synthetic flow.
-            await _respond(interaction, self.service.exchange, interaction.user.id)  # [production gate]: Unchanged; no debit.
+        if getattr(self.service, "synthetic_exchange_enabled", False) is True:  # [strict route]: Only an explicit boolean True selects the synthetic flow first.
+            await interaction.response.defer(ephemeral=True)  # [bounded acknowledgement]: DM work may exceed the initial response window.
+            await self.service.synthetic_exchange(interaction.user.id, f"discord:{interaction.id}",
+                                                  DiscordDirectMessageSender(interaction.client),
+                                                  DiscordEphemeralReplier(interaction))
             return
-        await interaction.response.defer(ephemeral=True)  # [bounded acknowledgement]: DM work may exceed the initial response window.
-        await self.service.synthetic_exchange(interaction.user.id, f"discord:{interaction.id}",
-                                              DiscordDirectMessageSender(interaction.client),
-                                              DiscordEphemeralReplier(interaction))
+        if getattr(self.service, "formal_exchange_enabled", False) is True:  # [strict route]: Only an explicit boolean True opens the formal flow.
+            await interaction.response.defer(ephemeral=True)  # [bounded acknowledgement]: Same private deferral as the synthetic route.
+            await self.service.formal_exchange(interaction.user.id, f"discord:{interaction.id}",
+                                               DiscordDirectMessageSender(interaction.client),
+                                               DiscordEphemeralReplier(interaction))
+            return
+        await _respond(interaction, self.service.exchange, interaction.user.id)  # [production gate]: Unchanged fixed reply; no debit.
 
     async def balance(self, interaction: discord.Interaction) -> None:
         """@description: Reply privately with the requesting recipient's credit balance.

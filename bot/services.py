@@ -74,17 +74,19 @@ class MusicService:
     """Coordinate command use cases with an injected worker-local repository."""
 
     def __init__(self, repository: MusicRepository, submission_repository: SubmissionRepository | None = None,
-                 synthetic_exchange: bool = False) -> None:
+                 synthetic_exchange: bool = False, formal_exchange: bool = False) -> None:
         """@description: Keep Discord-independent business operations injectable for tests.
         @param self: Application service instance.
         @param repository: Synchronous persistence collaborator, including test replacements.
         @param submission_repository: Optional Batch B public intake boundary; mandatory at private startup.
         @param synthetic_exchange: Explicit acceptance-only switch that routes /exchange to the labelled synthetic flow; never set by production startup.
+        @param formal_exchange: Formal /exchange switch, off by default; only an exact True opens the unlabelled production route.
         @return: None.
         """
         self.submission_repository = submission_repository  # [Beta persistence]: Never instantiate a second service or award worker.
         self.repository = repository  # [persistence boundary]: Complete operations run in workers.
         self._synthetic_exchange = synthetic_exchange  # [explicit acceptance route]: Off unless the caller selects it.
+        self._formal_exchange = formal_exchange  # [formal route switch]: Off unless the deployment setting explicitly enables it.
 
     @property
     def synthetic_exchange_enabled(self) -> bool:
@@ -94,8 +96,16 @@ class MusicService:
         """
         return self._synthetic_exchange and self.submission_repository is not None
 
+    @property
+    def formal_exchange_enabled(self) -> bool:
+        """@description: Tell the Discord layer whether /exchange runs the production delivery flow; off unless explicitly enabled and a repository exists.
+        @param self: Application service instance.
+        @return: True only when the formal switch is exactly True and a submission repository is configured.
+        """
+        return self._formal_exchange is True and self.submission_repository is not None
+
     async def synthetic_exchange(self, discord_user_id: int, request_key: str, sender: Any, replier: Any) -> Any:
-        """@description: Run the exchange, delivery and refund flow over the injected repository, labelling every message as synthetic.
+        """@description: Run the labelled synthetic acceptance flow through the shared delivery program, labelling every message and reply.
         @param self: Application service with the explicit synthetic route enabled.
         @param discord_user_id: Requesting user.
         @param request_key: Technical idempotency key for retries.
@@ -105,16 +115,41 @@ class MusicService:
         """
         if not self.synthetic_exchange_enabled:
             raise ServiceUnavailable("交換功能尚未開放。")
+        return await self._run_exchange(discord_user_id, request_key, _LabelledSender(sender), _LabelledReplier(replier), SYNTHETIC_LABEL)
+
+    async def formal_exchange(self, discord_user_id: int, request_key: str, sender: Any, replier: Any) -> ExchangeFlowResult:
+        """@description: Run the production /exchange request through the same shared delivery program, without any synthetic label; refused unless the formal switch is on.
+        @param self: Application service instance.
+        @param discord_user_id: Requesting user.
+        @param request_key: Technical idempotency key for retries.
+        @param sender: Direct-message adapter, awaited on the event loop.
+        @param replier: Ephemeral reply adapter, awaited on the event loop.
+        @return: Flow result of the production delivery program.
+        """
+        if not self.formal_exchange_enabled:
+            raise ServiceUnavailable("交換功能尚未開放。")
+        return await self._run_exchange(discord_user_id, request_key, sender, replier, "")
+
+    async def _run_exchange(self, discord_user_id: int, request_key: str, sender: Any, replier: Any, label: str) -> ExchangeFlowResult:
+        """@description: Run one exchange request through the shared delivery program and map its persistence failures to fixed replies; only the label differs between routes.
+        @param self: Application service with a configured submission repository.
+        @param discord_user_id: Requesting user.
+        @param request_key: Technical idempotency key for retries.
+        @param sender: Direct-message adapter already wrapped by the caller's route.
+        @param replier: Ephemeral reply adapter already wrapped by the caller's route.
+        @param label: Prefix for every reply text; empty for the formal route.
+        @return: Flow result whose reply text carries the label prefix.
+        """
         try:
-            flow = await exchange_and_deliver(self.submission_repository, _LabelledSender(sender), _LabelledReplier(replier),
-                                              discord_user_id, request_key, random.Random(), datetime.now(timezone.utc))
-            return replace(flow, reply_text=SYNTHETIC_LABEL + flow.reply_text)  # [labelled result]: The returned text is labelled too, not only the sent copy.
+            flow = await exchange_and_deliver(self.submission_repository, sender, replier, discord_user_id, request_key,
+                                              random.Random(), datetime.now(timezone.utc))
+            return replace(flow, reply_text=label + flow.reply_text)  # [labelled result]: The prefix is applied to the returned text too.
         except CommitOutcomeUnknown:
-            LOGGER.error("Synthetic exchange commit outcome is unknown")  # [no payload]: Class-level only.
-            return ExchangeFlowResult(SYNTHETIC_LABEL + "交換結果未確認，請勿重新執行 /exchange；稍後以 /history 查詢。", False, None, None, None)
+            LOGGER.error("Exchange commit outcome is unknown")  # [no payload]: Class-level only.
+            return ExchangeFlowResult(label + "交換結果未確認，請勿重新執行 /exchange；稍後以 /history 查詢。", False, None, None, None)
         except (pymysql.MySQLError, PersistenceNotReady):
-            LOGGER.error("Synthetic exchange stopped at persistence boundary")  # [no payload]: Class-level only.
-            return ExchangeFlowResult(SYNTHETIC_LABEL + "資料服務暫時無法使用，本次交換未完成，請稍後再試。", False, None, None, None)
+            LOGGER.error("Exchange stopped at persistence boundary")  # [no payload]: Class-level only.
+            return ExchangeFlowResult(label + "資料服務暫時無法使用，本次交換未完成，請稍後再試。", False, None, None, None)
 
     async def share(self, discord_user_id: int, source_url: str, operation_id: str | None = None) -> str:
         """@description: Save a pending attempt while withholding unapproved music verification.
