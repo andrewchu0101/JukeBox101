@@ -270,3 +270,74 @@
   - `bot/__main__.py`：`c902a326f3b92a3b0f3a3347d077aa2ea0a441382d0d61f8bcdb1494a42c4f5d`
   - `bot/config.py`：`8f2943f71c7983a2b6eee3a91f78e6ebf784c151813af286dbbbdad06e401537`
   - `tests/test_formal_exchange_entry.py`：`e2fac4ff231dc2af2b2624d70234050d6af1f304f69a8de63b332d5f2679cb0a`
+
+## 10. 正式 /exchange handler 隔離整合驗證（2026-10-24，已完成，未 commit）
+
+**範圍與結論**：本節驗證的是 **正式 /exchange handler 的隔離整合**：正式 `CommandHandlers.exchange` → 正式 `MusicService` 的正式分支 → 真實 `SubmissionRepository` → 既有派送程式。**正式入口仍預設關閉，未於任何部署啟用。** 本節**不是真實 Discord 驗收**，**不驗證真實啟動流程、Discord 指令或真實 DM**，**不代表正式功能已開放**。Beta 開放範圍與補償開關未改變。
+
+### 10.1 呼叫鏈與替身
+
+```
+test: handler.exchange(interaction)                     [正式 handler，未替換]
+  -> MusicService(formal_exchange=True, synthetic 關)    [測試物件內開啟，未改部署]
+  -> MusicService.formal_exchange                        [正式分支]
+  -> _run_exchange（無標示）-> exchange_and_deliver        [既有派送程式]
+  -> SubmissionRepository（真實 MySQL 3307）              [未替換]
+  -> DiscordDirectMessageSender（正式 adapter）-> 替身 client（fetch_user / user.send 腳本化）
+  -> DiscordEphemeralReplier（正式 adapter）-> 替身 interaction（defer / followup）
+```
+
+替身只包括 Discord interaction、Discord client 與其 fetch_user／send 結果，以及回覆接收端。DM adapter 與 handler 都是正式程式碼。
+
+### 10.2 案例與結果（`exchange-handler-handler1`）
+
+| 案例 | 內容 | 結果 | 性質 |
+| --- | --- | --- | --- |
+| H-C1 | 正常交換：defer 為 ephemeral、扣點一次、DM 一次含連結、回覆無標示、無連結、ephemeral | **PASSED** | 新增覆蓋（首次即通過） |
+| H-C2 | 同一互動 key 重放：不重複扣點、不重送 DM | **PASSED** | 新增覆蓋（首次即通過） |
+| H-C3 | 補償關閉、三表存在、未結案事故阻擋：不扣點、不送 DM、回覆不含標示 | **PASSED** | 新增覆蓋（首次即通過） |
+| H-C4 | DM 明確未送（adapter 查詢失敗，GET 階段）：退款一次、釋放；重放不重複退款、不送 DM | **PASSED** | 新增覆蓋（首次即通過） |
+| H-C5 | DM 送達未知（adapter 送出後拋出）：不退款、不重送、保留歌曲 | **PASSED** | 新增覆蓋（首次即通過） |
+| 不啟用 synthetic | 本批案例中 synthetic 路由維持關閉 | **PASSED** | 新增覆蓋 |
+
+**合計：6 passed、0 failed、0 error、0 skipped**（18.03 秒）。
+
+**TDD 紀錄（如實）**：既有的正式分支與派送程式在首次隔離執行即全部通過，沒有發現缺陷，因此記為**新增覆蓋**，沒有刻意製造紅燈。handler 的離線覆蓋（預設關閉、synthetic 優先、defer 與 ephemeral 回覆、正式文字無標示）已在 `tests/test_formal_exchange_entry.py`（62 項，含 handler 測試）中覆蓋，本次實機沒有重複。
+
+**五類案例與六項測試的對應**（五類案例 H-C1–H-C5 對應五項測試；第六項是路由守衛，不是第六類案例）：
+
+| 測試函式（pytest） | 對應 | 說明 |
+| --- | --- | --- |
+| `test_c1_a_normal_request_defers_privately_debits_once_and_sends_one_message_with_no_label_in_the_reply` | H-C1 | 正常交換 |
+| `test_c2_the_same_key_replay_through_the_handler_neither_debits_nor_sends_a_second_message` | H-C2 | 同 key 重放 |
+| `test_c3_switched_off_with_the_tables_present_an_open_incident_blocks_the_handler_without_debit_or_message` | H-C3 | 補償關閉、三表存在的阻擋 |
+| `test_c4_an_explicit_not_sent_refunds_once_releases_the_song_and_a_replay_refunds_nothing_more` | H-C4 | DM 明確未送 |
+| `test_c5_an_unknown_direct_message_outcome_is_never_refunded_or_resent_and_keeps_the_song` | H-C5 | DM 送達未知 |
+| `test_the_synthetic_route_stays_off_for_every_case` | 路由守衛（非 H-C 類） | 確認本批次的 synthetic 路由關閉，服務屬性為 False |
+
+**未納入實機的項目**：正式開關關閉時的固定回覆（不執行交換或派送）沒有實機案例，只由離線測試覆蓋（`tests/test_formal_exchange_entry.py`）。
+
+**警告**：pytest 輸出 1 則 `audioop` 棄用警告，來自 Discord 套件，與本輪程式無關。
+
+### 10.3 基線、清理與停機
+
+- **基線**：身分與 datadir、UUID 一致；三表存在且定義與 B 階段 `schema-after` 一致；exchange 授權快照與 A 階段一致；三表列數為 0。未執行 DDL、未增權。
+- **清理**：6 組計畫與結果，計畫列數等於刪除數，清理後剩餘 0，被刪列都在 `900000000000000100–199`。
+- **停機**：正常 SHUTDOWN，退出碼 0，未強制；3307 無 Listen；無 mysqld 指向本 datadir；無 worker 殘留。
+- **證據位置**：`.local\mysql-test\exchange-handler-handler1\`（新目錄，未覆寫）。
+
+### 10.4 剩餘限制
+
+1. **不是真實 Discord 驗收**：interaction、client 與回覆都是替身。
+2. **真實啟動流程未驗證**：`bot/__main__.py` 的開關讀取只有離線測試，沒有實際啟動。
+3. **真實 Discord 指令未驗證**：指令註冊與 Discord 端的權限、可見性未實機確認。
+4. **真實 DM 未驗證**：DM adapter 的分類（403／50007 為 unknown）依既有決定沿用（D2），未對 Discord 語意做實機確認。
+5. **正式功能未開放**：預設關閉，Beta 範圍（D1）未改變，補償開關仍關閉。
+
+### 10.5 檔案與雜湊
+
+- **新增（測試）**：`tests/test_formal_exchange_handler_mysql.py`，SHA-256 `753e0b55e47b2eb48b89103ee674c485c496d8712acd00438b111488bebeccb9`。
+- **本地（不提交）**：`.local/mysql-test/exchange_handler_authorized.py`，SHA-256 `438dd91cc700cf7feae5e4b77f878467184faccd81e535a604f70729d0fcd20d`。
+- **未修改**：本輪沒有修改任何 `bot/` 功能程式。
+- **不提交**：`.local/` 內所有內容，以及既有無關工作（batch-B、review、decision_snapshot、ledger_integrity、私人 PDF、CRLF-only 的 compensation 測試檔）。
+- **精準提交候選**：`tests/test_formal_exchange_handler_mysql.py` 與 `docs/exchange-formal-entry-wiring-plan.md`（本節）。
