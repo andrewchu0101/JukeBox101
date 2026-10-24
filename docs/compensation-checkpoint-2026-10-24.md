@@ -1,5 +1,7 @@
 # 補償功能離線 checkpoint 收尾交接（2026-10-24）
 
+> **最新交接入口（2026-10-24，取代本文件第 6 節的「下一步」）**：完整的 D-1、D-2、D-3、claim 守衛與交換端保護、unknown-commit 實機結果、剩餘限制與提交清單，見 `docs/compensation-mysql-verification-plan.md` 第 14–17 節。本次實機結果為 **27 passed = 補償 MySQL 23 項 + unknown-commit 4 項**，與歷史分批結果不合併。補償功能仍關閉；正式 `/exchange` 與真實 DM 未驗證。
+
 **性質**：本階段收尾紀錄，取代「下一步」的現行指引；原交接 `docs/compensation-handoff-2026-10-24.md` 保留為歷史紀錄，不改寫。本文件不記錄自身的 commit SHA，SHA 以 `git log` 為準。本文件不是產品規格，也不代表功能已上線。
 
 **狀態邊界（重要）**

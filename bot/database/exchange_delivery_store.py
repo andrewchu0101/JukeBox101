@@ -38,7 +38,7 @@ def claim_reservation(cursor: Any, recommendation_id: int, claim_token: str, now
     @param recommendation_id: Reservation identifier from the exchange result.
     @param claim_token: Unique token of this attempt.
     @param now: Time the attempt started, used by the restart lease.
-    @param guard_incidents: Refuse the claim while the reservation belongs to a compensation incident; only a switched-on repository sets it.
+    @param guard_incidents: Refuse the claim while the reservation belongs to a compensation incident; set when the switch is on or the compensation tables exist.
     @return: Current status, message identifier, and a claim only when this call moved it to sending.
     """
     cursor.execute("SELECT r.status,r.discord_message_id,r.discord_user_id,s.youtube_url FROM recommendations r "

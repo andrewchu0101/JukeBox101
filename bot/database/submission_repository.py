@@ -25,7 +25,7 @@ from bot.database.exchange_delivery_store import (
     user_results,
 )
 from bot.database.exchange_reservation import ExchangeOutcome, reserve_exchange
-from bot.database.compensation_schema import CompensationDisabled, require_schema
+from bot.database.compensation_schema import CompensationDisabled, compensation_tables_present, require_schema
 from bot.database.compensation_store import (
     approve_incident, claim_grant, record_not_system_fault, expire_grant_claims, open_grants, record_grant_delivery,
     pending_incident_rows, record_owner_disposition, settle_incident, user_incident_summary, close_non_fault_refund,
@@ -327,7 +327,8 @@ class SubmissionRepository:
         @return: Current status, message identifier, and a claim only for this caller.
         """
         with submission_transaction(self._factory) as (cursor, _):
-            return claim_reservation(cursor, recommendation_id, claim_token, now, guard_incidents=self._compensation_enabled)
+            guarded = self._compensation_enabled or compensation_tables_present(cursor)  # [claim guard]: Switched on, or the tables exist; a switched-off repository still holds an open incident's original order.
+            return claim_reservation(cursor, recommendation_id, claim_token, now, guard_incidents=guarded)
 
     def record_delivery(self, claim: DeliveryClaim, status: str, message_id: int | None, delivered_at: Any) -> str:
         """@description: Record the classified outcome of one claimed direct-message attempt, never overwriting a newer state.

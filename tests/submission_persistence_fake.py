@@ -37,6 +37,10 @@ class FakeDatabase:
         self.commit_fault = None  # [failure injection]: 'before' or 'after' applying committed state.
         self.sql_fault = None  # [statement injection]: Prefix of the next statement to reject.
         self.statements = []  # [SQL audit]: Bound parameters remain inspectable synthetic values.
+        self.compensation_tables = set(SCHEMA_SPEC)  # [catalogue presence, test knob]: The reviewed three tables exist unless a test removes some.
+        self.compensation_hidden_columns = {}  # [schema knob, test only]: Table to columns the catalogue does not report.
+        self.compensation_probe_fault = False  # [probe knob, test only]: Makes the presence probe fail as a broken connection would.
+        self.grants = []  # [compensation grants, test knob]: Rows the grant queries read; empty by default.
         self.now = datetime(2026, 10, 15, 0, 0)  # [fake UTC clock]: No wall clock dependence.
 
     def connect(self) -> "FakeConnection":
@@ -213,7 +217,14 @@ def _answer_schema_probe(cursor: "FakeCursor", statement: str, parameters: tuple
     """
     if statement.startswith("SELECT * FROM exchange_") and statement.endswith("LIMIT 0"):
         table = statement.split()[3]
-        cursor.description = [(name,) for name in SCHEMA_SPEC[table]["columns"]]
+        hidden = cursor.connection.database.compensation_hidden_columns.get(table, set())
+        cursor.description = [(name,) for name in SCHEMA_SPEC[table]["columns"] if name not in hidden]
+        return True
+    if "information_schema.TABLES" in statement:
+        database = cursor.connection.database
+        if database.compensation_probe_fault:
+            raise RuntimeError("synthetic catalogue failure")
+        cursor.rows = [{"table_name": name} for name in parameters if name in database.compensation_tables]
         return True
     if "information_schema.STATISTICS" in statement:
         cursor.rows = [{"index_name": "_".join(keys), "column_name": column} for keys in SCHEMA_SPEC[parameters[0]]["unique"] for column in keys]
@@ -267,8 +278,11 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
         return _claim_reservation_rows(connection, parameters[0])
     if sql.startswith("SELECT 1 FROM exchange_"):  # [claim guard]: The offline fake has no incident rows, so the guard sees none.
         return []
-    if "exchange_redelivery_grants" in sql:  # [compensation grants]: The offline fake keeps no grants, so the queries see none.
-        return [{"total": 0}] if "COUNT(*)" in sql else []
+    if "exchange_redelivery_grants" in sql:  # [compensation grants]: Answered from the grants a test seeded for this requester.
+        grants = [row for row in connection.database.grants if row["discord_user_id"] == parameters[0]]
+        if "COUNT(*)" in sql:
+            return [{"total": sum(1 for row in grants if row["closed_at"] is None)}]
+        return [{"song_id": row["song_id"]} for row in grants if row["holds_song"] == 1]
     if "AND status='reserved' AND claim_token IS NULL" in sql and "discord_user_id=%s" in sql:
         threshold = parameters[1]  # [stranded check]: Same predicate as the production block, counted for one requester.
         return [{"total": sum(1 for row in connection.working["recommendations"].values()

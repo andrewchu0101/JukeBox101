@@ -11,7 +11,7 @@ from typing import Any
 
 from datetime import datetime
 
-from bot.database.compensation_schema import require_schema
+from bot.database.compensation_schema import compensation_tables_present, require_schema
 from bot.database.compensation_store import held_grant_song_ids, pending_block
 from bot.database.persisted_snapshot import load_snapshot
 from bot.database.reward_settlement import LedgerBalanceMismatch, current_decisions, lock_reconciled_account
@@ -49,23 +49,24 @@ def reserve_exchange(cursor: Any, control: dict, discord_user_id: int, request_k
     @param request_key: Technical idempotency key that retries must reuse.
     @param rng: Injected random source for the uniform draw.
     @param now: Naive UTC clock for the stranded-reservation check, taken inside the gate.
-    @param compensation_enabled: Feature switch; when true the stranded and open-grant block and the grant-held songs are checked, after an explicit schema check.
+    @param compensation_enabled: Feature switch; when true, or when the compensation tables exist, the stranded and open-grant block and the grant-held songs are checked, after an explicit schema check.
     @return: Reserved, replayed or unchanged outcome; a failure raises before any commit.
     """
     ledger_key = "exchange:" + hashlib.sha256(request_key.encode("utf-8")).hexdigest()  # [ledger idempotency]: Bounded and deterministic.
     replay = _replayed_outcome(cursor, ledger_key)
     if replay is not None:
         return replay
-    if compensation_enabled:
-        require_schema(cursor)  # [explicit]: Enabled compensation never runs on a schema without its tables.
-    if compensation_enabled and pending_block(cursor, discord_user_id, now):  # [block under the gate]: After the replay, so the original order is always identified first.
+    guarded = compensation_enabled or compensation_tables_present(cursor)  # [switch or tables]: With the tables present the block and the grant holds apply even while the switch is off (D-2).
+    if guarded:
+        require_schema(cursor)  # [explicit]: A guarded exchange never runs on a schema missing a table or definition.
+    if guarded and pending_block(cursor, discord_user_id, now):  # [block under the gate]: After the replay, so the original order is always identified first.
         return ExchangeOutcome(ExchangeStatus.PENDING_REVIEW, None, None)
     balance = lock_reconciled_account(cursor, discord_user_id)  # [locked spendable credits]: Checked before any candidate work.
     if balance < EXCHANGE_COST:
         return ExchangeOutcome(ExchangeStatus.INSUFFICIENT_CREDITS, None, None)
     own_versions, own_videos = _own_submissions(cursor, control, discord_user_id)  # [requester facts]: Versions and Video IDs, both checked.
     blocked = own_versions | _conflict_versions(cursor, control)  # [versions not offered]: Own submissions and conflicts.
-    candidate = draw_exchange_candidate(_settled_versions(cursor), blocked, _held_song_ids(cursor, discord_user_id, compensation_enabled), rng, own_videos)
+    candidate = draw_exchange_candidate(_settled_versions(cursor), blocked, _held_song_ids(cursor, discord_user_id, guarded), rng, own_videos)
     if candidate is None:
         return ExchangeOutcome(ExchangeStatus.NO_CANDIDATE, None, None)
     recommendation_id = _reserve(cursor, discord_user_id, ledger_key, candidate)

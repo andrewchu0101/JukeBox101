@@ -242,17 +242,21 @@ def test_with_the_switch_on_and_a_missing_table_owner_reads_refuse_explicitly(tm
 
 
 def test_the_general_exchange_path_issues_no_compensation_statement_when_the_switch_is_off(two_submitters) -> None:
-    """@description: With the switch off, an ordinary exchange and its claim never touch the compensation tables, so a deployment without them keeps working.
+    """@description: With the switch off, the exchange and the claim may only read the compensation tables for their guard (D-2, D-3) and never write to them.
     @param two_submitters: Two settled submitters with verified songs.
     @return: None.
     """
     from tests.test_exchange_reservation import exchange
+    names = ("exchange_incidents", "exchange_redelivery_grants", "exchange_incident_events")
     database, repository, _ = two_submitters
     database.statements.clear()
     outcome = exchange(repository, 101, "k-off-switch")
+    exchange_touched = [statement for statement, _ in database.statements if any(name in statement for name in names)]
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in exchange_touched), exchange_touched
+    database.statements.clear()
     repository.claim_delivery(outcome.recommendation_id, "tok-off", NOW)
-    texts = " ".join(statement for statement, _ in database.statements)
-    assert "exchange_incidents" not in texts and "exchange_redelivery_grants" not in texts
+    touched = [statement for statement, _ in database.statements if any(name in statement for name in names)]
+    assert all(statement.lstrip().upper().startswith("SELECT") for statement in touched), touched
 
 
 
@@ -273,3 +277,14 @@ def test_with_the_switch_off_and_no_compensation_tables_an_ordinary_claim_still_
     sender = RecordingSender(DmResult.delivered(990001))
     assert asyncio.run(deliver_recommendation(repo, sender, reservation, NOW, "tok-compat")).status is DeliveryStatus.DELIVERED
     assert len(sender.sent) == 1 and status_of(path, reservation) == "delivered"
+
+
+def test_switched_off_with_all_tables_present_an_open_incident_still_holds_the_claim(gate_world) -> None:
+    """@description: With the switch off and all three compensation tables present, an original order that has an open incident stays held (D-2).
+    @param gate_world: Switched-on repository over one stranded reservation and its song.
+    @return: None.
+    """
+    path, _, reservation, _ = gate_world
+    approve(path, reservation)
+    switched_off = SubmissionRepository(factory_for(path), OWNER)
+    assert switched_off.claim_delivery(reservation, "tok-switched-off", NOW)[0] == "held_for_review"

@@ -145,3 +145,21 @@ def require_schema(cursor: Any) -> None:
     dialect = _dialect(cursor)
     for table, spec in SCHEMA_SPEC.items():
         _check_table(cursor, table, spec, dialect)
+
+def compensation_tables_present(cursor: Any) -> bool:
+    """@description: Tell whether the compensation tables exist, so a switched-off claim stays guarded once they do; a partial set refuses and a failed probe propagates, so nothing is read as absent.
+    @param cursor: Cursor inside the gated transaction.
+    @return: True when all three tables exist, False when none does.
+    """
+    if _dialect(cursor) == "sqlite":
+        cursor.execute("SELECT name AS table_name FROM sqlite_master WHERE type = 'table' AND name IN (%s,%s,%s)", COMPENSATION_TABLES)
+    else:
+        cursor.execute("SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (%s,%s,%s)",
+                       COMPENSATION_TABLES)
+    present = {row["table_name"] for row in cursor.fetchall()}  # [present tables]: Only names are read; no row data.
+    if not present:
+        return False
+    missing = sorted(set(COMPENSATION_TABLES) - present)
+    if missing:
+        raise CompensationSchemaMissing(f"compensation tables partially missing: {', '.join(missing)}")
+    return True
