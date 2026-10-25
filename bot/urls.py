@@ -25,6 +25,16 @@ class YouTubeVideo:
     canonical_url: str
 
 
+def canonical_watch_url(video_id: str) -> str:
+    """@description: Build the single canonical watch address of an already validated video identifier, used as the verified delivery link.
+    @param video_id: Platform video identifier that matched the strict identifier pattern.
+    @return: Canonical https watch URL with no tracking parameters.
+    """
+    if VIDEO_ID_PATTERN.fullmatch(video_id) is None:
+        raise InvalidVideoUrl("請提供有效的 YouTube 影片網址。")
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
 def parse_youtube_url(source_url: str) -> YouTubeVideo:
     """@description: Separate video identity from tracking and untrusted hostname claims.
     @param source_url: User-provided URL retained as submission provenance.

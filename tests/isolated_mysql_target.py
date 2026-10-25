@@ -22,6 +22,9 @@ PROTECTED_PORTS = frozenset({3306})  # [protected environment]: The existing MyS
 ISOLATED_DATABASE = "jukebox101_test"  # [disposable database]: Fixed name inside the isolated instance only.
 MINIMUM_SERVER_VERSION = (8, 0, 16)  # [CHECK enforcement]: Earlier servers do not enforce the migration 003 constraints.
 PROTECTED_SOCKET_NAME = "MySQL"  # [existing pipe name]: The default pipe of the protected MySQL80 service.
+WINDOW_SWITCH = "JUKEBOX_RUN_WINDOW_N12_SCHEMA"  # [separate opt-in]: Needed in addition to the isolation switch; never implied by it.
+WINDOW_DATABASE = "jukebox101_window_n12"  # [dedicated schema]: The only extra schema, created for one approved window run.
+WINDOW_ACCOUNT = "jukebox101_test_exchange"  # [application account]: The exchange account only; administrative accounts are never accepted here.
 ENVIRONMENT_KEYS = ("TEST_ISOLATED_DB_HOST", "TEST_ISOLATED_DB_PORT", "TEST_ISOLATED_DB_USER", "TEST_ISOLATED_DB_PASSWORD",
                     "TEST_ISOLATED_DB_NAME", "TEST_ISOLATED_SERVER_UUID", "TEST_ISOLATED_RUN_DIR")  # [names only]: Values are never printed.
 
@@ -32,6 +35,7 @@ class IsolatedPin:
 
     server_uuid: str  # [instance pin]: Recorded when the isolated instance was initialised; loopback and port alone do not prove identity.
     run_dir: Path  # [run folder]: The only directory that may hold the isolated data, log and pid files.
+    database: str = ISOLATED_DATABASE  # [expected schema]: The schema the identity check must name; the default keeps existing callers on jukebox101_test.
 
 
 def normalized_path(value: str) -> str:
@@ -40,6 +44,28 @@ def normalized_path(value: str) -> str:
     @return: Normalised path text for equality and prefix checks.
     """
     return os.path.normcase(os.path.normpath(str(value)))
+
+
+def window_settings_from_environment() -> tuple[DatabaseSettings, IsolatedPin]:
+    """@description: Resolve the dedicated window schema only when both switches, the exact host and port, that schema and the exchange account are all present.
+    @param: none
+    @return: Validated settings and an identity pin naming the window schema; any other value raises before a socket is opened.
+    """
+    if os.environ.get(ISOLATION_SWITCH) != "1":
+        raise ConfigurationError("ISOLATION_NOT_AUTHORIZED")
+    if os.environ.get(WINDOW_SWITCH) != "1":
+        raise ConfigurationError("WINDOW_SCHEMA_NOT_AUTHORIZED")
+    values = {name: required_environment_value(name) for name in ENVIRONMENT_KEYS}
+    port = int(values["TEST_ISOLATED_DB_PORT"]) if values["TEST_ISOLATED_DB_PORT"].isdecimal() else -1
+    if port in PROTECTED_PORTS:
+        raise ConfigurationError("PROTECTED_PORT_REFUSED")
+    if (values["TEST_ISOLATED_DB_HOST"], port, values["TEST_ISOLATED_DB_NAME"]) != (ISOLATED_HOST, ISOLATED_PORT, WINDOW_DATABASE):
+        raise ConfigurationError("ISOLATED_DESTINATION_MISMATCH")
+    if values["TEST_ISOLATED_DB_USER"] != WINDOW_ACCOUNT:
+        raise ConfigurationError("WINDOW_ACCOUNT_REFUSED")
+    settings = DatabaseSettings(ISOLATED_HOST, port, WINDOW_ACCOUNT, values["TEST_ISOLATED_DB_PASSWORD"], WINDOW_DATABASE)
+    pin = IsolatedPin(values["TEST_ISOLATED_SERVER_UUID"].lower(), Path(values["TEST_ISOLATED_RUN_DIR"]), WINDOW_DATABASE)
+    return settings, pin
 
 
 def isolated_settings_from_environment() -> tuple[DatabaseSettings, IsolatedPin]:
@@ -84,7 +110,7 @@ def check_server_identity(identity: dict, pin: IsolatedPin) -> None:
         raise ConfigurationError("SERVER_VERSION_TOO_OLD")
     if str(identity["server_uuid"]).lower() != pin.server_uuid:
         raise ConfigurationError("SERVER_UUID_MISMATCH")
-    if identity["database_name"] != ISOLATED_DATABASE:
+    if identity["database_name"] != pin.database:
         raise ConfigurationError("DATABASE_MISMATCH")
     if normalized_path(identity["datadir"]) != normalized_path(pin.run_dir / "data"):
         raise ConfigurationError("DATADIR_NOT_ISOLATED")

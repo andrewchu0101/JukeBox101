@@ -21,6 +21,7 @@ from bot.review import (
     reopen_for_reexamination,
 )
 from bot.song_identity import VideoIdentity
+from bot.urls import canonical_watch_url
 from bot.song_judgement import ContentJudgement
 from bot.submission_workflow import SubmissionRequest, _review_request
 from bot.version_evidence import resolve_video_version
@@ -268,6 +269,7 @@ def apply_review(cursor: Any, control: dict, command: ReviewCommand) -> ReviewSn
     identity = request.identity if command.identity is None else check_identity_write(cursor, request.identity, proposed, request.identity.video)
     ensure_version(cursor, identity)
     review = _apply_transitions(cursor, request, command, identity, audit_reason(command))
+    _publish_owner_approved_link(cursor, command, request.identity.video, review)  # [same transaction]: Approval and its verified link commit or roll back together.
     _record_identity_resolution(cursor, command, identity)
     _append_content_judgement(cursor, command)
     audit_reward_history(cursor, command.actor_id, command.reason)
@@ -276,6 +278,34 @@ def apply_review(cursor: Any, control: dict, command: ReviewCommand) -> ReviewSn
     persist_decisions(cursor, current_decisions(cursor, control))
     save_decision(cursor, command.decision_id, digest, command.actor_id, audit_reason(command), review)
     return review
+
+
+class ApprovalLinkRefused(RuntimeError):
+    """Refuse an approval whose verified link cannot be published exactly once; the whole approval rolls back with it."""
+
+
+def _publish_owner_approved_link(cursor: Any, command: ReviewCommand, video: VideoIdentity, review: ReviewSnapshot) -> None:
+    """@description: Publish the confirmed video as the verified exchange link only when an Owner approval has just made the review approved; repeats of the same link are no-ops.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param command: Authenticated Owner review command whose decision identifier becomes the provenance.
+    @param video: Video of the operation, already bound to the approval by the review gate.
+    @param review: Review revision produced by this transaction.
+    @return: None; a song that cannot take the link refuses the approval and the transaction rolls back.
+    """
+    if command.approval_source is not ApprovalSource.OWNER or review.status is not ReviewStatus.APPROVED:
+        return  # [no publication]: Rejections, pending validation and duration-only revisions never publish a link.
+    link = canonical_watch_url(video.video_id)
+    cursor.execute("UPDATE songs SET resolution_status=%s, youtube_url=%s, verification_provenance=%s "
+                   "WHERE platform_track_id=%s AND platform=%s AND resolution_status='pending' AND youtube_url IS NULL",
+                   ("verified", link, f"owner_approval:{command.decision_id}", video.video_id, "youtube"))
+    if cursor.rowcount == 1:
+        return  # [single publication]: Exactly one song row changed from pending and unlinked to the approved link.
+    cursor.execute("SELECT resolution_status,youtube_url FROM songs WHERE platform_track_id=%s AND platform=%s",
+                   (video.video_id, "youtube"))
+    rows = cursor.fetchall()
+    if len(rows) == 1 and rows[0]["resolution_status"] == "verified" and rows[0]["youtube_url"] == link:
+        return  # [replayed publication]: The same link is already published; nothing is written twice.
+    raise ApprovalLinkRefused("Approval cannot publish its verified link; the approval is rolled back")
 
 
 def _require_content_subject(command: ReviewCommand, video: VideoIdentity) -> None:

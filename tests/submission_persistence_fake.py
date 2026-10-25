@@ -276,6 +276,10 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
         return [row for row in connection.working["credit_ledger"].values() if row.get("recommendation_id") == parameters[0]]
     if "FROM recommendations r JOIN songs s" in sql:
         return _claim_reservation_rows(connection, parameters[0])
+    if sql.startswith("SELECT resolution_status,youtube_url FROM songs"):  # [publish state]: Read back by the approval link.
+        track, platform = parameters
+        return [{"resolution_status": row.get("resolution_status", "pending"), "youtube_url": row.get("youtube_url")} for row in connection.working["songs"].values()
+                if row["platform_track_id"] == track and row.get("platform", "youtube") == platform]
     if sql.startswith("SELECT 1 FROM exchange_"):  # [claim guard]: The offline fake has no incident rows, so the guard sees none.
         return []
     if "exchange_redelivery_grants" in sql:  # [compensation grants]: Answered from the grants a test seeded for this requester.
@@ -534,6 +538,9 @@ def _insert_defaults(connection: FakeConnection, table: str, row: dict, paramete
                    created_at=datetime.now(timezone.utc).replace(tzinfo=None))  # [creation time]: Real naive UTC, as the reservation insert would stamp it.
     if table == "songs":
         row["song_id"] = len(connection.working[table]) + 1
+        row.setdefault("resolution_status", "pending")  # [reviewed schema default]: Intake never sets a verified link.
+        row.setdefault("youtube_url", None)
+        row.setdefault("verification_provenance", None)
     if table == "users":
         row["credit_balance"] = 0
     if table == "jb2_legacy":
@@ -568,6 +575,8 @@ def update_rows(connection: FakeConnection, sql: str, parameters: tuple) -> None
     state = connection.working  # [isolated transaction state]: Committed only by FakeConnection.commit.
     if sql.startswith("UPDATE recommendations"):
         return _update_recommendations(state, sql, parameters)
+    if sql.startswith("UPDATE songs"):
+        return _update_song(state, sql, parameters)
     if sql.startswith("UPDATE jb2_control"):
         state["control"]["revision"] += 1
         if "accepted_sequence" in sql:
@@ -586,6 +595,22 @@ def update_rows(connection: FakeConnection, sql: str, parameters: tuple) -> None
         _update_events(state, sql, parameters)
         return
     _maintenance_update(state, sql, parameters)
+
+
+def _update_song(state: dict, sql: str, parameters: tuple) -> int:
+    """@description: Apply the approval-link update to one song row, honouring its pending-and-unlinked condition as the production statement does.
+    @param state: Isolated transaction dictionaries.
+    @param sql: Production song update statement.
+    @param parameters: Status, link, provenance, track identifier and platform, in statement order.
+    @return: Number of rows matched, as the database reports it.
+    """
+    status, link, provenance, track, platform = parameters
+    matches = [row for row in state["songs"].values() if row["platform_track_id"] == track and row.get("platform", "youtube") == platform]
+    if "AND resolution_status='pending' AND youtube_url IS NULL" in sql:
+        matches = [row for row in matches if row.get("resolution_status", "pending") == "pending" and row.get("youtube_url") is None]  # [schema defaults]: Seeded rows omit unset columns.
+    for row in matches:
+        row.update(resolution_status=status, youtube_url=link, verification_provenance=provenance)
+    return len(matches)
 
 
 def _update_events(state: dict, sql: str, parameters: tuple) -> None:
