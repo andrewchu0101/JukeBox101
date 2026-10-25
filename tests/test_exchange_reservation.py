@@ -175,7 +175,8 @@ def test_a_new_request_after_success_cannot_spend_the_same_point(two_submitters)
     @return: None.
     """
     database, repository, _ = two_submitters
-    exchange(repository, 101, "exchange-first")
+    first = exchange(repository, 101, "exchange-first")
+    set_delivery_status(database, first.recommendation_id, "delivered")  # [completed delivery]: The next exchange waits until the first is delivered.
     outcome = exchange(repository, 101, "exchange-second")
     assert outcome.status is ExchangeStatus.INSUFFICIENT_CREDITS
     assert balance(database, 101) == 0 and len(database.state["recommendations"]) == 1
@@ -229,7 +230,9 @@ def test_a_song_already_held_is_excluded_while_another_eligible_version_remains(
     settled_submitter(database, service, repository, 4, ORIGINAL_A + "-second", submitter=101)  # [second point]: same requester earns another award
     verify_all_songs(database)
     first = exchange(repository, 101, "exchange-held-1")
+    set_delivery_status(database, first.recommendation_id, "delivered")  # [completed delivery]: The next exchange waits until the first is delivered.
     second = exchange(repository, 101, "exchange-held-2")
+    set_delivery_status(database, second.recommendation_id, "delivered")  # [completed delivery]: The third request is judged after the second is delivered.
     assert first.status is ExchangeStatus.RESERVED and second.status is ExchangeStatus.RESERVED
     assert first.youtube_url != second.youtube_url
     held = {row["song_id"] for row in database.state["recommendations"].values()}
@@ -237,3 +240,83 @@ def test_a_song_already_held_is_excluded_while_another_eligible_version_remains(
     third = exchange(repository, 101, "exchange-held-3")
     assert third.status is ExchangeStatus.INSUFFICIENT_CREDITS and balance(database, 101) == 0
 
+
+
+@pytest.fixture
+def three_candidates(world):
+    """@description: Give user 101 two points and leave two other-user candidates, so a second debit would be observable as a second reservation.
+    @param world: Offline database, repository and service.
+    @return: Tuple of database, repository and service after setup.
+    """
+    database, repository, service = world
+    settled_submitter(database, service, repository, 1, ORIGINAL_A)
+    settled_submitter(database, service, repository, 2, ORIGINAL_B)
+    settled_submitter(database, service, repository, 3, ORIGINAL_C)
+    settled_submitter(database, service, repository, 4, "orig-D", submitter=101)
+    verify_all_songs(database)
+    return database, repository, service
+
+
+def set_delivery_status(database, recommendation_id: int, status: str) -> None:
+    """@description: Move one reservation to a delivery state the way the delivery path would, for the fake database.
+    @param database: Offline fake database.
+    @param recommendation_id: Reservation to move.
+    @param status: Target delivery status.
+    @return: None.
+    """
+    database.state["recommendations"][recommendation_id]["status"] = status
+
+
+def test_a_new_request_key_is_refused_while_the_first_exchange_is_reserved(three_candidates) -> None:
+    """@description: A second request with a different key cannot debit or reserve while the first reservation is still unfinished.
+    @param three_candidates: Requester with two points and two other-user candidates.
+    @return: None.
+    """
+    database, repository, _ = three_candidates
+    first = exchange(repository, 101, "exchange-first")
+    assert first.status is ExchangeStatus.RESERVED
+    before = (balance(database, 101), len(database.state["credit_ledger"]), len(database.state["recommendations"]))
+    second = exchange(repository, 101, "exchange-second")
+    assert second.status is ExchangeStatus.IN_PROGRESS
+    assert (balance(database, 101), len(database.state["credit_ledger"]), len(database.state["recommendations"])) == before
+
+
+@pytest.mark.parametrize("open_status", ["sending", "uncertain"])
+def test_sending_or_uncertain_delivery_also_refuses_a_new_key_without_a_debit(three_candidates, open_status: str) -> None:
+    """@description: A delivery that is being sent or whose result is unknown keeps the requester blocked; an unknown result is never treated as finished.
+    @param three_candidates: Requester with two points and two other-user candidates.
+    @param open_status: Open delivery state under test.
+    @return: None.
+    """
+    database, repository, _ = three_candidates
+    first = exchange(repository, 101, "exchange-first")
+    set_delivery_status(database, first.recommendation_id, open_status)
+    second = exchange(repository, 101, "exchange-second")
+    assert second.status is ExchangeStatus.IN_PROGRESS
+    assert balance(database, 101) == 1 and len(database.state["recommendations"]) == 1
+
+
+def test_a_completed_delivery_allows_the_next_exchange_from_the_remaining_points(three_candidates) -> None:
+    """@description: Once the first reservation is delivered, the requester may exchange again with the point that remains.
+    @param three_candidates: Requester with two points and two other-user candidates.
+    @return: None.
+    """
+    database, repository, _ = three_candidates
+    first = exchange(repository, 101, "exchange-first")
+    set_delivery_status(database, first.recommendation_id, "delivered")
+    second = exchange(repository, 101, "exchange-second")
+    assert second.status is ExchangeStatus.RESERVED
+    assert second.recommendation_id != first.recommendation_id
+    assert balance(database, 101) == 0
+
+
+def test_the_same_request_key_replays_without_a_second_debit_while_reserved(three_candidates) -> None:
+    """@description: A technical retry of the same request returns the original reservation and never debits or reserves again.
+    @param three_candidates: Requester with two points and two other-user candidates.
+    @return: None.
+    """
+    database, repository, _ = three_candidates
+    first = exchange(repository, 101, "exchange-first")
+    replay = exchange(repository, 101, "exchange-first")
+    assert replay.status is ExchangeStatus.REPLAYED and replay.recommendation_id == first.recommendation_id
+    assert balance(database, 101) == 1 and len(database.state["recommendations"]) == 1

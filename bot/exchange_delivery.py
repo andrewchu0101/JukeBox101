@@ -19,6 +19,7 @@ LOGGER = logging.getLogger(__name__)
 DM_TIMEOUT_SECONDS = 20.0  # [bounded attempt]: Must stay far below DELIVERY_LEASE so a live attempt is never mistaken for a lost one.
 PENDING_REVIEW_TEXT = "你有一筆交換尚待確認（已保留但尚未派送），目前暫停新的交換。請聯絡 Owner 處理。"  # [owner contact]: No link, no balance detail.
 NO_CANDIDATE_TEXT = "目前沒有符合條件的歌曲"  # [reviewed wording]: S25 reply when no eligible song exists; nothing is charged.
+IN_PROGRESS_TEXT = "你的交換仍在處理中或結果待核對，請稍候再試；處理完成前不會重複扣點或派送。"  # [no duplicate effect]: Shown while an earlier exchange is open; nothing is charged or sent.
 INSUFFICIENT_TEXT = "點數不足，交換一首歌曲需要 1 Nickel。"  # [reviewed wording]: Shown before any candidate work is reported.
 
 
@@ -182,6 +183,8 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
         return await _finish(replier, ExchangeFlowResult(NO_CANDIDATE_TEXT, False, None, None, None))
     if exchange.status is ExchangeStatus.INSUFFICIENT_CREDITS:
         return await _finish(replier, ExchangeFlowResult(INSUFFICIENT_TEXT, False, None, None, None))
+    if exchange.status is ExchangeStatus.IN_PROGRESS:
+        return await _finish(replier, ExchangeFlowResult(IN_PROGRESS_TEXT, False, None, None, None))  # [no debit, no DM]: The earlier exchange keeps its own state.
     if exchange.status is ExchangeStatus.PENDING_REVIEW:
         return await _finish(replier, ExchangeFlowResult(PENDING_REVIEW_TEXT, False, None, None, None))  # [no DM]: Nothing reserved, nothing sent.
     outcome = await deliver_recommendation(repository, sender, exchange.recommendation_id, now, new_token())

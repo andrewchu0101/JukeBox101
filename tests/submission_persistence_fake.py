@@ -578,6 +578,9 @@ def update_rows(connection: FakeConnection, sql: str, parameters: tuple) -> None
     if sql.startswith("UPDATE songs"):
         return _update_song(state, sql, parameters)
     if sql.startswith("UPDATE jb2_control"):
+        if "settlement_enabled" in sql:  # [settlement switch]: Written alone, without a revision bump, as the production statement does.
+            state["control"]["settlement_enabled"] = bool(parameters[0])
+            return
         state["control"]["revision"] += 1
         if "accepted_sequence" in sql:
             state["control"]["accepted_sequence"] = parameters[0]

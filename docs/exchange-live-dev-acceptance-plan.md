@@ -213,7 +213,7 @@
 
 **程式事實**：正式程式沒有任何路徑把歌曲設為 `verified`。`songs.resolution_status` 由 `pending` 開始，沒有驗證步驟。交換只會提供 `verified` 的歌曲，因此**在不改資料的情況下，正式流程沒有可交換的候選**。這是產品缺口（ROADMAP 標示為未解決的驗證來源），不是測試問題。
 
-**需要 Owner 決定 G（候選歌曲標為已驗證的方式）**：
+**需要 Owner 決定 G（候選歌曲標為已驗證的方式）**（**已取代**：改由 §20 的核准發布產生 verified 連結，不再使用單列 SQL 更新）：
 - (a)（建議，僅限本次驗收）：由 Owner 批准後，對**本次建立的一列候選歌曲**執行一次明確的 SQL 更新（`resolution_status='verified'`），並在證據中記錄。這不是正式流程，只用於本次驗收。
 - (b) 另行批准實作正式驗證步驟（超出本次範圍，需 ROADMAP 決定）。
 - (c) 暫停本次驗收。
@@ -552,3 +552,120 @@
 - 新增檔案：`bot/owner_cli.py`、`tests/test_owner_cli.py`、`tests/test_owner_approval_link.py`。
 - `bot/urls.py` 的差異只有新函式（10 行）。
 - 不提交 `.local/`、證據與憑證。
+
+## 20. 離線實作與真人前修正（2026-10-25，離線，未 commit，未實機）
+
+**範圍**：本節記錄離線實作的結果與真人驗收前的修正。**本節不代表真人 DM 驗收已完成，也不代表正式交換或結算已開放。** 所有命令與測試只在離線 fake 與工作樹上執行，未連線 MySQL、Discord 或環境檔。
+
+### 20.1 開關時序（以程式確認）
+
+| 入口 | `settlement_enabled` 要求 | 依據 |
+| --- | --- | --- |
+| `/share` 與 pending intake（`accept_pending`，含合成 C） | 必須為 **0** | `submission_repository.py` pending intake 守衛 |
+| 時長、核准、版本確認 | 不讀取 | owner review 與 review persistence 無此欄位 |
+| `settle()` | READY 時必須為 **1**；非 READY 不讀取 | `reward_settlement.py` |
+| `/exchange`（`reserve_exchange`） | **不讀取，任何值皆可** | `exchange_reservation.py` |
+
+**流程時序**：執行前原值必須為 0（不為 0 即停止）。投稿與審核期間保持 0；只在 `settle` 前後切為 1；結算後立即恢復為執行前原值。`/exchange` 不讀取開關，因此恢復後不影響交換。
+
+### 20.2 候選池與餘額的兩階段檢查（唯讀，不清理）
+
+1. **投稿前**：唯讀查詢既有「已結算、已驗證連結、投稿者非 Owner」的候選。若數量不為 0，**停止**並說明；不刪除、不消耗舊候選、不新增 schema。
+2. **結算後、交換前**：唯讀確認候選池只含 C（D 屬 Owner 自己，既有程式排除）。不符即停止。
+3. **餘額以執行前基準核對**：記錄 Owner 執行前餘額 *B*。D 結算後應為 *B*+1；交換後應為 *B*。**不假設 *B* 為 0，不調整舊餘額。**
+
+### 20.3 同一使用者的交換去重與處理中防重入
+
+**既有保障（直接沿用）**：
+
+- 同一 request key 的重放：`_replayed_outcome` 以 ledger 冪等鍵找回原預留，不重複扣點。
+- 派送狀態的獨占認領：`claim_reservation` 只允許 `reserved → sending` 一次；重複請求不會再送 DM。
+- 結果未知：`sending` 逾時後為 `uncertain`，沿用既有核對流程，不退款、不重送。
+- 退款只限證明未送出的情況；`delivered` 與 `failed`（已退款）不阻擋新交換。
+
+**本次補的實際缺口**：
+
+- 同一使用者只要有 `reserved`、`sending` 或 `uncertain` 的預留，**新的交換請求一律回傳 `IN_PROGRESS`**，不扣點、不預留、不送 DM，即使使用不同 interaction ID。檢查在寫入交易的全域 gate 內進行，因此不會與另一個交易交錯。
+- 既有的 stranded 保護保留在前：舊的、未認領的預留（且補償表存在）仍回傳 `PENDING_REVIEW`，維持 Owner 處理流程。
+- `IN_PROGRESS` 的回覆為「仍在處理中或結果待核對，請稍候再試」，不附連結、不送 DM、不退款。
+- 正常完成後（`delivered`），使用者可依餘額再次交換，不新增每日或 DM 額度。
+
+**已修改的既有測試（契約變更，須審閱）**：
+
+- `test_exchange_reservation.py`：兩個測試在第二次交換前，把第一筆標為 `delivered`（代表完成交付）；斷言不變。
+- `test_reserved_protection.py`：較新或剛好在門檻的預留，斷言由「不阻擋」改為 `IN_PROGRESS`；`sending` 由「不阻擋」改為 `IN_PROGRESS`；`delivered` 與已退款的 `failed` 仍不阻擋。
+
+### 20.4 版本確認與指定結算（owner CLI，薄包裝既有服務）
+
+- `version preview|write`：呼叫既有 `OwnerReviewService.preview_version_confirmation` 與 `confirm`。必要參數為 operation、expected revision、版本參考、版本類別、可追溯來源與理由；write 必須帶 preview 印出的摘要。核准與版本確認是**兩個獨立步驟**。
+- `settle preview|write --operation <id> [--operation <id>...]`：只接受明確、不重複的 operation 清單；write 前要求開關為 0；開關只在 `settle()` 呼叫期間為 1；無論成功或失敗都會恢復，並以**獨立讀取**確認恢復後的值。恢復失敗會在單獨一行明確回報並以非零結束，不會隱藏。
+- 兩者都沿用可信 Owner（`DISCORD_OWNER_USER_ID`）、摘要綁定與既有服務的 revision、證據與衝突檢查。
+
+### 20.5 安全啟動器與合成 C 投稿（本機，不提交）
+
+- `.local/live-run/start_bot.py`：以隱藏輸入取得 Discord token 與 DB 密碼，只在程序內設定環境變數，然後呼叫既有的 `bot.__main__.main()`。不讀 `.env`、不解密、不寫入秘密、不同步遠端指令。`JUKEBOX_FORMAL_EXCHANGE=1` 只在本程序內生效。
+- `.local/live-run/synthetic_intake.py`：以隱藏輸入取得 DB 密碼，經既有 `SubmissionRepository.accept_pending` 投稿合成 C；使用者列由既有 `_ensure_user` 建立，**不直接 INSERT、不依賴未提交的測試腳本**。合成投稿者 ID 須由 Owner 批准。
+- 兩者都只做語法檢查（編譯），**未執行**。
+
+### 20.6 遠端指令（只讀比對）
+
+- 新增 `remote_command_report`：比對遠端既有指令的名稱與選項。批准值取自本地樹（`approved_option_names`，離線建立，不登入），回報缺少、未批准與選項不同的項目，**不寫入**。另有 `read_only_remote_report`，只呼叫 `fetch_commands`，不呼叫任何同步。
+- 既有 `require_empty_remote_guild` 在遠端已有指令時仍停止、不覆蓋。**本次未查詢真實遠端。** 任何同步或覆蓋仍需另行授權。
+
+### 20.7 離線測試結果（工作樹，本次執行）
+
+- 直接相關的離線測試（交換預留、派送、退款、未知結果、合成路徑、正式入口、保護、補償守衛、owner CLI、結算與版本 CLI、遠端比對、guild 驗收、投稿持久化）：**258 passed，0 failed**（`-m "not mysql"`）。
+- 未執行 MySQL 測試，未連 Discord，未操作資料庫或環境，未啟動真人驗收。
+- 本次未另外執行「修改前紅燈」的獨立記錄；新測試的斷言已對照舊行為的推論（例如舊程式會對第二筆新金鑰回傳 `RESERVED`）。
+
+### 20.8 真人驗收前仍需批准的具體操作
+
+1. **實機確認**（需另行批准）：交換帳號對 `jb2_control.settlement_enabled` 的 UPDATE 權限（唯讀查詢 `SHOW GRANTS`）；若沒有，停止，不增權。
+2. **資料基準**（唯讀）：投稿前的候選池為空；Owner 執行前餘額 *B*；控制列 `snapshot_ready=1`、`legacy_writers_quiesced=1`、`settlement_enabled=0`。
+3. **遠端指令**：唯讀查詢 guild 指令；若已有指令，比對後回報，**不同步、不覆蓋**。
+4. **C、D 的資料**：全片時長（秒）與人工確認說明；D 的連結人工確認；C 的版本參考、版本類別與來源；合成投稿者 ID。這些不阻擋離線實作，但真人驗收前必須補齊。
+5. **執行順序**：依 §20.1 的開關時序與 §20.2 的兩階段檢查；DM 只在 `/exchange` 一次，結果未知即停止。
+
+**本節未驗證**：實機 MySQL 上的 `UPDATE` 權限與影響列數；真實 Discord 的 DM 分類；`/exchange` 在真實流程中的完整端到端行為。
+
+### 20.9 解除路徑的唯讀追查，以及剩餘缺口
+
+**(1) `uncertain` 目前的既有處理**
+
+- 產生：`sending` 逾時由 `recover_interrupted`（每次交換開頭執行）改為 `uncertain`；DM 結果未知或拋出例外時，`record_result` 寫入 `uncertain`。
+- 離開 `uncertain`：正式程式中**沒有任何路徑**把它改為其他狀態。`record_result` 只接受 `sending`；`refund_undelivered` 只接受 `failed`；`recover_interrupted` 只把 `sending` 改為 `uncertain`。
+- Owner 的事件處理方法（`approve_incident`、`record_not_system_fault`、`settle_incident`、`close_non_fault_refund` 等）存在於 repository，但**正式程式、Discord 與 CLI 都沒有呼叫者**。`approve_incident` 也只接受「舊的未認領 `reserved`」，不適用於 `uncertain`。
+- 因此：`uncertain` 的預留目前**沒有既有的解除入口**。依新原則，它會持續阻擋該使用者的新交換，直到另行設計核對與解除規則。本次不自行發明狀態轉移、不退款、不重送、不以時間解鎖。
+
+**(2) 沒有補償表時，舊 `reserved` 的處理入口**
+
+- 判定：`has_stranded_reservation` 與補償 `pending_block` 只在補償表存在或補償開關開啟時啟用，回傳 `PENDING_REVIEW`。
+- 無補償表時，舊 `reserved` 現在會阻擋該使用者（回傳 `IN_PROGRESS`），但**沒有可操作的解除入口**：補償的 `approve_incident` 與 `record_not_system_fault` 只在 repository 中，正式程式沒有入口。
+- 不因時間到了便視為完成，也不自動續送或退款。
+
+**(3) 同一 request key 重放與不同 request key 的順序**
+
+1. `_replayed_outcome`：以 ledger 冪等鍵找回原預留，回傳 `REPLAYED`，**不做任何寫入**。這一步在新檢查之前執行。
+2. 無 ledger 列（新請求）：先經補償的 `PENDING_REVIEW` 檢查（僅補償啟用時），再經 `IN_PROGRESS` 檢查，之後才查餘額與候選並扣點。
+3. 重放之後由派送狀態機決定：`reserved` 認領送出一次；`sending`、`uncertain`、`delivered`、`failed` 都不再送出，回傳既有狀態。
+
+因此 `IN_PROGRESS` 不影響重放語意：同一 key 永遠先得到原結果；不同 key 才會在有未完成預留時被拒絕。重放相關測試（`test_the_same_request_key_replays_without_a_second_debit_while_reserved`、`test_retry_after_delivery_replays_without_a_second_message_or_debit`）已通過。
+
+**已知缺口（本輪決定保留，不實作）**：`uncertain` 與無補償表時的舊 `reserved` 沒有解除入口。本輪不新增解除狀態轉移、不接線或啟用補償、不退款、不重送、不以逾時解鎖。這是實作範圍決定，**不代表批准真人驗收、接受真人執行風險或開放 Beta 交換**。
+
+**(4) 剩餘缺口（需要你的決定，本次不自行實作）**
+
+| 缺口 | 影響 | 需要決定 |
+| --- | --- | --- |
+| `uncertain` 無解除路徑 | 結果未知的使用者會被永久阻擋新交換 | 核對依據（例如 Owner 以可證明的派送事實標記結果）與允許的狀態轉移 |
+| 舊 `reserved` 無正式解除入口（無補償時） | 該使用者被阻擋，無可操作的處理 | 是否接線補償的 Owner 流程，或另定規則 |
+| 補償的 Owner 方法未接到正式入口 | 補償路徑無法於真人驗收中操作 | 是否在真人前啟用補償（目前關閉） |
+
+**真人驗收的影響**：成功路徑（DM 送達並回報成功）不會產生 `uncertain` 或舊 `reserved`。但正常操作也可能因外部故障（例如 Discord 逾時、連線中斷）進入 `uncertain`。遇到結果未知時**停止**，不重送、不退款、不以時間解鎖；現階段**沒有解除入口**，該使用者在缺口解決前不能再交換，且本次驗收**不包含**解除操作。
+
+### 20.10 本輪補改（離線）
+
+- 遠端報告補上選項比對（見 §20.6）。
+- 啟動器與合成投稿的邏輯移入 `bot/live_run_entry.py`，`.local` 腳本只保留隱藏輸入與固定參數。
+- 離線測試：`tests/test_live_run_entry.py`（6 項）與 `tests/test_remote_command_report.py`（4 項）及既有 `tests/test_guild_acceptance.py`（58 項），共 **68 項通過**（工作樹，`-m "not mysql"`）。
+- 未啟動任何真實程序，未連線 MySQL 或 Discord，未讀取 `.env`，未同步或覆蓋遠端指令。

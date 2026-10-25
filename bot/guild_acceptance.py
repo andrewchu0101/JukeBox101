@@ -98,6 +98,41 @@ async def require_empty_remote_guild(client: JukeBoxClient, guild_id: int) -> No
         raise AcceptanceError("Remote guild commands already exist; stop without overwriting or deleting them")
 
 
+def approved_option_names(client: JukeBoxClient) -> dict:
+    """@description: Take the approved command names and option names from the locally registered tree, which is built offline without a login.
+    @param client: Local client whose command tree was registered.
+    @return: Mapping from command name to its sorted option names.
+    """
+    return {command.name: tuple(sorted(parameter.name for parameter in command.parameters)) for command in client.tree.get_commands()}
+
+
+def remote_command_report(remote_commands: list, approved_options: dict) -> dict:
+    """@description: Compare existing remote guild commands with the approved names and options, read-only, so the operator sees what a sync would change before any write.
+    @param remote_commands: Command objects returned by a read-only fetch of the development guild.
+    @param approved_options: Approved command names mapped to their sorted option names.
+    @return: Sorted names missing remotely, sorted remote names not approved, and option differences per shared command.
+    """
+    remote = {command.name: tuple(sorted(option.name for option in (command.options or []))) for command in remote_commands}
+    remote_names, approved_names = set(remote), set(approved_options)
+    return {
+        "missing_remotely": sorted(approved_names - remote_names),
+        "not_approved_remotely": sorted(remote_names - approved_names),
+        "option_differences": {name: {"remote": remote[name], "approved": tuple(approved_options[name])}
+                               for name in sorted(remote_names & approved_names) if remote[name] != tuple(approved_options[name])},
+    }
+
+
+async def read_only_remote_report(client: JukeBoxClient, guild_id: int) -> dict:
+    """@description: Fetch the development guild's commands for comparison only; this never synchronizes, overwrites or deletes anything.
+    @param client: Authenticated application client, used only for the read-only fetch.
+    @param guild_id: Explicit validated development guild identifier.
+    @return: The comparison report from remote_command_report.
+    """
+    guild = discord.Object(id=validate_snowflake(guild_id, "DISCORD_DEV_GUILD_ID"))
+    remote_commands = await asyncio.wait_for(client.tree.fetch_commands(guild=guild), timeout=REST_TIMEOUT_SECONDS)
+    return remote_command_report(remote_commands, approved_option_names(client))
+
+
 def confirmation_text(settings: DevelopmentGuildSettings) -> str:
     """@description: Bind manual confirmation to one visible application and guild.
     @param settings: Explicit human-provided development targets.

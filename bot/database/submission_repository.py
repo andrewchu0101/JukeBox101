@@ -139,6 +139,27 @@ class SubmissionRepository:
         with submission_transaction(self._factory) as (cursor, control):
             return settle_reward(cursor, control, operation_id)
 
+    def settlement_enabled(self, requester_id: int) -> bool:
+        """@description: Read the real-settlement switch under the control lock, so an operator sees the value a settlement would honour.
+        @param self: Repository retaining the configured Owner identity.
+        @param requester_id: Authenticated caller, which must be the configured Owner.
+        @return: True when real reward settlement is currently enabled.
+        """
+        self._require_owner(requester_id)
+        with submission_transaction(self._factory) as (_cursor, control):
+            return bool(control["settlement_enabled"])
+
+    def set_settlement_enabled(self, requester_id: int, enabled: bool) -> None:
+        """@description: Write the real-settlement switch under the control lock; callers verify the stored value with a separate read.
+        @param self: Repository retaining the configured Owner identity.
+        @param requester_id: Authenticated caller, which must be the configured Owner.
+        @param enabled: Target switch value; the caller decides when settlement may run.
+        @return: None; the write commits with its transaction.
+        """
+        self._require_owner(requester_id)
+        with submission_transaction(self._factory) as (cursor, _control):
+            cursor.execute("UPDATE jb2_control SET settlement_enabled=%s WHERE singleton_id=1", (enabled,))
+
     def exchange(self, discord_user_id: int, request_key: str, rng: Random, now: datetime | None = None) -> ExchangeOutcome:
         """@description: Reserve one exchange recommendation and debit one point atomically, or report why nothing changed.
         @param self: Synchronous repository boundary, not a public Discord command.

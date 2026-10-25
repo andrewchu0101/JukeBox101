@@ -69,7 +69,7 @@ def test_a_stranded_reservation_blocks_a_new_request_by_the_same_requester(enabl
 
 
 def test_a_reservation_younger_than_the_threshold_does_not_block(enabled_submitters) -> None:
-    """@description: A reservation still inside the threshold is a live request; it must not block the requester.
+    """@description: A reservation still inside the threshold is an open exchange; a new request waits and debits nothing. Superseded by the open-exchange rule.
     @param enabled_submitters: Two settled submitters with verified songs.
     @return: None.
     """
@@ -77,7 +77,7 @@ def test_a_reservation_younger_than_the_threshold_does_not_block(enabled_submitt
     first = request(repository, USER, "k-young-1")
     age(database, first.recommendation_id, NOW - STRANDED_AFTER + timedelta(minutes=1))
     outcome = request(repository, USER, "k-young-2")
-    assert outcome.status is ExchangeStatus.INSUFFICIENT_CREDITS, "the normal path must decide, not the block"
+    assert outcome.status is ExchangeStatus.IN_PROGRESS, "an open exchange blocks a new request, which debits nothing"
 
 
 def test_exactly_at_the_threshold_is_not_yet_stranded(enabled_submitters) -> None:
@@ -88,25 +88,26 @@ def test_exactly_at_the_threshold_is_not_yet_stranded(enabled_submitters) -> Non
     database, repository, _ = enabled_submitters
     first = request(repository, USER, "k-edge-1")
     age(database, first.recommendation_id, NOW - STRANDED_AFTER)
-    assert request(repository, USER, "k-edge-2").status is ExchangeStatus.INSUFFICIENT_CREDITS
+    assert request(repository, USER, "k-edge-2").status is ExchangeStatus.IN_PROGRESS
 
 
-@pytest.mark.parametrize("state_change", [
-    {"status": "sending", "claim_token": "token-a", "claimed_at": NOW},
-    {"status": "delivered", "claim_token": "token-b", "claimed_at": NOW, "delivered_at": NOW},
-    {"status": "failed", "released_at": NOW},
+@pytest.mark.parametrize(("state_change", "expected"), [
+    ({"status": "sending", "claim_token": "token-a", "claimed_at": NOW}, ExchangeStatus.IN_PROGRESS),  # [open exchange]: Superseded; sending now waits.
+    ({"status": "delivered", "claim_token": "token-b", "claimed_at": NOW, "delivered_at": NOW}, ExchangeStatus.INSUFFICIENT_CREDITS),
+    ({"status": "failed", "released_at": NOW}, ExchangeStatus.INSUFFICIENT_CREDITS),
 ])
-def test_a_claimed_or_released_reservation_never_blocks(enabled_submitters, state_change) -> None:
-    """@description: Only a never-claimed, unreleased reservation is stranded; sending, delivered and refunded rows never block.
+def test_a_claimed_or_released_reservation_only_blocks_while_it_is_open(enabled_submitters, state_change, expected) -> None:
+    """@description: Delivered and refunded rows never block; a sending row is an open exchange and makes the next request wait.
     @param enabled_submitters: Two settled submitters with verified songs.
     @param state_change: Row fields that represent the claimed or released state.
+    @param expected: Outcome the next request must receive.
     @return: None.
     """
     database, repository, _ = enabled_submitters
     first = request(repository, USER, "k-state-1")
     age(database, first.recommendation_id, NOW - STRANDED_AFTER - timedelta(minutes=5))
     database.state["recommendations"][first.recommendation_id].update(state_change)
-    assert request(repository, USER, "k-state-2").status is ExchangeStatus.INSUFFICIENT_CREDITS
+    assert request(repository, USER, "k-state-2").status is expected
 
 
 def test_a_technical_replay_of_the_stranded_key_is_not_blocked(enabled_submitters) -> None:

@@ -9,7 +9,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from bot.exchange_delivery import DeliveryStatus, DmResult, deliver_recommendation, exchange_and_deliver
+from bot.database.exchange_reservation import ExchangeStatus
+from bot.exchange_delivery import IN_PROGRESS_TEXT, DeliveryStatus, DmResult, deliver_recommendation, exchange_and_deliver
 from tests.intake_fixture import seed_intake
 from tests.test_exchange_reservation import (  # noqa: F401  (two_submitters is a pytest fixture imported by name)
     ORIGINAL_A,
@@ -296,3 +297,19 @@ def test_ephemeral_text_never_contains_the_link_in_any_dm_outcome(two_submitters
     _, repository, _ = two_submitters
     flow = start(repository, ScriptedDm(outcome), 101, "flow-link")
     assert LINK not in flow.reply_text
+
+
+def test_a_new_request_while_an_exchange_is_open_is_told_to_wait_and_sends_and_refunds_nothing(two_submitters) -> None:
+    """@description: A requester with an open reservation gets the wait-and-retry reply before any balance check, with no DM, no refund and no second reservation.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    first = repository.exchange(101, "exchange-first", FirstPicks(1))
+    assert first.status is ExchangeStatus.RESERVED
+    sender, replier = ScriptedDm(), RecordingReply()
+    start(repository, sender, 101, "discord:second", replier)
+    assert replier.sent == [IN_PROGRESS_TEXT]
+    assert sender.attempts == [] and refund_rows(database) == []
+    assert delivery_row(database, first.recommendation_id)["status"] == "reserved"
+    assert len(database.state["recommendations"]) == 1

@@ -19,6 +19,7 @@ from bot.exchange_selection import SettledVersion, draw_exchange_candidate
 from bot.reward_candidates import RewardCandidateStatus
 
 EXCHANGE_COST = 1  # [spendable point cost]: One Nickel per successful reservation, as fixed by S8.
+OPEN_DELIVERY_STATES = ("reserved", "sending", "uncertain")  # [unfinished exchange]: Any of these blocks a new debit; failed and delivered do not.
 
 
 class ExchangeStatus(Enum):
@@ -28,6 +29,7 @@ class ExchangeStatus(Enum):
     REPLAYED = "replayed"  # [technical retry]: The original reservation was returned without a second debit.
     NO_CANDIDATE = "no_candidate"  # [no eligible version]: Nothing was reserved and nothing was charged.
     INSUFFICIENT_CREDITS = "insufficient_credits"  # [spendable points]: The requester could not pay the cost.
+    IN_PROGRESS = "in_progress"  # [open exchange]: An earlier reservation of this requester is reserved, sending or uncertain; nothing is debited.
     PENDING_REVIEW = "pending_review"  # [stranded reservation]: An old, never-claimed reservation blocks new requests; nothing was debited.
 
 
@@ -61,6 +63,8 @@ def reserve_exchange(cursor: Any, control: dict, discord_user_id: int, request_k
         require_schema(cursor)  # [explicit]: A guarded exchange never runs on a schema missing a table or definition.
     if guarded and pending_block(cursor, discord_user_id, now):  # [block under the gate]: After the replay, so the original order is always identified first.
         return ExchangeOutcome(ExchangeStatus.PENDING_REVIEW, None, None)
+    if _has_open_delivery(cursor, discord_user_id):  # [one open exchange]: Checked under the gate, so a new key cannot debit while an earlier delivery is unfinished.
+        return ExchangeOutcome(ExchangeStatus.IN_PROGRESS, None, None)
     balance = lock_reconciled_account(cursor, discord_user_id)  # [locked spendable credits]: Checked before any candidate work.
     if balance < EXCHANGE_COST:
         return ExchangeOutcome(ExchangeStatus.INSUFFICIENT_CREDITS, None, None)
@@ -86,6 +90,16 @@ def _replayed_outcome(cursor: Any, ledger_key: str) -> ExchangeOutcome | None:
     if row is None:
         return None
     return ExchangeOutcome(ExchangeStatus.REPLAYED, row["recommendation_id"], row["youtube_url"])
+
+
+def _has_open_delivery(cursor: Any, discord_user_id: int) -> bool:
+    """@description: Tell whether the requester has an exchange still reserved, sending or uncertain, which must finish before another debit.
+    @param cursor: Cursor inside the globally serialized transaction.
+    @param discord_user_id: Requesting user.
+    @return: True while one recommendation of the requester is in an open state.
+    """
+    cursor.execute("SELECT status FROM recommendations WHERE discord_user_id=%s", (discord_user_id,))
+    return any(row["status"] in OPEN_DELIVERY_STATES for row in cursor.fetchall())
 
 
 def _settled_versions(cursor: Any) -> tuple[SettledVersion, ...]:
