@@ -64,3 +64,17 @@ def test_the_approved_five_commands_classify_as_exact_in_any_order() -> None:
     @return: None.
     """
     assert classify_remote_commands(tuple(reversed(EXPECTED_COMMANDS))) == "exact"
+
+
+def test_only_the_exact_live_schema_target_is_accepted_and_every_other_destination_is_refused() -> None:
+    """@description: The live schema guard accepts only the approved host, port, schema and exchange account; 3306, other schemas and other accounts are refused.
+    @return: None.
+    """
+    from tests.live_acceptance_guard import LiveGuardRefused, assert_live_schema_target
+    assert_live_schema_target("127.0.0.1", 3307, "jukebox101_live_20261025", "jukebox101_test_exchange")
+    for host, port, database, user in [("127.0.0.1", 3306, "jukebox101_live_20261025", "jukebox101_test_exchange"),
+                                       ("127.0.0.1", 3307, "jukebox101_test", "jukebox101_test_exchange"),
+                                       ("127.0.0.1", 3307, "jukebox101_live_20261025", "root"),
+                                       ("127.0.0.1", 3307, "jukebox101_live_20261025_x", "jukebox101_test_exchange")]:
+        with pytest.raises(LiveGuardRefused):
+            assert_live_schema_target(host, port, database, user)

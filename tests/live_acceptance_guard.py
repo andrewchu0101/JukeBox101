@@ -108,3 +108,18 @@ def assert_discord_identifiers(guild_id: int, application_id: int, owner_id: int
     """
     if (guild_id, application_id, owner_id) != (EXPECTED_GUILD_ID, EXPECTED_APPLICATION_ID, EXPECTED_OWNER_ID):
         raise LiveGuardRefused("DISCORD_IDENTIFIER_MISMATCH")
+
+
+LIVE_SCHEMA_DATABASE = "jukebox101_live_20261025"  # [approved dedicated schema]: The only additional schema this live run may use.
+
+
+def assert_live_schema_target(host: str, port: int, database: str, user: str) -> None:
+    """@description: Accept exactly the approved dedicated schema on the isolated loopback instance with the exchange account; every other destination is refused.
+    @param host: Configured database host.
+    @param port: Configured database port.
+    @param database: Configured database name.
+    @param user: Configured database account.
+    @return: None; any mismatch raises LiveGuardRefused.
+    """
+    if (host, port, database, user) != (EXPECTED_HOST, EXPECTED_PORT, LIVE_SCHEMA_DATABASE, EXPECTED_USER):
+        raise LiveGuardRefused("LIVE_SCHEMA_TARGET_MISMATCH")

@@ -69,3 +69,11 @@ Harness 最終安全收斂（離線）：保持 submissions 僅 SELECT 與 18 �
 ## Private Beta 規格 checkpoint（2026-10-16）
 
 狀態：**BETA_SPEC_READY_FOR_REVIEW**；僅文件規格，未實作 Beta。見 [最小 Beta 規格](docs/private-beta-mvp-specification.md) 與 [Recovery 成功紀錄](docs/recovery-success-checkpoint.md)。下列或先前各階段測試數量屬歷史，不代表本輪真實 MySQL 驗收。
+
+## 專用隔離 schema 真人驗收（2026-10-25）
+
+- 結果：在專用隔離 schema `jukebox101_live_20261025` 上完成一次真人驗收流程（合成 C 投稿、Owner `/share` D、時長、核准、版本、指定結算、交換前核對、一次 `/exchange` 與 DM、交換後核對）。帳本共 3 筆、預留 1 筆 delivered、DM 內容對應 C，收尾已正常關閉 3307。
+- 證據與細節：`docs/exchange-live-dev-acceptance-plan.md` §21；本機證據位於 `.local/live-run-evidence/20261025-01/`（不提交）。
+- 限定：實機使用當時工作樹與本機包裝，未宣稱提交快照已獨立實機驗證；Beta 交換未開放；補償保持關閉。
+- 已知缺口：`uncertain` 與無補償表時的舊 `reserved` 沒有解除入口，仍待另行設計。
+- 文案待辦：使用者回覆中的內部操作編號後續修正。

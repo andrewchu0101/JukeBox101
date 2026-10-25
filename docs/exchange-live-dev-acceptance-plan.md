@@ -669,3 +669,55 @@
 - 啟動器與合成投稿的邏輯移入 `bot/live_run_entry.py`，`.local` 腳本只保留隱藏輸入與固定參數。
 - 離線測試：`tests/test_live_run_entry.py`（6 項）與 `tests/test_remote_command_report.py`（4 項）及既有 `tests/test_guild_acceptance.py`（58 項），共 **68 項通過**（工作樹，`-m "not mysql"`）。
 - 未啟動任何真實程序，未連線 MySQL 或 Discord，未讀取 `.env`，未同步或覆蓋遠端指令。
+
+## 21. 專用隔離 schema 真人驗收結果（2026-10-25，已完成並正常收尾）
+
+**範圍與限定**：本節只記錄 **專用 schema `jukebox101_live_20261025`** 上的真人驗收結果。它**不代表** Beta 交換已開放、補償已啟用、正式環境已驗收，也**不代表**提交快照 `7990f2d` 已獨立完成實機驗證。
+
+**實機使用的版本**：實機步驟使用的是當時工作樹與本機包裝（`.local/live-run/`、`.local/readonly-precheck/`，不提交），其中 `bot/live_run_entry.py` 與 `tests/readonly_precheck.py` 的內容在 `7990f2d` 之後仍有修改。提交前需以本節清單重新核對。
+
+### 21.1 建置
+
+- Schema：`jukebox101_live_20261025`，位於既有隔離 3307 實例（UUID `f138d7c6-cf62-11f1-87be-c025a5a12877`，datadir 為 `.local/mysql-test/20261024-122528/data`）。
+- 來源：`bot/database/schema.sql`（SHA-256 `99861a62…`）、`002_submission_economy.sql`（`ad9794a3…`）、`003_exchange_delivery.sql`（`0ffce1bb…`），與既有建置器記錄的雜湊一致，依序套用。
+- 表：22 張（基底 6 張＋002 的 16 張），表清單精確相符，沒有補償三表。
+- 授權：`jukebox101_test_exchange` 只對新 schema 有 SELECT、INSERT、UPDATE、DELETE；無 GRANT OPTION，無其他變更。migrator 未被授權或使用。
+- 控制列：`schema_version=2b2-b1`，`snapshot_ready=1`、`legacy_writers_quiesced=1`（依隔離證據初始化，**不是** Beta 歷史快照證據），`settlement_enabled=0`。
+- 空白基準：建置前所有表 0 列；就緒證據記錄於 `.local/live-run-evidence/20261025-01/`。
+
+### 21.2 驗收流程與結果
+
+| 步驟 | 結果 |
+| --- | --- |
+| 合成 C 投稿（`accept_pending`，合成 ID `9000000000000000001`） | 受理序號 1 |
+| Owner `/share` D（操作 `discord:1563787609656926209`） | 受理序號 2；回覆為 pending_validation，本次不發放 |
+| C、D 時長（189、176 秒）、核准、版本（basic） | 寫入完成；C、D 的連結為 verified |
+| 指定結算（C、D） | 兩者皆 `awarded`；結算開關恢復為 0 |
+| 交換前核對 | 候選池僅含 C（D 屬 Owner，依既有規則排除）；Owner 餘額 1；無未完成交換 |
+| 交換（一次 `/exchange`） | 預留 1 筆，狀態 `delivered`，Discord 訊息 ID 已記錄，未釋放 |
+| DM | 收到一則，文字為「你的交換推薦：https://www.youtube.com/watch?v=cUfDOS2SINM」，對應 C（XG - HYPNOTIZE） |
+| 交換後核對 | 帳本共 3 筆：C 的 `submission_award +1`（合成者）、D 的 `submission_award +1`（Owner）、交換的 `exchange_debit −1`（Owner）；Owner 餘額 0；合成者餘額 1；無退款、無 reserved／sending／uncertain |
+
+### 21.3 收尾
+
+- bot 兩次啟動（formal 關閉用於 `/share`，formal 開啟用於 `/exchange`），每次都在終端機隱藏輸入 token，並以 Ctrl+C 正常停止；收尾時沒有殘留 Python 程序。
+- 3307 以 `close_isolated.py` 正常 SHUTDOWN：`shutdown_sent: true`、埠關閉、`error.log` 有 `Shutdown complete`、pid 檔已移除。
+- 3306（MySQL80）程序未被碰觸。
+- 證據位於 `.local/live-run-evidence/20261025-01/`：`pre-db.json`、`post-db.json`、`p5-check.txt`、`post-exchange.json`、`schema-build-resume.json`。不含秘密。
+- 資料保留，未清理。
+
+### 21.4 過程紀錄（照實）
+
+- 第一次嘗試在舊 schema `jukebox101_test` 中，C 與 D 因為舊操作（受理序號 1–10）的優先權阻擋而停在 `waiting_predecessor`。依規定停止，未處理舊資料，未發放點數，未交換。
+- 新 schema 的建置過程中，有兩次檢查錯誤：第一次是 root 連線未設 DictCursor；第二次是就緒證據的 Python 程序計數把自己的啟動器算為其他寫入者。兩者都是檢查邏輯錯誤，不是資料問題。修正後以 `--resume` 續跑，續跑只確認本次建立的 schema、授權與表清單完全相符，未 DROP、未重建。
+- 啟動時 bot 出現 `Guilds intent disabled` 與 `PyNaCl／davey 未安裝` 警告，保留在終端機紀錄，未修改環境。
+
+### 21.5 已知限制與待辦（不因本次驗收而解除）
+
+- **已知缺口**：`uncertain` 與無補償表時的舊 `reserved` 沒有解除入口。本次未出現這兩種狀態，但缺口仍在。
+- **補償**：關閉。補償三表不存在於新 schema，本次未測試補償路徑。
+- **Beta**：未開放交換。
+- **就緒旗標**：新 schema 的 `snapshot_ready` 與 `legacy_writers_quiesced` 依隔離證據設為 1，不等於 Beta 歷史快照證據。
+- **未跑**：完整測試套件與 MySQL 測試。本輪只跑了直接相關的離線測試。
+- **文案待辦**：使用者回覆中的內部操作編號（例如指令回覆末尾的「操作 1」）應於後續文案修正，本輪不修改。
+- **Owner 的 DM 截圖**：本記錄以使用者回報為準，截圖未保存為檔案。
