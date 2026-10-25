@@ -68,17 +68,15 @@ def test_reopened_rejected_predecessor_keeps_original_sequence_as_history() -> N
     assert earlier.review.reexamination_pending is True
 
 
-def test_reopened_approved_predecessor_still_blocks_later_same_version() -> None:
-    """@description: Lock the existing predecessor rule for a reopened approval that never released priority.
+def test_reopened_approved_predecessor_yields_its_priority_to_a_later_same_version() -> None:
+    """@description: Owner ruling 2026-10-23: an approved, unawarded predecessor that is reopened no longer blocks later same-version submissions.
     @param: none
     @return: None.
     """
-    # [unreleased predecessor]: Approved, never rejected, so its original priority was never lost.
     earlier = reopened(make_candidate(1, review_status=ReviewStatus.APPROVED))
     decisions = evaluate_reward_candidates(make_context(earlier, make_candidate(2)))
-    assert [item.status for item in decisions] == [Status.WAITING_VALIDATION, Status.WAITING_PREDECESSOR]
-    assert decisions[1].reason is Reason.EARLIER_SUBMISSION
-    assert decisions[1].blocking_operation_ids == ("op-1",)
+    assert decisions[1].reason is not Reason.EARLIER_SUBMISSION
+    assert decisions[1].blocking_operation_ids == ()
 
 
 def test_reopened_predecessor_identity_conflict_still_freezes_later_candidate() -> None:

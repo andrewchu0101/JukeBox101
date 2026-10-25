@@ -8,7 +8,7 @@ from datetime import timezone
 from typing import Any
 
 from bot.database.submission_codec import decode_contract
-from bot.review import ReviewSnapshot
+from bot.review import ReviewSnapshot, effective_priority_released
 from bot.reward_candidates import RewardCandidate
 from bot.song_identity import VideoIdentity
 from bot.submission_snapshot import SnapshotManifest, SubmissionSnapshot
@@ -90,8 +90,14 @@ def _candidate(row: dict, roots: dict[str, str]) -> RewardCandidate:
     identity = _canonical(decode_current_identity(row), roots)
     if row["conflict_frozen"] or _claim_mapping_conflicts(row, identity, roots):
         identity = VersionAssignment(identity.video, VersionIdentityStatus.CONFLICT, identity.version, "persisted-conflict-freeze")
-    return RewardCandidate(row["operation_id"], row["discord_user_id"], row["accepted_sequence"], identity,
-                           decode_current_review(row), row["claim_operation"] is not None,
+    review = decode_current_review(row)
+    awarded = row["claim_operation"] is not None
+    # [ordering event]: A reexamination approval replaces the intake order with its new tail position.
+    priority_sequence = review.ordering_sequence if review.ordering_sequence is not None else row["accepted_sequence"]
+    # [legacy yield]: Stored reviews from before the ruling are read with the derived release, without rewriting history.
+    review = replace(review, priority_released=effective_priority_released(review, awarded=awarded))
+    return RewardCandidate(row["operation_id"], row["discord_user_id"], priority_sequence, identity,
+                           review, awarded,
                            row["accepted_at"].replace(tzinfo=timezone.utc))
 
 

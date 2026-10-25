@@ -19,8 +19,8 @@ from bot.database.exchange_delivery_store import (
     owner_summary,
     pending_refund_ids,
     recover_interrupted,
-    record_result,
     user_balance,
+    record_result,
     refund_undelivered,
     user_results,
 )
@@ -33,8 +33,9 @@ from bot.database.compensation_store import (
 from bot.database.pending_review import owner_stranded_rows
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import (
-    PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, apply_reexamination, apply_review,
-    apply_version_confirmation, page_pending, pending_review_items, plan_version_confirmation, require_owner, stored_evidence_record,
+    PendingPage, ReexaminationCommand, ReexaminationPlan, ReviewCommand, VersionConfirmationCommand, VersionConfirmationPlan,
+    apply_reexamination, apply_review, apply_version_confirmation, page_pending, pending_review_items, plan_reexamination,
+    plan_version_confirmation, require_owner, stored_evidence_record,
 )
 from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
 from bot.database.reward_settlement import settle_reward
@@ -439,18 +440,32 @@ class SubmissionRepository:
             return apply_version_confirmation(cursor, control, command)
 
     def preview_version_confirmation(self, actor_id: int, operation_id: str, evidence: EvidenceRecord,
-                                     expected_revision: int) -> tuple[ReviewSnapshot, VersionAssignment]:
+                                     expected_revision: int) -> VersionConfirmationPlan:
         """@description: Compute, without writing, what a version confirmation would produce so the Owner preview can refuse early.
         @param self: Repository retaining deployment Owner identity.
         @param actor_id: Authenticated caller that must be the configured Owner.
         @param operation_id: Accepted operation whose video the evidence confirms.
         @param evidence: Owner-stamped evidence fact.
         @param expected_revision: Review revision the Owner examined.
-        @return: Current review and the identity the confirmation would persist.
+        @return: Plan read in one transaction, with the current snapshot and the identity the confirmation would persist.
         """
         require_owner(actor_id, self._owner_id, "owner version confirmation preview")
         with submission_transaction(self._factory) as (cursor, _control):
             return plan_version_confirmation(cursor, operation_id, evidence, actor_id, expected_revision)
+
+    def preview_reexamination(self, actor_id: int, operation_id: str, evidence: EvidenceRecord,
+                              expected_revision: int) -> ReexaminationPlan:
+        """@description: Compute, without writing, what a formal reexamination would reopen and store so its preview matches the confirmation.
+        @param self: Repository retaining deployment Owner identity.
+        @param actor_id: Authenticated caller that must be the configured Owner.
+        @param operation_id: Accepted operation whose video the evidence describes.
+        @param evidence: Owner-stamped reliable evidence fact.
+        @param expected_revision: Review revision the Owner examined.
+        @return: Plan read in one transaction, with the current snapshot, reopened review and projected identity.
+        """
+        require_owner(actor_id, self._owner_id, "owner reexamination preview")
+        with submission_transaction(self._factory) as (cursor, _control):
+            return plan_reexamination(cursor, operation_id, evidence, actor_id, expected_revision)
 
     def pending_items(self, actor_id: int, after_sequence: int | None, limit: int) -> PendingPage:
         """@description: Read one keyset page of the Owner's queue of open, failed, unconfirmed-approved and conflict-frozen items without writing.

@@ -612,8 +612,9 @@ def test_review_digest_without_evidence_citation_keeps_the_previous_formula(pers
     """
     legacy = ReviewCommand("legacy-approve", "op-1", OWNER_ID, "synthetic verified song decision", 1,
                            approval_source=ApprovalSource.OWNER, song_eligible=True)
+    # [pre-snapshot formula]: The previewed-snapshot field postdates stored decisions, so the legacy tuple leaves it out too.
     previous_fields = tuple(getattr(legacy, field) for field in ReviewCommand.__dataclass_fields__
-                            if field not in ("evidence_reference", "content_judgement"))
+                            if field not in ("evidence_reference", "content_judgement", "expected_snapshot"))
     assert review_command_digest(legacy) == decision_digest(previous_fields)
 
 

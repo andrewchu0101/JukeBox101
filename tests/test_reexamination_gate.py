@@ -116,8 +116,8 @@ def test_reopened_approved_item_settles_as_waiting_with_no_ledger_row(persistenc
     assert not database.state["credit_ledger"]
 
 
-def test_approve_after_reopen_is_refused_and_writes_nothing(persistence: tuple) -> None:
-    """@description: Refuse re-approval of a reexamination-pending item so its original priority is never reused.
+def test_approve_after_reopen_is_the_reexamination_pass_and_creates_a_new_tail_ordering_event(persistence: tuple) -> None:
+    """@description: Owner ruling 2026-10-23: approving a reopened submission is the reexamination pass, which takes a new tail position in the same operation.
     @param persistence: Offline repository fixture.
     @return: None.
     """
@@ -125,11 +125,11 @@ def test_approve_after_reopen_is_refused_and_writes_nothing(persistence: tuple) 
     seed_intake(repository, intake(1, "A"))
     approve(repository, "op-1", 1)
     reexamine(repository, "op-1", 2)
-    before = {name: dict(rows) for name, rows in database.state.items() if name.startswith(("jb2_", "credit"))}
-    with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
-        approve(repository, "op-1", 3)
-    assert {name: dict(rows) for name, rows in database.state.items() if name.startswith(("jb2_", "credit"))} == before
-    assert repository.settle("op-1").status is Status.WAITING_VALIDATION
+    counter = dict(database.state["control"])["accepted_sequence"]
+    approve(repository, "op-1", 3)
+    assert dict(database.state["control"])["accepted_sequence"] == counter + 1
+    assert repository.settle("op-1").status is Status.AWARDED
+    assert len(database.state["credit_ledger"]) == 1
 
 
 def test_reject_after_reopen_is_allowed_and_still_awards_nothing(persistence: tuple) -> None:
@@ -198,8 +198,8 @@ def test_unrelated_later_submission_is_not_blocked_by_a_reopened_item(persistenc
     assert repository.settle("op-1").status is Status.WAITING_VALIDATION
 
 
-def test_later_same_recording_waits_behind_reopened_item_until_it_is_rejected(persistence: tuple) -> None:
-    """@description: Keep the reopened earlier submission as a blocker for the same recording, then release it on rejection.
+def test_later_same_recording_is_no_longer_held_back_by_the_reopened_earlier_submission(persistence: tuple) -> None:
+    """@description: Owner ruling 2026-10-23: the reopened earlier submission yields its priority, so the later same-recording submission can be awarded, and the recording is paid only once.
     @param persistence: Offline repository fixture.
     @return: None.
     """
@@ -209,12 +209,9 @@ def test_later_same_recording_waits_behind_reopened_item_until_it_is_rejected(pe
     approve(repository, "op-1", 1)
     approve(repository, "op-3", 1)
     reexamine(repository, "op-1", 2)
-    waiting = repository.settle("op-3")
-    assert waiting.status is Status.WAITING_PREDECESSOR
-    assert waiting.reason is Reason.EARLIER_SUBMISSION
-    assert waiting.blocking_operation_ids == ("op-1",)
-    reject(repository, "op-1", 3)
     assert repository.settle("op-3").status is Status.AWARDED
+    assert len(database.state["credit_ledger"]) == 1
+    assert repository.settle("op-1").status is not Status.AWARDED
     assert len(database.state["credit_ledger"]) == 1
 
 

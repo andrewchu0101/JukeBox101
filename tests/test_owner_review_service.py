@@ -1,3 +1,4 @@
+from copy import deepcopy
 """Exercise the Owner review service over the real repository and the offline SQL-protocol fake.
 
 Every scenario uses synthetic submissions and an in-memory token store; no Discord, MySQL or Gateway is involved.
@@ -217,8 +218,8 @@ def test_unknown_commit_outcome_retries_with_the_same_decision_and_applies_once(
     assert len(database.state["jb2_review_history"]) == history_before + 1
 
 
-def test_approving_a_conflicted_video_keeps_the_conflict_and_awards_nothing(world):
-    """@description: Refuse to clear a persisted identity conflict through approval.
+def test_approving_a_conflicted_video_is_refused_before_any_write_and_the_conflict_stays(world):
+    """@description: Owner ruling 2026-10-23: a version in CONFLICT forbids approval at preview, so nothing is written and the conflict stays.
     @param world: Offline service fixture.
     @return: None.
     """
@@ -230,13 +231,14 @@ def test_approving_a_conflicted_video_keeps_the_conflict_and_awards_nothing(worl
     assert conflict.status is VersionIdentityStatus.CONFLICT
     repository.review(ReviewCommand("identity-conflict", "op-1", OWNER_ID, "two contradicting inspections", 1,
                                     identity=conflict))
-    token = service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "synthetic verified song", 2, EVIDENCE_REFERENCE,
-                                  content=approval_content()).token_id
-    service.confirm(OWNER_ID, token)
+    before = deepcopy(database.state)
+    with pytest.raises(InvalidReviewTransition, match="conflict"):
+        service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "synthetic verified song", 2, EVIDENCE_REFERENCE,
+                        content=approval_content())
+    assert database.state == before
     view = service.view(OWNER_ID, "op-1")
     assert view.identity.status is VersionIdentityStatus.CONFLICT
-    assert view.review.status is ReviewStatus.APPROVED
-    assert not database.state["credit_ledger"]
+    assert view.review.status is ReviewStatus.PENDING_REVIEW
 
 
 def test_reexamination_evidence_keeps_the_original_decision_and_adds_audit_without_state_change(world):
@@ -353,6 +355,7 @@ def test_preview_binds_the_evidence_reference_and_a_changed_reference_needs_its_
     """
     database, repository, service, _ = world
     seed_pending(repository)
+    snapshot = service.view(OWNER_ID, "op-1").snapshot  # [previewed facts]: Nothing writes between this read and both previews.
     first = service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "synthetic verified song", 1, "ev-first",
                             content=approval_content())
     second = service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "synthetic verified song", 1, "ev-second",
@@ -363,10 +366,10 @@ def test_preview_binds_the_evidence_reference_and_a_changed_reference_needs_its_
     (audit_row,) = database.state["jb2_decisions"].values()
     previewed = ReviewCommand(audit_row["decision_id"], "op-1", OWNER_ID, "synthetic verified song", 1,
                               approval_source=ApprovalSource.OWNER, song_eligible=True, evidence_reference="ev-first",
-                              content_judgement=approval_content())
+                              content_judgement=approval_content(), expected_snapshot=snapshot)
     changed = ReviewCommand(audit_row["decision_id"], "op-1", OWNER_ID, "synthetic verified song", 1,
                             approval_source=ApprovalSource.OWNER, song_eligible=True, evidence_reference="ev-second",
-                            content_judgement=approval_content())
+                            content_judgement=approval_content(), expected_snapshot=snapshot)
     assert audit_row["request_digest"] == review_command_digest(previewed)
     assert audit_row["request_digest"] != review_command_digest(changed)
 
@@ -495,8 +498,8 @@ def test_supplementary_evidence_never_reopens_or_sets_the_block(world):
     assert after.reexamination_pending is False
 
 
-def test_preview_refuses_approval_after_reopen_but_allows_rejection(world):
-    """@description: Refuse re-approval at preview time and allow the Owner to reject the reopened review.
+def test_preview_of_a_reexamination_pass_shows_the_new_tail_position_and_rejection_stays_allowed(world):
+    """@description: Owner ruling 2026-10-23: approving a reopened review is the reexamination pass; its preview says the new tail position, and rejection stays allowed.
     @param world: Offline service fixture.
     @return: None.
     """
@@ -504,12 +507,11 @@ def test_preview_refuses_approval_after_reopen_but_allows_rejection(world):
     seed_pending(repository)
     approve_op1(service)
     reexamine(service, OWNER_ID, "op-1", reexamination_evidence(submission(1).identity.video),
-                                  "fresh owner inspection", 2)
-    history_before = len(database.state["jb2_review_history"])
-    with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
-        service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "attempted re-approval", 3, EVIDENCE_REFERENCE,
-                                  content=approval_content())
-    assert len(database.state["jb2_review_history"]) == history_before
+              "fresh owner inspection", 2)
+    preview = service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "reexamination pass", 3, EVIDENCE_REFERENCE,
+                              content=approval_content())
+    assert preview.projected_status is ReviewStatus.APPROVED
+    assert "新排序事件" in preview.financial_effect
     token = service.preview(OWNER_ID, "op-1", ReviewAction.REJECT, "not an eligible song", 3, EVIDENCE_REFERENCE).token_id
     assert service.confirm(OWNER_ID, token).status is ReviewStatus.REJECTED
     assert not database.state["credit_ledger"]
@@ -854,6 +856,7 @@ def test_changed_content_judgement_needs_its_own_preview_and_is_bound_into_the_d
     video = submission(1).identity.video
     first = approval_content(video)
     changed = approval_content(video, reason="reconsidered after listening again")
+    snapshot = service.view(OWNER_ID, "op-1").snapshot  # [previewed facts]: Nothing writes between this read and both previews.
     preview = service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "synthetic verified song", 1, EVIDENCE_REFERENCE,
                               content=first)
     other = service.preview(OWNER_ID, "op-1", ReviewAction.APPROVE, "synthetic verified song", 1, EVIDENCE_REFERENCE,
@@ -864,7 +867,7 @@ def test_changed_content_judgement_needs_its_own_preview_and_is_bound_into_the_d
     (audit_row,) = database.state["jb2_decisions"].values()
     previewed = ReviewCommand(audit_row["decision_id"], "op-1", OWNER_ID, "synthetic verified song", 1,
                         approval_source=ApprovalSource.OWNER, song_eligible=True, evidence_reference=EVIDENCE_REFERENCE,
-                        content_judgement=first)
+                        content_judgement=first, expected_snapshot=snapshot)
     assert audit_row["request_digest"] == review_command_digest(previewed)
     assert audit_row["request_digest"] != review_command_digest(replace(previewed, content_judgement=changed))
 

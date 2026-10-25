@@ -13,9 +13,13 @@ from bot.database.persisted_snapshot import decode_current_identity, decode_curr
 from bot.database.reward_history import audit_reward_history
 from bot.database.submission_codec import decode_contract, encode_contract
 from bot.database.submission_store import ensure_version, persist_review
+from bot.decision_snapshot import DecisionSnapshot, require_unchanged_snapshot, snapshot_intent
 from bot.eligibility import DurationEvidence
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
-from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError, reopen_for_reexamination
+from bot.review import (
+    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
+    reopen_for_reexamination,
+)
 from bot.song_identity import VideoIdentity
 from bot.song_judgement import ContentJudgement
 from bot.submission_workflow import SubmissionRequest, _review_request
@@ -24,7 +28,7 @@ from bot.version_identity import RecordingVersionIdentity, VersionAssignment, Ve
 
 
 # [optional citations]: Unset citations are left out of the digest so decisions recorded before they existed still replay.
-OPTIONAL_CITATION_FIELDS = ("evidence_reference", "content_judgement")
+OPTIONAL_CITATION_FIELDS = ("evidence_reference", "content_judgement", "expected_snapshot")
 
 
 @dataclass(frozen=True)
@@ -44,6 +48,7 @@ class ReviewCommand:
     clear_conflict_freeze: bool = False  # [explicit resolution]: Never automatically clears historical conflicts.
     evidence_reference: str | None = None  # [decision citation]: Unset references keep older digests.
     content_judgement: ContentJudgement | None = None  # [content verdict]: Owner's song judgement an approval relied on.
+    expected_snapshot: DecisionSnapshot | None = None  # [previewed facts]: Refuse the write when identity, canonical root or evidence moved.
 
     def __post_init__(self) -> None:
         """@description: Reject malformed action identities and mutable-policy switches before persistence.
@@ -70,6 +75,7 @@ class ReexaminationCommand:
     reason: str  # [audit explanation]: Required for every reexamination.
     expected_revision: int  # [optimistic concurrency]: The revision the Owner examined.
     evidence: EvidenceRecord  # [new evidence]: Must be reliable and describe the operation's video.
+    expected_snapshot: DecisionSnapshot | None = None  # [previewed facts]: Refuse the reopen when identity, canonical root or evidence moved.
 
     def __post_init__(self) -> None:
         """@description: Reject malformed reexamination identities before any transaction begins.
@@ -89,6 +95,7 @@ class VersionConfirmationCommand:
     reason: str  # [audit explanation]: Required for every confirmation.
     expected_revision: int  # [optimistic concurrency]: The review revision the Owner examined.
     evidence: EvidenceRecord  # [version evidence]: Must be reliable and describe the operation's video.
+    expected_snapshot: DecisionSnapshot | None = None  # [previewed facts]: Refuse the stamp when identity, canonical root or evidence moved.
 
     def __post_init__(self) -> None:
         """@description: Reject malformed confirmation identities before any transaction begins.
@@ -146,13 +153,7 @@ def review_command_digest(command: ReviewCommand) -> str:
     @param command: Authenticated Owner review action.
     @return: Digest stored with the audited decision.
     """
-    intent = []
-    for field in command.__dataclass_fields__:
-        value = getattr(command, field)
-        if field in OPTIONAL_CITATION_FIELDS and value is None:
-            continue
-        intent.append(content_judgement_digest(value) if field == "content_judgement" else value)
-    return decision_digest(tuple(intent))
+    return decision_digest(_command_intent(command))
 
 
 def reexamination_digest(command: ReexaminationCommand) -> str:
@@ -160,7 +161,7 @@ def reexamination_digest(command: ReexaminationCommand) -> str:
     @param command: Authenticated formal reexamination action.
     @return: Digest stored with the audited reexamination.
     """
-    return decision_digest(("reexamination",) + tuple(getattr(command, field) for field in command.__dataclass_fields__))
+    return decision_digest(("reexamination",) + _command_intent(command))
 
 
 def version_confirmation_digest(command: VersionConfirmationCommand) -> str:
@@ -168,7 +169,34 @@ def version_confirmation_digest(command: VersionConfirmationCommand) -> str:
     @param command: Authenticated Owner version confirmation.
     @return: Digest stored with the audited confirmation.
     """
-    return decision_digest(("version_confirmation",) + tuple(getattr(command, field) for field in command.__dataclass_fields__))
+    return decision_digest(("version_confirmation",) + _command_intent(command))
+
+
+def _command_intent(command: object) -> tuple:
+    """@description: List every intent field of one command, omitting unset optional fields so older digests still replay.
+    @param command: Authenticated Owner action carrying dataclass intent fields.
+    @return: Ordered intent values that the digest covers.
+    """
+    intent = []
+    for field in command.__dataclass_fields__:
+        value = getattr(command, field)
+        if field in OPTIONAL_CITATION_FIELDS and value is None:
+            continue
+        intent.append(_intent_value(field, value))
+    return tuple(intent)
+
+
+def _intent_value(field: str, value: object) -> object:
+    """@description: Replace nested judgement and snapshot objects with stable fingerprints so digests compare by content.
+    @param field: Command field name.
+    @param value: Field value as stored on the command.
+    @return: Fingerprint for judgement or snapshot fields, otherwise the value itself.
+    """
+    if field == "content_judgement":
+        return content_judgement_digest(value)
+    if field == "expected_snapshot":
+        return decision_digest(snapshot_intent(value))
+    return value
 
 
 def replay_decision(cursor: Any, decision_id: str, digest: str) -> str | None:
@@ -230,6 +258,9 @@ def apply_review(cursor: Any, control: dict, command: ReviewCommand) -> ReviewSn
         return decode_contract(previous, ReviewSnapshot)
     # [authoritative review subject]: Input cannot supply a replacement current revision.
     request = _current_request(cursor, command.operation_id, command.expected_revision)
+    _require_review_snapshot(cursor, command, request.identity)
+    _refuse_approval_in_conflict(command, request.identity)
+    request, control = _with_ordering_sequence(cursor, control, command, request)
     proposed = command.identity or request.identity  # [trusted mapping update]: Never inferred from titles.
     if proposed.video != request.identity.video:
         raise ValueError("Identity update targets another video")
@@ -273,7 +304,7 @@ def _append_content_judgement(cursor: Any, command: ReviewCommand) -> None:
 
 def apply_reexamination(cursor: Any, control: dict, command: ReexaminationCommand) -> ReviewSnapshot:
     """@description: Reopen an approved or rejected review on reliable new evidence, keeping its order and the old awards.
-    The reopened review blocks approval until the TK-15 ordering event; the decision and audit stay append-only.
+    The reopened review is passed only by an approval that creates its new ordering event; the decision and audit stay append-only.
     @param cursor: Transaction-owned cursor holding the writer gate.
     @param control: Current database read revision.
     @param command: Previously authenticated formal reexamination.
@@ -284,12 +315,15 @@ def apply_reexamination(cursor: Any, control: dict, command: ReexaminationComman
     if previous is not None:
         return decode_contract(previous, ReviewSnapshot)
     request = _current_request(cursor, command.operation_id, command.expected_revision)
+    require_unchanged_snapshot(command.expected_snapshot, current_decision_snapshot(cursor, request.identity, command.evidence))
     _require_reliable_evidence(command.evidence, command.actor_id, request.identity.video)
-    reopened = reopen_for_reexamination(request.review, command.expected_revision, command.evidence.evidence_id)
+    reopened = reopen_for_reexamination(request.review, command.expected_revision, command.evidence.evidence_id,
+                                        awarded=_is_awarded(cursor, command.operation_id))
     identity = _reconciled_identity(cursor, command.evidence, request.identity)  # [new contradiction]: Owner evidence can freeze the reward.
     _append_evidence_record(cursor, command)
     ensure_version(cursor, identity)
     persist_review(cursor, reopened, command.actor_id, command.reason, identity)
+    _mirror_legacy_identity(cursor, identity)  # [legacy mirror]: A reexamination can freeze a confirmed identity, so readers of the mirror must see it.
     cursor.execute("UPDATE jb2_control SET revision=revision+1 WHERE singleton_id=1")
     control = dict(control, revision=control["revision"] + 1)
     persist_decisions(cursor, current_decisions(cursor, control))  # [award block]: Candidate becomes WAITING_VALIDATION.
@@ -309,8 +343,9 @@ def apply_version_confirmation(cursor: Any, control: dict, command: VersionConfi
     previous = replay_decision(cursor, command.decision_id, digest)  # [replay]: A retried key returns the original result and writes nothing.
     if previous is not None:
         return decode_contract(previous, ReviewSnapshot)
-    review, identity = plan_version_confirmation(cursor, command.operation_id, command.evidence, command.actor_id,
-                                                 command.expected_revision)
+    plan = plan_version_confirmation(cursor, command.operation_id, command.evidence, command.actor_id, command.expected_revision)
+    require_unchanged_snapshot(command.expected_snapshot, plan.current)
+    review, identity = plan.review, plan.projected_identity
     _append_evidence_record(cursor, command)
     ensure_version(cursor, identity)
     persist_review(cursor, review, command.actor_id, command.reason, identity)
@@ -322,15 +357,34 @@ def apply_version_confirmation(cursor: Any, control: dict, command: VersionConfi
     return review
 
 
+@dataclass(frozen=True)
+class VersionConfirmationPlan:
+    """Carry what a version confirmation would read and write, computed without any write."""
+
+    review: ReviewSnapshot  # [review after]: Unchanged, because a confirmation never reopens a decision.
+    current: DecisionSnapshot  # [previewed facts]: State the Owner's preview must still match when confirmed.
+    projected_identity: VersionAssignment  # [identity after]: Identity the confirmation would persist.
+
+
+@dataclass(frozen=True)
+class ReexaminationPlan:
+    """Carry the current and reopened reviews plus the identity a reexamination would persist, computed without any write."""
+
+    current_review: ReviewSnapshot  # [review before]: Status the Owner sees before the reopen.
+    current: DecisionSnapshot  # [previewed facts]: State the Owner's preview must still match when confirmed.
+    reopened_review: ReviewSnapshot  # [review after]: Pending review or pending validation with the reexamination block set.
+    projected_identity: VersionAssignment  # [identity after]: Identity recomputed from all Owner evidence, including the new record.
+
+
 def plan_version_confirmation(cursor: Any, operation_id: str, evidence: EvidenceRecord, actor_id: int,
-                              expected_revision: int) -> tuple[ReviewSnapshot, VersionAssignment]:
-    """@description: Compute, without writing, the review and identity a version confirmation would produce, so previews and confirmations agree.
+                              expected_revision: int) -> VersionConfirmationPlan:
+    """@description: Compute, without writing, the review, facts and identity a version confirmation would produce, so previews and confirmations agree.
     @param cursor: Transaction-owned cursor holding the writer gate.
     @param operation_id: Accepted operation whose video the evidence confirms.
     @param evidence: Owner-stamped evidence fact the confirmation relies on.
     @param actor_id: Authenticated Owner who judged the evidence.
     @param expected_revision: Review revision the Owner examined.
-    @return: Current review and the identity that confirming it would persist.
+    @return: Plan with the unchanged review, the current snapshot and the identity that confirming it would persist.
     """
     request = _current_request(cursor, operation_id, expected_revision)
     _require_reliable_evidence(evidence, actor_id, request.identity.video)
@@ -338,7 +392,89 @@ def plan_version_confirmation(cursor: Any, operation_id: str, evidence: Evidence
     identity = _reconciled_identity(cursor, evidence, request.identity)
     if _confirms_nothing(cursor, evidence, request.identity.video):
         raise ValueError("Version confirmation has nothing to confirm: the evidence establishes no recording version")
-    return request.review, identity
+    return VersionConfirmationPlan(request.review, current_decision_snapshot(cursor, request.identity, evidence), identity)
+
+
+def plan_reexamination(cursor: Any, operation_id: str, evidence: EvidenceRecord, actor_id: int,
+                       expected_revision: int) -> ReexaminationPlan:
+    """@description: Compute, without writing, what a formal reexamination would reopen and which identity it would store, so its preview shows the real result.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param operation_id: Accepted operation whose video the evidence describes.
+    @param evidence: Owner-stamped reliable evidence the reexamination relies on.
+    @param actor_id: Authenticated Owner who judged the evidence.
+    @param expected_revision: Review revision the Owner examined.
+    @return: Plan with the current review, current snapshot, reopened review and projected identity.
+    """
+    request = _current_request(cursor, operation_id, expected_revision)
+    _require_reliable_evidence(evidence, actor_id, request.identity.video)
+    reopened = reopen_for_reexamination(request.review, expected_revision, evidence.evidence_id,
+                                        awarded=_is_awarded(cursor, operation_id))
+    identity = _reconciled_identity(cursor, evidence, request.identity)
+    return ReexaminationPlan(request.review, current_decision_snapshot(cursor, request.identity, evidence), reopened, identity)
+
+
+def current_decision_snapshot(cursor: Any, identity: VersionAssignment, pending: EvidenceRecord | None = None) -> DecisionSnapshot:
+    """@description: Read the identity, canonical roots and evidence set that a decision is based on, including the not-yet-stored evidence it cites.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param identity: Persisted identity of the operation's video.
+    @param pending: Evidence the decision cites but has not stored yet, or None.
+    @return: Snapshot of the facts a preview or confirmation depends on.
+    """
+    roots = _canonical_roots(cursor)
+    # [content fingerprint]: Identifiers alone would miss a rewritten row, and every record carries its canonical root.
+    fingerprints = [decision_digest((record, _canonical_version(record.version, roots)))
+                    for record in _stored_evidence(cursor, identity.video.video_id)]
+    if pending is not None:  # [cited evidence]: A merge that re-roots the cited version must also refuse the confirmation.
+        fingerprints.append(decision_digest(("pending", pending, _canonical_version(pending.version, roots))))
+    return DecisionSnapshot(identity, _canonical_version(identity.version, roots), tuple(fingerprints))
+
+
+def _refuse_approval_in_conflict(command: ReviewCommand, identity: VersionAssignment) -> None:
+    """@description: Owner ruling 2026-10-23: a version in CONFLICT never permits approval, while rejection stays allowed.
+    @param command: Review decision being applied.
+    @param identity: Identity read at the start of the decision.
+    @return: None; raises InvalidReviewTransition before any write when an approval meets a conflict.
+    """
+    if command.approval_source is not None and identity.status is VersionIdentityStatus.CONFLICT:
+        raise InvalidReviewTransition("Version conflict forbids approval; rejection stays allowed and does not clear the conflict")
+
+
+def _with_ordering_sequence(cursor: Any, control: dict, command: ReviewCommand,
+                            request: SubmissionRequest) -> tuple[SubmissionRequest, dict]:
+    """@description: Allocate the system ordering sequence for a reexamination approval inside the writer gate, and keep the in-transaction control row equal to the database.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param control: Control row read at the start of the transaction.
+    @param command: Review decision being applied.
+    @param request: Current review request.
+    @return: The request carrying the new sequence and the control row that matches the database, or the unchanged pair for ordinary decisions.
+    """
+    if command.approval_source is None or not request.review.reexamination_pending:
+        return request, control
+    sequence = int(control["accepted_sequence"]) + 1  # [ordering event]: Same counter as intake, so the tail is strictly after every accepted submission.
+    cursor.execute("UPDATE jb2_control SET accepted_sequence = %s, revision = revision + 1 WHERE singleton_id = 1", (sequence,))
+    # [in-transaction control]: Projections read below must see the sequence and revision the database now holds.
+    return replace(request, ordering_sequence=sequence), dict(control, accepted_sequence=sequence, revision=control["revision"] + 1)
+
+
+def _is_awarded(cursor: Any, operation_id: str) -> bool:
+    """@description: Tell whether a submission already has a first-reward claim, which keeps its priority semantics unchanged on reopen.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param operation_id: Accepted operation identifier.
+    @return: True when a claim row exists for the operation.
+    """
+    cursor.execute("SELECT operation_id FROM jb2_claims WHERE operation_id=%s", (operation_id,))
+    return cursor.fetchone() is not None
+
+
+def _require_review_snapshot(cursor: Any, command: ReviewCommand, identity: VersionAssignment) -> None:
+    """@description: Refuse an Owner approval whose previewed facts changed; trusted internal decisions are checked only when they cite a snapshot.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param command: Review decision whose snapshot must match the stored state when one is cited.
+    @param identity: Identity read at the start of the decision.
+    @return: None; raises StaleReviewVersion before any write when the cited facts changed.
+    """
+    if command.expected_snapshot is not None:
+        require_unchanged_snapshot(command.expected_snapshot, current_decision_snapshot(cursor, identity))
 
 
 def _confirms_nothing(cursor: Any, evidence: EvidenceRecord, video: VideoIdentity) -> bool:

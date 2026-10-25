@@ -368,14 +368,19 @@ def test_reopen_requires_a_clean_nonempty_evidence_reference(pending_review, ref
         _reopen(_approved(pending_review), evidence_reference=reference)
 
 
-def test_approval_is_refused_while_reexamination_is_pending(pending_review):
-    """@description: Block a re-approval that would reuse the original priority before the TK-15 ordering event.
+def test_approval_without_an_ordering_event_is_refused_and_with_one_passes_the_reexamination(pending_review):
+    """@description: A reopened review needs a new ordering sequence to be approved (the reexamination pass); without it the approval is refused.
     @param pending_review: Passing review.
     @return: None.
     """
     reopened = _reopen(_approved(pending_review))
-    with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
+    with pytest.raises(InvalidReviewTransition, match="requires a new ordering event"):
         approve_review(reopened, ApprovalSource.OWNER, reopened.version, song_eligible=True)
+    passed = approve_review(reopened, ApprovalSource.OWNER, reopened.version, song_eligible=True, ordering_sequence=7)
+    assert passed.status is ReviewStatus.APPROVED
+    assert passed.reexamination_pending is False
+    assert passed.ordering_sequence == 7
+    assert passed.priority_released is False
 
 
 def test_reject_clears_reexamination_marker_without_award(pending_review):
@@ -392,17 +397,16 @@ def test_reject_clears_reexamination_marker_without_award(pending_review):
 
 
 def test_reexamination_marker_survives_revalidation_until_rejected(pending_review, valid_evidence):
-    """@description: Keep the approval block through validation retries, and drop it only when a rejection ends the review.
+    """@description: Keep the reexamination marker through validation retries; approval needs a new ordering event, and only a rejection ends the marker.
     @param pending_review: Passing review.
     @param valid_evidence: Passing duration evidence for the retry.
-    @param: none
     @return: None.
     """
     reopened = _reopen(_approved(pending_review))
     failed = record_validation_error(reopened, ValidationError.METADATA_UNAVAILABLE, reopened.version)
     retried = record_validation(failed, valid_evidence, failed.version)
     assert failed.reexamination_pending is True and retried.reexamination_pending is True
-    with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
+    with pytest.raises(InvalidReviewTransition, match="requires a new ordering event"):
         approve_review(retried, ApprovalSource.OWNER, retried.version, song_eligible=True)
     too_long = DurationEvidence(VIDEO, 999, "synthetic-long", reliable=True, full_video=True)
     assert record_validation(retried, too_long, retried.version).reexamination_pending is False
@@ -429,12 +433,14 @@ def test_priority_released_defaults_false_and_rejection_sets_it(pending_review):
     assert reject_review(pending_review, 1).priority_released is True
 
 
-def test_reopen_preserves_priority_released_flag(pending_review):
-    """@description: Keep released priority released after reopening, while an approval reopen stays unreleased.
+def test_reopen_releases_an_approved_unawarded_priority_and_keeps_it_for_an_awarded_one(pending_review):
+    """@description: Owner ruling 2026-10-23: an approved submission yields its priority on reopen unless it was already awarded.
     @param pending_review: Passing review.
     @return: None.
     """
-    assert _reopen(_approved(pending_review)).priority_released is False
+    assert _reopen(_approved(pending_review)).priority_released is True
+    assert reopen_for_reexamination(_approved(pending_review), _approved(pending_review).version, "synthetic-evidence-ref",
+                                    awarded=True).priority_released is False
     assert _reopen(reject_review(pending_review, 1)).priority_released is True
 
 
@@ -495,7 +501,7 @@ def test_reexamination_evidence_never_bypasses_duration_gate(valid_evidence, ree
     assert revalidated.approval_source is None
     assert not is_submission_reward_eligible(revalidated, SubmissionDisposition.NEW_CANDIDATE)
     if expected_status is ReviewStatus.PENDING_REVIEW:
-        with pytest.raises(InvalidReviewTransition, match="Reexamination pending"):
+        with pytest.raises(InvalidReviewTransition, match="requires a new ordering event"):
             approve_review(revalidated, ApprovalSource.OWNER, revalidated.version, song_eligible=True)
 
 
