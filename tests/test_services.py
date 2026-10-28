@@ -31,7 +31,7 @@ def test_share_never_fabricates_credit_or_verification(status, duplicate, expect
     repository.submit_pending.return_value = SubmissionResult(status, duplicate)
     reply = asyncio.run(MusicService(repository).share(123, "https://youtu.be/Abc_123-Xyz"))
     assert expected in reply
-    assert "不" in reply and "點數" in reply
+    assert "不" in reply and "Nickel" in reply
     repository.submit_pending.assert_called_once()
     assert repository.mock_calls[0].args[0] == 123
     assert len(repository.mock_calls) == 1
@@ -55,7 +55,7 @@ def test_exchange_gate_has_no_side_effects():
     """
     repository = MagicMock()
     reply = asyncio.run(MusicService(repository).exchange(123))
-    assert "未扣點" in reply
+    assert "未扣除 Nickel" in reply
     assert "資格驗證" in reply and "派送恢復" in reply
     assert repository.mock_calls == []
 
@@ -68,7 +68,7 @@ def test_balance_result(balance):
     """
     repository = MagicMock()
     repository.balance.return_value = balance
-    assert f"{balance} 點" in asyncio.run(MusicService(repository).balance(123))
+    assert f"目前可用 Nickel：{balance}。" in asyncio.run(MusicService(repository).balance(123))
     repository.balance.assert_called_once_with(123)
 
 

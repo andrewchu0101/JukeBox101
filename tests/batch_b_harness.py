@@ -16,6 +16,7 @@ from bot.config import DatabaseSettings
 from bot.database.test_privileges import collect_privileges, privilege_blockers
 from tests.mysql_safety import validate_test_constraints
 from tests.batch_b_mysql_cases import validate_payloads
+from tests.batch_b_assertion_guard import require_assertions_enabled
 from tests.batch_b_fk_window import require_cleanup_cascade
 from tests.batch_b_harness_contract import RunScope, CONTROL_COLUMNS, HARNESS_USER, HarnessSafetyError, owned_rows, consistent_accounting, consistent_acceptance
 from tests.batch_b_harness_database import (verified_connection, verify_harness_grants, read_inventory,
@@ -53,6 +54,7 @@ class MySQLHarness:
         @param self: Run owner with separately loaded app and harness profiles.
         @return: None.
         """
+        require_assertions_enabled()  # [pre-connection gate]: Refuse before the journal or any management session.
         self.persist("REGISTERED")
         self.connection = verified_connection(self.management, HARNESS_USER)
         with self.connection.cursor() as cursor:
@@ -486,6 +488,7 @@ def create_harness(application: DatabaseSettings, management: DatabaseSettings, 
     @param supervision: Parent-provided pytest configuration; absent for legacy execution.
     @return: Existing harness with a fresh run manifest and pinned temporary schema.
     """
+    require_assertions_enabled()  # [pre-registration gate]: No supervisor hook or directory may run under -O.
     if supervision is None:
         return MySQLHarness(application, management)
     from tests.batch_b_acceptance import stage_b_save

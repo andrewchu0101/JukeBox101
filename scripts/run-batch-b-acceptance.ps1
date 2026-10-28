@@ -70,7 +70,7 @@ function Convert-AcceptanceReport {
         $report.stage -notin @('A_PRECHECK_FAILED','A_PROVISION_FAILED','A_PRIVILEGE_VERIFY_FAILED',
             'B_ONLY_FAILED_BLOCKED','B_ONLY_COMPLETE_MANUAL_ACCEPTANCE_PENDING','B_BASELINE_FAILED','B_TEST_FAILED','B_CLEANUP_FAILED','B_RESTORE_FAILED','B_VERIFY_FAILED','COMPLETE_MANUAL_ACCEPTANCE_PENDING',
             'R_FK_FAILED_BLOCKED','R_FK_RESTORED_VERIFIED_BLOCKED','FK_LAB_FAILED','FK_LAB_COMPLETE','R_READ_ONLY_FAILED','R_READ_ONLY_COMPLETE','R_RECOVERY_FAILED_BLOCKED',
-            'R_RECOVERY_COMMIT_UNKNOWN_BLOCKED','R_RECOVERY_RESTORED_VERIFIED_BLOCKED')) {
+            'R_RECOVERY_COMMIT_UNKNOWN_BLOCKED','R_RECOVERY_RESTORED_VERIFIED_BLOCKED','REFUSED_ASSERTIONS_DISABLED')) {
         throw 'INVALID_WORKER_REPORT'
     }
     foreach ($field in @('current_step','failure_step','dba_close_error_type','error_type')) {
@@ -141,12 +141,12 @@ function Read-RecoveryRequest {
         if ($approvedSchema -cnotmatch '^[0-9a-f]{64}$') { throw 'APPROVED_SCHEMA_FINGERPRINT_REQUIRED' }
         $header = @{authorization='BATCH_B_RECOVERY_WRITE';journal=$RecoveryJournal;confirmation=$required;
             schema_fingerprint=$approvedSchema;exclusive_no_ddl=$true}
+        return @{Header=$header;Prompts=@('Existing jukebox101_test_harness password (hidden)')}
     }
-    else {
-        if ((Read-Host 'Stop all test DB writers/DDL; type READONLY to inspect only') -cne 'READONLY') { throw 'READONLY_REQUIRED' }
-        $header = @{authorization='BATCH_B_RECOVERY_READONLY';journal=$RecoveryJournal}
-    }
-    return @{Header=$header;Prompts=@('Existing jukebox101_test_harness password (hidden)')}
+    if ((Read-Host 'Stop all test DB writers/DDL; type READONLY to inspect only') -cne 'READONLY') { throw 'READONLY_REQUIRED' }
+    # [dedicated account]: Inspection never uses the harness identity; the account name is checked again by Python before connecting.
+    $header = @{authorization='BATCH_B_RECOVERY_READONLY';journal=$RecoveryJournal;account='jukebox101_test_readonly'}
+    return @{Header=$header;Prompts=@('Existing read-only account password (hidden)')}
 }
 
 function Read-StandardRequest {
@@ -185,6 +185,11 @@ function Get-AcceptanceResult {
     $null = $Errors.GetAwaiter().GetResult() # Never display raw Python/driver exceptions.
     $json = Convert-AcceptanceReport $Output.GetAwaiter().GetResult()
     $stage = ($json | ConvertFrom-Json).stage
+    # [approved refusal]: Assertion-stripped refusal is exit 3 only; it is never a success and never remapped to 0.
+    if ($stage -eq 'REFUSED_ASSERTIONS_DISABLED') {
+        if ($Child.ExitCode -ne 3) { throw 'REFUSAL_EXIT_MISMATCH' }
+        return @{Json=$json;ExitCode=3}
+    }
     if ($Options.StageBOnly -and $stage -notlike 'B_ONLY_*') { throw 'STAGE_B_REPORT_MODE_MISMATCH' }
     if ($Options.RestoreRecovery -and $stage -notlike 'R_RECOVERY_*') { throw 'RESTORE_REPORT_MODE_MISMATCH' }
     if ($Options.RecoveryJournal -and -not $Options.RestoreRecovery -and -not $Options.RepairRecoveryFk -and $stage -notlike 'R_READ_ONLY_*') { throw 'READ_REPORT_MODE_MISMATCH' }
@@ -210,6 +215,33 @@ function Send-AcceptanceSecrets {
     }
 }
 
+function Get-InterpreterAssertionStatus {
+    param([string]$ProjectRoot)
+    # [interpreter truth]: The launcher's own Python reports -O, -OO and PYTHONOPTIMIZE through its flags before any credential is requested.
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+    $info.Arguments = '-B -m tests.batch_b_interpreter_check'
+    $info.WorkingDirectory = $ProjectRoot
+    $info.UseShellExecute = $false
+    $info.RedirectStandardInput = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    foreach ($key in @($info.EnvironmentVariables.Keys)) {
+        if ($key -like 'TEST_*' -or $key -like 'DB_*' -or $key -like 'JUKEBOX_RUN*' -or $key -like 'DISCORD_*') { $info.EnvironmentVariables.Remove($key) }
+    }
+    $probe = New-Object System.Diagnostics.Process
+    $probe.StartInfo = $info
+    try {
+        $null = $probe.Start()
+        $probe.StandardInput.Close()
+        $stdout, $stderr = $probe.StandardOutput.ReadToEndAsync(), $probe.StandardError.ReadToEndAsync()
+        $probe.WaitForExit()
+        $null = $stdout.GetAwaiter().GetResult(); $null = $stderr.GetAwaiter().GetResult()
+        return $probe.ExitCode
+    }
+    finally { $probe.Dispose() }
+}
+
 function Invoke-BatchBAcceptance {
     param([string]$ProjectRoot, [string]$RecoveryJournal = '', [switch]$RestoreRecovery, [switch]$FkLab, [switch]$RepairRecoveryFk, [switch]$StageBOnly)
     $options = @{RecoveryJournal=$RecoveryJournal;RestoreRecovery=$RestoreRecovery.IsPresent;FkLab=$FkLab.IsPresent;
@@ -219,6 +251,10 @@ function Invoke-BatchBAcceptance {
         Close-AcceptanceGates
         Assert-AcceptanceMode $options
         if (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot '.venv\Scripts\python.exe'))) { throw 'PYTHON_MISSING' }
+        # [pre-prompt gate]: Refuse before any credential prompt when the launcher's interpreter strips asserts; unknown status fails closed.
+        $interpreterStatus = Get-InterpreterAssertionStatus $ProjectRoot
+        if ($interpreterStatus -eq 3) { return @{Json='{"stage":"REFUSED_ASSERTIONS_DISABLED","safety_code":"ASSERTIONS_DISABLED"}';ExitCode=3} }
+        if ($interpreterStatus -ne 0) { throw 'INTERPRETER_CHECK_FAILED' }
         $request = Get-AcceptanceRequest $options
         foreach ($prompt in $request.Prompts) { $secrets += Read-Host $prompt -AsSecureString }
         $child.StartInfo = New-AcceptanceStartInfo $ProjectRoot

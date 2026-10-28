@@ -76,6 +76,17 @@ def test_real_batch_b_workflow(mysql_batch_b: MySQLHarness, scenario: str) -> No
     assert outcome["status"] == "PASS", outcome
 
 
+@pytest.mark.skipif(os.environ.get("JUKEBOX_BATCH_B_REEXAM_SETTLEMENT") != "1",
+                    reason="Reexamination settlement is outside the reviewed 23-case matrix; requires its own explicit opt-in")
+def test_real_batch_b_reexam_settlement(mysql_batch_b: MySQLHarness) -> None:
+    """@description: Run the sequential reexamination-settlement integration only when named by its own switch.
+    @param mysql_batch_b: Verified and enabled isolated run.
+    @return: None.
+    """
+    outcome = mysql_batch_b.execute("reexam_settlement")  # [sequential integration]: Not a concurrency proof.
+    assert outcome["status"] == "PASS", outcome
+
+
 @pytest.mark.parametrize("prefix", ["INSERT INTO jb2_events", "INSERT INTO jb2_receipts", "INSERT INTO jb2_evidence",
                                     "INSERT INTO credit_ledger", "INSERT INTO jb2_claims", "UPDATE users SET credit_balance",
                                     "UPDATE jb2_events SET reward_status", "INSERT INTO jb2_settlements"])

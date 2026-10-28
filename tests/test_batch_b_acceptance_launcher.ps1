@@ -115,6 +115,7 @@ try {
     $header = $frames[0] | ConvertFrom-Json
     Assert-Bridge ($header.authorization -eq 'BATCH_B_RECOVERY_READONLY') 'Recovery intent missing'
     Assert-Bridge ($header.journal -eq 'synthetic-incident.json') 'Recovery journal changed'
+    Assert-Bridge ($header.account -eq 'jukebox101_test_readonly') 'Recovery must use the dedicated read-only account'
     Assert-Bridge ($script:Child.StartInfo.EnvironmentVariables['JUKEBOX_RUN_BATCH_B_MIGRATION'] -eq '0') 'Recovery enabled migration'
     $script:ExpectedMode = 'write'
     $before = $script:Secrets.Count

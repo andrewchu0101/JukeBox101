@@ -20,7 +20,7 @@ DM_TIMEOUT_SECONDS = 20.0  # [bounded attempt]: Must stay far below DELIVERY_LEA
 PENDING_REVIEW_TEXT = "你有一筆交換尚待確認（已保留但尚未派送），目前暫停新的交換。請聯絡 Owner 處理。"  # [owner contact]: No link, no balance detail.
 NO_CANDIDATE_TEXT = "目前沒有符合條件的歌曲"  # [reviewed wording]: S25 reply when no eligible song exists; nothing is charged.
 IN_PROGRESS_TEXT = "你的交換仍在處理中或結果待核對，請稍候再試；處理完成前不會重複扣點或派送。"  # [no duplicate effect]: Shown while an earlier exchange is open; nothing is charged or sent.
-INSUFFICIENT_TEXT = "點數不足，交換一首歌曲需要 1 Nickel。"  # [reviewed wording]: Shown before any candidate work is reported.
+INSUFFICIENT_TEXT = "Nickel 不足，交換一首歌曲需要 1 Nickel。"  # [reviewed wording]: Shown before any candidate work is reported.
 
 
 class DeliveryStatus(Enum):
@@ -243,7 +243,7 @@ def _delivery_text(outcome: DeliveryOutcome, refund: str | None) -> str:
         return f"已將推薦私訊給你，請查看私訊。{code}"
     if outcome.status is DeliveryStatus.FAILED:
         if refund in ("refunded", "already_released"):
-            return f"私訊未能送出，已退回 1 點。{code}"
+            return f"私訊未能送出，已退還 1 Nickel。{code}"
         if refund == "contradiction":
             return f"私訊未能送出，此筆紀錄需人工查核，尚未退款。{code}"
         return f"私訊未能送出，退款待處理，請稍後查詢。{code}"

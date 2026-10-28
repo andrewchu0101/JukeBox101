@@ -6,6 +6,7 @@ Only the user's PowerShell process consumes TEST_DB credentials; reports never i
 import hashlib
 import json
 import re
+from tests.batch_b_assertion_guard import require_assertions_enabled, run_guarded
 from typing import Any
 
 import pymysql
@@ -200,8 +201,9 @@ def main() -> None:
     @param: none
     @return: None.
     """
+    require_assertions_enabled()  # [pre-command gate]: Refuse before any connection or side effect.
     run_report(lambda: collect_preflight(preflight_settings()))
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_guarded(main))

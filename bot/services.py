@@ -13,6 +13,8 @@ from typing import Any, TypeVar
 
 import pymysql
 
+from bot.database.nickel_grant_store import ClaimResult, ClaimStatus, claim_nickel_grants
+from bot.nickel_claim_replies import format_claim_reply
 from bot.database.repository import MusicRepository
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
@@ -74,15 +76,20 @@ class MusicService:
     """Coordinate command use cases with an injected worker-local repository."""
 
     def __init__(self, repository: MusicRepository, submission_repository: SubmissionRepository | None = None,
-                 synthetic_exchange: bool = False, formal_exchange: bool = False) -> None:
+                 synthetic_exchange: bool = False, formal_exchange: bool = False,
+                 nickel_claim_enabled: bool = False, nickel_connection_factory=None) -> None:
         """@description: Keep Discord-independent business operations injectable for tests.
         @param self: Application service instance.
         @param repository: Synchronous persistence collaborator, including test replacements.
         @param submission_repository: Optional Batch B public intake boundary; mandatory at private startup.
         @param synthetic_exchange: Explicit acceptance-only switch that routes /exchange to the labelled synthetic flow; never set by production startup.
         @param formal_exchange: Formal /exchange switch, off by default; only an exact True opens the unlabelled production route.
+        @param nickel_claim_enabled: /claim switch, off by default; when off, /claim never opens a connection.
+        @param nickel_connection_factory: Callable returning a fresh connection for one claim transaction; required only when the switch is on.
         @return: None.
         """
+        self.nickel_claim_enabled = nickel_claim_enabled is True  # [/claim switch]: Only an exact True opens the grant route.
+        self._nickel_connection_factory = nickel_connection_factory  # [claim connection]: One fresh connection per claim, closed after it.
         self.submission_repository = submission_repository  # [Beta persistence]: Never instantiate a second service or award worker.
         self.repository = repository  # [persistence boundary]: Complete operations run in workers.
         self._synthetic_exchange = synthetic_exchange  # [explicit acceptance route]: Off unless the caller selects it.
@@ -164,10 +171,10 @@ class MusicService:
         video = parse_youtube_url(source_url)
         submission = await _database_operation(self.repository.submit_pending, discord_user_id, video)
         if submission.duplicate_submission:
-            return "你已投稿過這部影片，本次不會重複發放點數。"
+            return "你已投稿過這部影片，本次投稿不會重複發放 Nickel。"
         if submission.resolution_status != "pending":
-            return "這部影片已存在於目錄，已記錄你的投稿，本次不發放點數。"
-        return "已記錄投稿，待歌曲資格驗證；目前不發放點數，也不加入交換池。"
+            return "這部影片已存在於目錄，已記錄你的投稿；本次投稿不發放 Nickel。"
+        return "已記錄投稿，待歌曲資格驗證；目前不發放 Nickel，也不加入交換池。"
 
     async def _share_pending(self, discord_user_id: int, source_url: str, operation_id: str | None) -> str:
         """@description: Return durable receipt facts without retrying an uncertain write under a new key.
@@ -195,7 +202,37 @@ class MusicService:
         @param discord_user_id: Recipient requesting an exchange.
         @return: Explicit pending outcome without reservation, debit, or delivery.
         """
-        return "交換功能待歌曲資格驗證與派送恢復流程完成後開放；本次未扣點。"
+        return "交換功能待歌曲資格驗證與派送恢復流程完成後開放；本次未扣除 Nickel。"
+
+    async def claim(self, discord_user_id: int, request_key: str) -> str:
+        """@description: Give the account every approved Nickel grant it is missing, in one transaction, or report that the feature is closed.
+        @param self: Application service instance.
+        @param discord_user_id: Discord account making the claim.
+        @param request_key: Stable key of this /claim attempt; retries reuse it.
+        @return: Private reply naming only the grants that were recorded.
+        """
+        if not self.nickel_claim_enabled:
+            return format_claim_reply(ClaimResult(ClaimStatus.DISABLED, [], None))  # [closed route]: No connection is opened.
+        result = await _database_operation(self._claim_transaction, discord_user_id, request_key)
+        return format_claim_reply(result)
+
+    def _claim_transaction(self, discord_user_id: int, request_key: str) -> ClaimResult:
+        """@description: Run one claim in its own connection, committing on success and rolling back on any failure.
+        @param self: Application service instance.
+        @param discord_user_id: Discord account making the claim.
+        @param request_key: Stable key of this attempt.
+        @return: Claim outcome from the store.
+        """
+        connection = self._nickel_connection_factory()
+        try:
+            result = claim_nickel_grants(connection, discord_user_id, request_key, datetime.now(timezone.utc), enabled=True)
+            connection.commit()
+            return result
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     async def balance(self, discord_user_id: int) -> str:
         """@description: Report stored spendable credits without masking database failures.
@@ -205,7 +242,7 @@ class MusicService:
         """
         # [spendable balance]: Only a successful repository query may produce a credit amount.
         available_exchange_credits = await _database_operation(self.repository.balance, discord_user_id)
-        return f"目前可用交換點數：{available_exchange_credits} 點。"
+        return f"目前可用 Nickel：{available_exchange_credits}。"
 
     async def daily(self, discord_user_id: int, enabled: bool) -> str:
         """@description: Save the desired opt-in state while clearly identifying inactive scheduling.

@@ -150,7 +150,7 @@ def test_explicit_not_sent_is_refunded_once_and_the_song_is_released(two_submitt
     assert row["status"] == "failed" and row["released_at"] is not None
     assert balance(database, 101) == 1
     assert [(entry["discord_user_id"], entry["credit_delta"]) for entry in refund_rows(database)] == [(101, 1)]
-    assert "已退回 1 點" in flow.reply_text and str(flow.recommendation_id) in flow.reply_text
+    assert "已退還 1 Nickel" in flow.reply_text and str(flow.recommendation_id) in flow.reply_text
 
 
 def test_unknown_outcome_becomes_uncertain_and_is_never_refunded_nor_resent(two_submitters) -> None:
@@ -283,7 +283,7 @@ def test_no_candidate_and_insufficient_credits_send_nothing_and_say_so(world) ->
     own_only = start(repository, sender, 101, "flow-own-only")
     assert own_only.reply_text == "目前沒有符合條件的歌曲"
     broke = start(repository, sender, 103, "flow-broke")
-    assert broke.reply_text == "點數不足，交換一首歌曲需要 1 Nickel。"
+    assert broke.reply_text == "Nickel 不足，交換一首歌曲需要 1 Nickel。"
     assert sender.attempts == [] and balance(database, 101) == 1
 
 

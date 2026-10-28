@@ -1,6 +1,6 @@
 # Batch B：1826 Hotfix 與新 Recovery 授權方案
 
-> 最新狀態（2026-10-16）：**RECOVERY_SUCCESS**；四條 FK DDL／DML Commit 全部 ACKNOWLEDGED，15 PK 零殘留、非 Manifest 異動 0、Control 0／0 與三開關 OFF，原 FK／Schema／Migration 已恢復驗證，Exit Code 0。依使用者已驗收結果記錄，詳見 [成功紀錄](recovery-success-checkpoint.md)。Session 仍 Blocked；Batch B 真實 MySQL 測試尚未完成。下文保留原事故與授權方案歷史，所有舊「最新／Pending／尚未成功／下一次授權」描述均不覆蓋本段，也不是重新執行許可。本輪未重跑或連線。
+> 最新狀態（2026-10-16）：**RECOVERY_SUCCESS**；四條 FK DDL／DML Commit 全部 ACKNOWLEDGED，15 PK 零殘留、非 Manifest 異動 0、Control 0／0 與三開關 OFF，原 FK／Schema／Migration 已恢復驗證，Exit Code 0。依使用者已驗收結果記錄，詳見 [成功紀錄](recovery-success-checkpoint.md)。Session 仍 Blocked；Batch B 真實 MySQL 測試尚未完成。下文保留原事故與授權方案歷史，所有舊「最新／Pending／尚未成功／下一次授權」描述均不覆蓋本段，也不是重新執行許可。本輪未重跑或連線。（使用者回報的歷史結果，未獨立複驗；事故 journal 已遺失，見 spec §15.9.9）
 
 ## 歷史紀錄（不代表當前執行授權）
 

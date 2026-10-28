@@ -3,6 +3,7 @@
 A fresh read-only inventory must pass before the dedicated runner may create its own DDL connection.
 """
 
+from tests.batch_b_assertion_guard import require_assertions_enabled, run_guarded
 from bot.database.connection import open_connection
 from bot.database.submission_migration import apply_migration, MIGRATION_AUTHORIZATION
 from bot.database.test_profiles import profile_settings, MIGRATION_SWITCH
@@ -27,8 +28,9 @@ def main() -> None:
     @param: none
     @return: None.
     """
+    require_assertions_enabled()  # [pre-command gate]: Refuse before any connection or side effect.
     run_report(migrate)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_guarded(main))

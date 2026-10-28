@@ -1,12 +1,13 @@
 """Inspect an existing failed harness journal and committed test rows without recovery writes.
 
-The existing interactive entry supplies one private harness credential; reports contain only registered keys, counts and validation outcomes.
+The existing interactive entry supplies one private credential for the dedicated read-only account; reports contain only registered keys, counts and validation outcomes.
 """
 
 import hashlib
 import json
 import os
 import re
+from tests.batch_b_assertion_guard import guarded_command
 from pathlib import Path
 from typing import Any, TextIO
 import pymysql
@@ -16,6 +17,9 @@ from tests.batch_b_harness_contract import (RunScope, HARNESS_USER, HarnessSafet
 from tests.batch_b_harness_database import (check_identity, verify_harness_grants, read_inventory, schema_fingerprints, require_baseline, version_delete_order)
 from tests.batch_b_mysql_cases import validate_payloads
 from tests.batch_b_acceptance_setup import reviewed_foreign_keys, query, record_error, stage_call
+
+RECOVERY_READONLY_USER = 'jukebox101_test_readonly'  # [D-6 account]: Dedicated least-privilege inspection identity; never a write-capable fallback.
+READONLY_GRANT_LINE = re.compile(r"^GRANT (SELECT|USAGE) ON (\*\.\*|`jukebox101_test`\.`(\w+)`) TO `[^`]+`@`[^`]+`$")  # [grant shape]: Exact printed form only.
 
 
 def read_journal(path: Path) -> tuple[dict, str, RunScope]:
@@ -90,6 +94,38 @@ def open_read_only(password: str) -> Any:
     return pymysql.connect(host='127.0.0.1', port=3306, user=HARNESS_USER, password=password,
         database='jukebox101_test', charset='utf8mb4', cursorclass=DictCursor, autocommit=None,
         connect_timeout=5, read_timeout=10, write_timeout=10)
+
+
+def open_recovery_readonly(account: str, password: str) -> Any:
+    """@description: Connect the read-only inspection only as the dedicated account, never as a harness or application fallback.
+    @param account: Account name taken from the validated header; must equal the reviewed read-only name.
+    @param password: One masked local input supplied through private stdin.
+    @return: Owned diagnostic connection to the fixed local test database.
+    """
+    if account != RECOVERY_READONLY_USER or not isinstance(password, str) or not password:
+        raise HarnessSafetyError('READONLY_ACCOUNT_REJECTED')  # [pre-connection refusal]: No driver call for any other identity.
+    expected_server_uuid()
+    return pymysql.connect(host='127.0.0.1', port=3306, user=account, password=password,
+        database='jukebox101_test', charset='utf8mb4', cursorclass=DictCursor, autocommit=None,
+        connect_timeout=5, read_timeout=10, write_timeout=10)
+
+
+def verify_readonly_grants(cursor: Any) -> None:
+    """@description: Require the effective grants to equal the reviewed SELECT set plus usage, because the account name alone proves nothing.
+    @param cursor: Authenticated read-only cursor.
+    @return: None; any extra, missing, schema-wide, grant-option or active-role authority raises.
+    """
+    roles = [next(iter(row.values())) for row in query(cursor, 'SELECT CURRENT_ROLE() AS roles')]
+    lines = [next(iter(row.values())) for row in query(cursor, 'SHOW GRANTS FOR CURRENT_USER()')]
+    matches = [READONLY_GRANT_LINE.match(line) for line in lines]
+    if roles != ['NONE'] or not lines or any(match is None for match in matches) or any('WITH GRANT OPTION' in line for line in lines):
+        raise HarnessSafetyError('READONLY_GRANTS_REJECTED')
+    usage = [match for match in matches if match.group(2) == '*.*']
+    selects = [match.group(3) for match in matches if match.group(2) != '*.*']
+    if len(usage) != 1 or usage[0].group(1) != 'USAGE' or any(match.group(1) != 'SELECT' for match in matches if match.group(2) != '*.*'):
+        raise HarnessSafetyError('READONLY_GRANTS_REJECTED')
+    if len(selects) != len(set(selects)) or set(selects) != set(TABLES):
+        raise HarnessSafetyError('READONLY_GRANTS_REJECTED')
 
 
 def validate_rows(rows: dict, journal: dict, scope: RunScope) -> list[str]:
@@ -242,15 +278,15 @@ def reference_count(rows: dict, target: str, edge: dict) -> dict:
 
 def inspect_connection(connection: Any, journal: dict, scope: RunScope) -> dict:
     """@description: Compare two complete SELECT inventories and verify metadata without acquiring write locks.
-    @param connection: Owned fixed-harness session.
+    @param connection: Owned session opened as the dedicated read-only account.
     @param journal: Original private incident record.
     @param scope: Validated synthetic run scope.
     @return: Nonsecret current state and explicit limits on restoration readiness.
     """
     with connection.cursor() as raw:
         cursor = ReadOnlyCursor(raw)
-        check_identity(cursor, HARNESS_USER)
-        verify_harness_grants(cursor)
+        check_identity(cursor, RECOVERY_READONLY_USER)
+        verify_readonly_grants(cursor)
         if query(cursor, 'SELECT @@autocommit AS enabled') != ({'enabled': 1},):
             raise HarnessSafetyError('RECOVERY_AUTOCOMMIT_REQUIRED')
         definitions = schema_fingerprints(cursor)  # [structure now]: Original journal did not preserve SHOW CREATE fingerprints.
@@ -272,24 +308,35 @@ def inspect_connection(connection: Any, journal: dict, scope: RunScope) -> dict:
         original_schema_fingerprint_available=False, recovery_writes_authorized=False)
 
 
+def require_readonly_intent(header: dict) -> None:
+    """@description: Accept the inspection intent only with its fixed keys and the dedicated account, before any journal or credential is read.
+    @param header: Parsed first stdin line from the launcher.
+    @return: None; any other shape, intent or identity raises before I/O.
+    """
+    if set(header) != {'authorization', 'journal', 'account'} or header['authorization'] != 'BATCH_B_RECOVERY_READONLY':
+        raise HarnessSafetyError('RECOVERY_INTENT_REQUIRED')
+    if header['account'] != RECOVERY_READONLY_USER:  # [no fallback]: The harness or application name is never a substitute.
+        raise HarnessSafetyError('READONLY_ACCOUNT_REJECTED')
+
+
+@guarded_command
 def main(stream: TextIO) -> int:
     """@description: Expose only a separate read-only mode of the existing credential entry.
-    @param stream: Anonymous stdin with explicit intent and one private harness credential.
+    @param stream: Anonymous stdin with explicit intent, the dedicated read-only account name and one private credential.
     @return: Diagnostic exit code, never a recovery or test result.
     """
     state = dict(stage='R_READ_ONLY_FAILED', a_completed=False, b_started=False, read_only=True)
     connection = None  # [owned read session]: No DBA, application test or cleanup method is invoked.
     try:
         header = json.loads(stream.readline(8192))
-        if set(header) != {'authorization', 'journal'} or header['authorization'] != 'BATCH_B_RECOVERY_READONLY':
-            raise HarnessSafetyError('RECOVERY_INTENT_REQUIRED')
+        require_readonly_intent(header)
         path = Path(header['journal'])
         journal, digest, scope = read_journal(path)
         os.environ['TEST_DB_SERVER_UUID'] = journal['server_uuid']
         password = json.loads(stream.readline(16384))
         if not isinstance(password, str) or not password or len(password) > 4096 or '\x00' in password:
             raise HarnessSafetyError('RECOVERY_CREDENTIAL_REJECTED')
-        connection = stage_call(state, 'R_HARNESS_READ_CONNECT', open_read_only, password)
+        connection = stage_call(state, 'R_HARNESS_READ_CONNECT', open_recovery_readonly, RECOVERY_READONLY_USER, password)
         password = None
         state['recovery_report'] = stage_call(state, 'R_READ_INVENTORY', inspect_connection, connection, journal, scope)
         if hashlib.sha256(path.read_bytes()).hexdigest() != digest:

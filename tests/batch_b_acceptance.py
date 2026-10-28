@@ -18,6 +18,8 @@ from bot.config import DatabaseSettings
 from tests.batch_b_harness_contract import HARNESS_USER, HarnessSafetyError, RUN_SWITCH, HARNESS_SWITCH
 from tests.batch_b_harness_database import verified_connection, read_inventory, schema_fingerprints
 from tests.batch_b_acceptance_setup import stage_a, record_error, stage_call
+from tests.batch_b_assertion_guard import (ASSERTIONS_DISABLED_EXIT_CODE, ASSERTIONS_DISABLED_SAFETY_CODE,
+    AssertionsDisabledError, require_assertions_enabled)
 
 
 def receive(stream: TextIO) -> tuple[dict, list[str]]:
@@ -251,6 +253,7 @@ def main() -> int:
     @param: none
     @return: Real runner exit status; no raw exception text escapes.
     """
+    require_assertions_enabled()
     state = dict(stage='A_PRECHECK_FAILED', a_completed=False, b_started=False, baseline_restored=False, current_step='INPUT_PROTOCOL')
     credentials = []  # [private receive buffer]: Never include in sanitized output.
     try:
@@ -274,6 +277,11 @@ def entry() -> int:
     @param: none
     @return: Selected mode's exit code; unknown arguments never fall back to writes.
     """
+    try:
+        require_assertions_enabled()
+    except AssertionsDisabledError:
+        print(json.dumps({'stage': 'REFUSED_ASSERTIONS_DISABLED', 'safety_code': ASSERTIONS_DISABLED_SAFETY_CODE}, ensure_ascii=True))
+        return ASSERTIONS_DISABLED_EXIT_CODE
     if not sys.argv[1:]:
         return main()
     if sys.argv[1:] == ['--stage-b-only']:
@@ -570,6 +578,7 @@ def stage_b_main(stream: TextIO) -> int:
     @param stream: Masked-credential bridge from the existing PowerShell launcher.
     @return: Zero only after 23 genuine passes, precise cleanup, original FK and final journal verification.
     """
+    require_assertions_enabled()
     state = dict(stage='B_ONLY_FAILED_BLOCKED', session_blocked=True, previous_session_blocked=True, baseline_restored=False)
     context, credentials = {}, []  # [private resources]: Credentials never enter the serialized state.
     try:

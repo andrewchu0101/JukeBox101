@@ -7,7 +7,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from bot.config import DatabaseSettings
 from bot.database.test_profiles import require_migration_execution
 
@@ -29,20 +29,30 @@ def migration_plan() -> tuple[str, tuple[str, ...]]:
     return hashlib.sha256(source.encode("utf-8")).hexdigest(), statements
 
 
-def apply_migration(factory: Callable[[], Any], authorization: str, *, settings: DatabaseSettings) -> bool:
+class MigrationGuards(NamedTuple):
+    """Pair the destination check run before connecting with the identity check run after connecting; callers choose the pair explicitly."""
+
+    settings_guard: Callable[[DatabaseSettings], None]  # [pre-connect destination]: Refuses before any socket is opened.
+    session_guard: Callable[[Any], None]  # [post-connect identity]: Refuses on the live cursor before any DDL.
+
+
+def apply_migration(factory: Callable[[], Any], authorization: str, *, settings: DatabaseSettings,
+                    guards: MigrationGuards | None = None) -> bool:
     """@description: Require an explicit future authorization before any migration connection can be opened.
     @param factory: Explicit worker-local connection creator, never implicit environment loading.
     @param authorization: Deliberate reviewed invocation token, not proof of human approval.
     @param settings: Explicit dedicated migrator profile checked before factory invocation.
+    @param guards: Optional explicit destination pair; None keeps the local fixed test guards exactly as before.
     @return: True when newly applied, False when the identical applied migration is already present.
     """
     if authorization != MIGRATION_AUTHORIZATION:
         raise PermissionError("Separate reviewed migration authorization is required")
-    require_migration_execution(settings)
+    settings_guard, session_guard = (require_migration_execution, _require_isolated_destination) if guards is None else guards
+    settings_guard(settings)
     # [owned migration session]: DDL cannot be made atomic by wrapping it in a normal transaction.
     connection = factory()
     try:
-        return _run_session(connection)
+        return _run_session(connection, session_guard)
     finally:
         try:
             connection.rollback()
@@ -50,13 +60,14 @@ def apply_migration(factory: Callable[[], Any], authorization: str, *, settings:
             connection.close()
 
 
-def _run_session(connection: Any) -> bool:
+def _run_session(connection: Any, session_guard: Callable[[Any], None] | None = None) -> bool:
     """@description: Verify authenticated identity before acquiring the dedicated migration advisory lock.
     @param connection: Owned dedicated migrator connection.
+    @param session_guard: Identity check for the live cursor; None keeps the local fixed test identity.
     @return: Whether the reviewed migration was newly applied.
     """
     with connection.cursor() as cursor:
-        _require_isolated_destination(cursor)
+        (session_guard or _require_isolated_destination)(cursor)
         cursor.execute("SET SESSION sql_mode = 'STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'")
         cursor.execute("SELECT GET_LOCK(%s,%s) AS acquired", ("jukebox101:2b2-migration", 5))
         if cursor.fetchone()["acquired"] != 1:

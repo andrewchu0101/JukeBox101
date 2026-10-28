@@ -5,6 +5,7 @@ Uses the existing anonymous-stdin credential bridge and never selects a JukeBox1
 
 import json
 import re
+from tests.batch_b_assertion_guard import guarded_command
 from typing import Any, TextIO
 from uuid import UUID
 import pymysql
@@ -181,6 +182,7 @@ def execute(header: dict, password: str, state: dict) -> None:
         connection.close()
 
 
+@guarded_command
 def main(stream: TextIO) -> int:
     """@description: Emit sanitized lab evidence without authorizing recovery or changing its blocked state.
     @param stream: Existing launcher's private input pipe.

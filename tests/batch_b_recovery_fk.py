@@ -8,6 +8,7 @@ import json
 import os
 import re
 import tempfile
+from tests.batch_b_assertion_guard import guarded_command
 from pathlib import Path
 from typing import Any, TextIO
 from bot.config import DatabaseSettings
@@ -286,6 +287,7 @@ def run_received(received: tuple, state: dict) -> int:
     return int(state.get('baseline_restored') is not True)
 
 
+@guarded_command
 def main(stream: TextIO) -> int:
     """@description: Expose a separate default-off repair mode while preserving all original artifacts and the block.
     @param stream: Existing launcher's anonymous private protocol.

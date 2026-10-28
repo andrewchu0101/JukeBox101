@@ -8,6 +8,7 @@ import json
 import os
 import re
 import tempfile
+from tests.batch_b_assertion_guard import guarded_command
 from pathlib import Path
 from typing import Any, TextIO
 from bot.config import DatabaseSettings
@@ -334,6 +335,7 @@ def receive(stream: TextIO) -> tuple:
     return header, journal, scope, manifest, password
 
 
+@guarded_command
 def main(stream: TextIO) -> int:
     """@description: Provide a separate opt-in write mode while preserving the original incident and block.
     @param stream: Private operator protocol, never ambient environment authorization.

@@ -132,7 +132,7 @@ def test_a_proven_unsent_dm_is_refunded_and_the_reply_says_so_only_after_commit(
     replier = Reply()
     flow = run(service_for(repository), Dm(DmResult.not_sent("dm_closed_50007")), replier, 101, "discord:2")
     assert flow.refund_status == "refunded" and balance(database, 101) == 1
-    assert "已退回 1 點" in replier.sent[0]
+    assert "已退還 1 Nickel" in replier.sent[0]
 
 
 def test_a_failed_refund_is_reported_as_pending_and_retried_once_without_resending(two_submitters) -> None:
@@ -145,7 +145,7 @@ def test_a_failed_refund_is_reported_as_pending_and_retried_once_without_resendi
     database.sql_fault = "UPDATE recommendations SET released_at"
     sender, replier = Dm(DmResult.not_sent("dm_closed_50007")), Reply()
     flow = run(service, sender, replier, 101, "discord:3")
-    assert flow.refund_status == "pending" and "已退回" not in replier.sent[0] and "退款待處理" in replier.sent[0]
+    assert flow.refund_status == "pending" and "已退還" not in replier.sent[0] and "退款待處理" in replier.sent[0]
     assert balance(database, 101) == 0 and row(database, flow.recommendation_id)["released_at"] is None
     run(service, sender, Reply(), 102, "discord:4")  # [later request]: Sweeps the pending refund first.
     assert balance(database, 101) == 1 and row(database, flow.recommendation_id)["released_at"] is not None
@@ -244,7 +244,7 @@ def test_the_gate_stays_closed_without_the_explicit_synthetic_route() -> None:
     service = MusicService(MagicMock())
     assert service.synthetic_exchange_enabled is False
     gate_text = asyncio.run(service.exchange(101))
-    assert "未扣點" in gate_text
+    assert "未扣除 Nickel" in gate_text
     with pytest.raises(ServiceUnavailable):
         asyncio.run(service.synthetic_exchange(101, "discord:0", Dm(), Reply()))
 

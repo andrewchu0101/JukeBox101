@@ -6,6 +6,18 @@ Environment fixtures prevent local credentials from affecting mock-based verific
 import pytest
 
 from bot.config import load_database_settings
+from tests.batch_b_assertion_guard import ASSERTIONS_DISABLED_EXIT_CODE, AssertionsDisabledError, require_assertions_enabled
+
+
+def pytest_configure(config):
+    """@description: Stop the whole pytest session under -O so assert statements in helper modules cannot yield a vacuous pass.
+    @param config: Pytest configuration object for this session.
+    @return: None; ends the session with the approved refusal status when assertions are disabled.
+    """
+    try:
+        require_assertions_enabled()
+    except AssertionsDisabledError as error:
+        pytest.exit(str(error), returncode=ASSERTIONS_DISABLED_EXIT_CODE)
 
 
 @pytest.fixture

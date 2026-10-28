@@ -22,7 +22,7 @@ Duration PASS 只進入等待歌曲審核；AUTO／OWNER 核准共用硬性條�
 
 本次完整離線回歸 **452 Passed／0 Failed／0 Skipped**：主回歸 450 Passed／34 Deselected，另執行 2 項純文字 CHECK normalization。涵蓋既有 298 項及新增 154 項；34 項排除包含 32 項真實 MySQL 與另補跑的 2 項純文字案例。Windows asyncio 回歸需允許本機 socket pair；沙箱內首次執行停滯後中止，未列入成功結果。
 
-真實中繼資料取得、歌曲自動判定、Owner 身分驗證、Nickel Ledger 交易、Discord／MySQL 持久化業務整合、Exchange 與 Daily 均未由本階段實作。YouTube API 獎勵政策仍 UNRESOLVED；不啟用 API 驗證或正式自動發幣。詳見 [Phase 2B.1 驗收文件](docs/phase2b1-offline-acceptance.md)。完成後停止，不自行開始 Phase 2B.2。
+真實中繼資料取得、歌曲自動判定、Owner 身分驗證、Nickel Ledger 交易、Discord／MySQL 持久化業務整合、Exchange 與 Daily 均未由本階段實作。Nickel 獎勵的 Incentivized Engagement 範圍已取得 Google 有範圍回覆（見 [政策範圍確認](docs/youtube-policy-confirmation.md)）；YouTube API 其餘政策與條款仍 UNRESOLVED；不啟用 API 驗證或正式自動發幣。詳見 [Phase 2B.1 驗收文件](docs/phase2b1-offline-acceptance.md)。完成後停止，不自行開始 Phase 2B.2。
 
 ## Phase 2B.2 Implementation 01：版本身分與投稿優先權
 

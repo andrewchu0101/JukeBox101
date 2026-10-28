@@ -208,7 +208,7 @@ def test_balance_reuses_reader_and_daily_does_not_write(beta_context):
     """
     database, submissions, reader, service = beta_context
     reader.balance.return_value = 7
-    assert "7 點" in asyncio.run(service.balance(123))
+    assert "目前可用 Nickel：7。" in asyncio.run(service.balance(123))
     reader.balance.assert_called_once_with(123)
     assert "未保存" in asyncio.run(service.daily(123, True))
     reader.set_daily.assert_not_called()
@@ -257,7 +257,7 @@ def test_repository_history_excludes_other_users_and_tracks_review(beta_context)
 
 @pytest.mark.parametrize("command_name,options,expected", [
     ("share", [{"name": "url", "type": 3, "value": URL}], "已儲存"),
-    ("history", [], "沒有你的投稿"), ("balance", [], "5 點"),
+    ("history", [], "沒有你的投稿"), ("balance", [], "目前可用 Nickel：5。"),
 ])
 def test_private_sdk_dispatch_uses_real_service(beta_context, monkeypatch, command_name, options, expected):
     """@description: Route real registered slash callbacks into pending intake and scoped queries.

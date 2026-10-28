@@ -132,10 +132,23 @@ def build_duration(video_id: str, seconds: int, source: str, full_video_confirme
 
 def _parser() -> argparse.ArgumentParser:
     """@description: Declare the operator subcommands; no actor, video or database argument exists.
+    @param: none
     @return: Configured argument parser.
     """
     parser = argparse.ArgumentParser(prog="owner_cli", description="Owner duration evidence and approval (operator).")
     commands = parser.add_subparsers(dest="command")
+    _add_duration_commands(commands)
+    _add_approval_commands(commands)
+    _add_version_commands(commands)
+    _add_settlement_commands(commands)
+    return parser
+
+
+def _add_duration_commands(commands: Any) -> None:
+    """@description: Register the duration evidence preview and write operations with their evidence flags.
+    @param commands: Top-level subparser collection that receives the duration command.
+    @return: None.
+    """
     duration = commands.add_parser("duration", help="Owner-stated full-video duration evidence")
     duration_actions = duration.add_subparsers(dest="action", required=True)
     for name in ("preview", "write"):
@@ -149,6 +162,13 @@ def _parser() -> argparse.ArgumentParser:
         action.add_argument("--reliable-confirmed", action="store_true")
     duration_actions.choices["write"].add_argument("--expected-revision", type=int, required=True)
     duration_actions.choices["write"].add_argument("--digest", required=True)
+
+
+def _add_approval_commands(commands: Any) -> None:
+    """@description: Register the Owner approval preview and write operations with their content judgement flag.
+    @param commands: Top-level subparser collection that receives the approve command.
+    @return: None.
+    """
     approval = commands.add_parser("approve", help="Owner approval with a content judgement")
     approval_actions = approval.add_subparsers(dest="action", required=True)
     for name in ("preview", "write"):
@@ -159,6 +179,13 @@ def _parser() -> argparse.ArgumentParser:
         action.add_argument("--evidence-reference", required=True)
         action.add_argument("--is-song-confirmed", action="store_true")
     approval_actions.choices["write"].add_argument("--digest", required=True)
+
+
+def _add_version_commands(commands: Any) -> None:
+    """@description: Register the recording version preview and write operations, kept separate from approval.
+    @param commands: Top-level subparser collection that receives the version command.
+    @return: None.
+    """
     version = commands.add_parser("version", help="Owner-confirmed recording version, separate from approval")
     version_actions = version.add_subparsers(dest="action", required=True)
     for name in ("preview", "write"):
@@ -170,12 +197,18 @@ def _parser() -> argparse.ArgumentParser:
         action.add_argument("--source", required=True)
         action.add_argument("--reason", required=True)
     version_actions.choices["write"].add_argument("--digest", required=True)
+
+
+def _add_settlement_commands(commands: Any) -> None:
+    """@description: Register the named settlement window preview and write operations over the listed operations.
+    @param commands: Top-level subparser collection that receives the settle command.
+    @return: None.
+    """
     settlement = commands.add_parser("settle", help="Named settlement window: switch on, settle the listed operations, switch restored")
     settle_actions = settlement.add_subparsers(dest="action", required=True)
     for name in ("preview", "write"):
         settle_actions.add_parser(name).add_argument("--operation", action="append", required=True)
     settle_actions.choices["write"].add_argument("--digest", required=True)
-    return parser
 
 
 def _report(lines: list) -> None:

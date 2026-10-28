@@ -7,17 +7,19 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
 from time import monotonic
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 import pymysql
-from bot.database.review_persistence import ReviewCommand
+from bot.database.review_persistence import ReexaminationCommand, ReviewCommand
+from bot.evidence_record import EvidenceSourceType, record_evidence
 from bot.database.submission_transaction import CommitOutcomeUnknown
-from bot.review import StaleReviewVersion
+from bot.review import ApprovalSource, StaleReviewVersion
 from bot.reward_candidates import RewardCandidateStatus as Status
 from bot.version_identity import VersionExclusion
 from tests.batch_b_mysql_cases import request, repository, approve, observe, assert_accounting
 from tests.batch_b_harness_database import verified_connection
 from tests.batch_b_mysql_faults import InjectedClientFault
+from tests.batch_b_assertion_guard import require_assertions_enabled
 
 
 def persistence(settings: Any, scope: Any) -> None:
@@ -90,7 +92,9 @@ def concurrent_accept(settings: Any, scope: Any) -> None:
         results = [future.result(timeout=12) for future in futures]
     sequences = sorted(result.candidate.accepted_sequence for result in results)
     assert sequences[1] == sequences[0] + 1
-    assert len(observe(settings)["jb2_events"]) == 2
+    rows = observe(settings)
+    assert len(rows["jb2_events"]) == 2
+    assert_accounting(rows, 0)
 
 
 def concurrent_reward(settings: Any, scope: Any) -> None:
@@ -136,7 +140,9 @@ def lock_timeout(settings: Any, scope: Any) -> None:
     finally:
         connection.rollback()
         connection.close()
-    assert not observe(settings)["jb2_events"]
+    rows = observe(settings)
+    assert not rows["jb2_events"]
+    assert_accounting(rows, 0)
 
 
 def owner_review(settings: Any, scope: Any) -> None:
@@ -165,6 +171,7 @@ def owner_review(settings: Any, scope: Any) -> None:
     rows = observe(settings)
     assert len(rows["jb2_decisions"]) == 1 and len(rows["jb2_review_history"]) >= 2
     assert len(rows["jb2_evidence"]) >= 2 and len(rows["jb2_reminders"]) == 1
+    assert_accounting(rows, 0)
 
 
 def conflict(settings: Any, scope: Any) -> None:
@@ -207,6 +214,57 @@ def remix_merge(settings: Any, scope: Any) -> None:
     assert_accounting(rows, 2)
 
 
+def reexam_settlement(settings: Any, scope: Any) -> None:
+    """@description: Settle around a reexamination pass: the reopened submission takes its new tail position, so the earlier same-recording submission is awarded once and the passed one is not.
+    @param settings: Application settings.
+    @param scope: Two same-recording registered requests.
+    @return: None.
+    """
+    repo = repository(settings, scope)
+    for number in (1, 2):
+        repo.accept(request(scope, number))
+    approve(repo, scope, 1)  # [revision 1 -> 2]: Approved and unawarded, so its priority is yielded on reopen.
+    _reexamine_same_version(repo, scope, 1)  # [revision 2 -> 3]: Formal reexamination with a same-version reliable record.
+    _pass_reexamination(repo, scope, 1, revision=3)  # [reexamination pass]: New tail ordering event in the same operation.
+    approve(repo, scope, 2)  # [revision 1 -> 2]: The earlier submission is now first in priority.
+    assert repo.settle(request(scope, 2).operation_id).status is Status.AWARDED
+    assert repo.settle(request(scope, 1).operation_id).status is not Status.AWARDED
+    assert repo.settle(request(scope, 2).operation_id).status is Status.AWARDED  # [replay]: Must not add a second award.
+    rows = observe(settings)
+    assert_accounting(rows, 1)
+    assert [row["operation_id"] for row in rows["jb2_claims"]] == [request(scope, 2).operation_id]
+    positions = {item.operation_id: item.accepted_sequence for item in repo.snapshot().candidates}
+    assert positions[request(scope, 1).operation_id] > positions[request(scope, 2).operation_id]
+
+
+def _reexamine_same_version(repo: Any, scope: Any, number: int) -> None:
+    """@description: Reopen an approved synthetic request with a reliable owner-confirmed record of the same recording version.
+    @param repo: Real application repository.
+    @param scope: Registered request and synthetic Owner.
+    @param number: Previously approved request.
+    @return: None.
+    """
+    subject = request(scope, number)
+    operation = subject.operation_id
+    evidence = record_evidence(scope.run_id + ":reexam:" + str(number), subject.identity.video, EvidenceSourceType.OWNER_REVIEW,
+                               scope.run_id + ":reexam-source", datetime.now(timezone.utc), "synthetic reexamination evidence",
+                               scope.owner_id, subject.identity.version, owner_confirmed=True)
+    repo.reexamine(ReexaminationCommand(operation + ":reexam", operation, scope.owner_id, "synthetic reexamination", 2, evidence))
+
+
+def _pass_reexamination(repo: Any, scope: Any, number: int, revision: int) -> None:
+    """@description: Approve a reexamination-pending synthetic request, which is the reexamination pass and creates its new ordering event.
+    @param repo: Real application repository.
+    @param scope: Registered request and synthetic Owner.
+    @param number: Reexamined request.
+    @param revision: Current review revision the Owner examined.
+    @return: None.
+    """
+    operation = request(scope, number).operation_id
+    repo.review(ReviewCommand(operation + ":pass", operation, scope.owner_id, "synthetic reexamination pass", revision,
+                              approval_source=ApprovalSource.OWNER, song_eligible=True))
+
+
 def reminder_seed(settings: Any, scope: Any) -> None:
     """@description: Establish a real intake-based reminder deadline before harness-only clock setup.
     @param settings: Application settings.
@@ -218,6 +276,7 @@ def reminder_seed(settings: Any, scope: Any) -> None:
     rows = observe(settings)
     assert rows["jb2_reminders"][0]["next_due_at"] - rows["jb2_events"][0]["accepted_at"] == timedelta(hours=24)
     assert not repo.pending_reminders(scope.owner_id)
+    assert_accounting(rows, 0)
 
 
 def reminder_read(settings: Any, scope: Any) -> None:
@@ -232,6 +291,7 @@ def reminder_read(settings: Any, scope: Any) -> None:
     assert repo.pending_reminders(scope.owner_id) == (request(scope, 1).operation_id,)
     rows = observe(settings)
     assert len(rows["jb2_reminder_batches"]) == 1 and rows["jb2_events"][0]["accepted_sequence"] == sequence
+    assert_accounting(rows, 0)
 
 
 def rollback_case(settings: Any, scope: Any, prefix: str) -> None:
@@ -295,6 +355,7 @@ def scenario_process(pipe: Any, settings: Any, scope: Any, scenario: str) -> Non
     @return: None.
     """
     try:
+        require_assertions_enabled()  # [stripped-assert refusal]: Must precede every real database dispatch.
         dispatch(settings, scope, scenario)
         pipe.send({"status": "PASS", "scenario": scenario})
     except BaseException as error:
@@ -312,7 +373,8 @@ def dispatch(settings: Any, scope: Any, scenario: str) -> None:
     @return: None.
     """
     cases = {function.__name__: function for function in (persistence, priority, rejected, concurrent_accept,
-             concurrent_reward, concurrent_retry, lock_timeout, owner_review, conflict, remix_merge, reminder_seed, reminder_read)}
+             concurrent_reward, concurrent_retry, lock_timeout, owner_review, conflict, remix_merge, reexam_settlement,
+             reminder_seed, reminder_read)}
     if scenario.startswith("rollback:"):
         rollback_case(settings, scope, scenario.removeprefix("rollback:"))
     elif scenario.startswith("uncertain:"):

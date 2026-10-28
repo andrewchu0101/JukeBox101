@@ -93,7 +93,7 @@ def test_owner_first_exchange_succeeds_then_the_balance_and_history_show_the_sam
     assert balance(service, OWNER).endswith("假餘額：0 點（合成資料，未動真實點數）。")
     assert "操作 1｜合成歌曲 #" in history(service, OWNER) and "已交付（合成）" in history(service, OWNER)
     second = run_exchange(service, OWNER)
-    assert "點數不足" in second and "操作 2" not in second
+    assert "Nickel 不足" in second and "操作 2" not in second
     assert balance(service, OWNER).endswith("假餘額：0 點（合成資料，未動真實點數）。")
 
 
@@ -117,7 +117,7 @@ def test_a_zero_point_participant_is_refused_without_debit() -> None:
     @return: None.
     """
     service = entry.build_exchange_service("success", ACCOUNTS)
-    assert run_exchange(service, ZERO).endswith("點數不足，交換一首歌曲需要 1 Nickel。")
+    assert run_exchange(service, ZERO).endswith("Nickel 不足，交換一首歌曲需要 1 Nickel。")
     assert balance(service, ZERO).endswith("假餘額：0 點（合成資料，未動真實點數）。")
     assert service._database.state["recommendations"] == {}
 
@@ -142,9 +142,9 @@ def test_scripted_not_sent_is_refunded_and_visible_in_balance_and_history() -> N
     """
     service = entry.build_exchange_service("not_sent", ACCOUNTS)
     reply = run_exchange(service, OWNER)
-    assert "模擬未送出（注入），已退回 1 點" in reply and "未實際發送 DM" in reply
+    assert "模擬未送出（注入），已退還 1 Nickel" in reply and "未實際發送 DM" in reply
     assert balance(service, OWNER).endswith("假餘額：1 點（合成資料，未動真實點數）。")
-    assert "未送出（注入）｜已退回 1 點" in history(service, OWNER)
+    assert "未送出（注入）｜已退還 1 Nickel" in history(service, OWNER)
 
 
 def test_scripted_refund_failure_is_pending_and_never_reported_as_returned() -> None:
@@ -154,7 +154,7 @@ def test_scripted_refund_failure_is_pending_and_never_reported_as_returned() -> 
     """
     service = entry.build_exchange_service("refund_fail", ACCOUNTS)
     reply = run_exchange(service, OWNER)
-    assert "退款待處理" in reply and "已退回" not in reply
+    assert "退款待處理" in reply and "已退還" not in reply
     assert balance(service, OWNER).endswith("假餘額：0 點（合成資料，未動真實點數）。")
     assert "退款待處理" in history(service, OWNER)
 
@@ -169,7 +169,7 @@ def test_scripted_refund_failure_is_injected_once_so_the_next_request_retries_an
     assert balance(service, OWNER).endswith("假餘額：0 點（合成資料，未動真實點數）。")
     run_exchange(service, OWNER)
     assert balance(service, OWNER).endswith("假餘額：1 點（合成資料，未動真實點數）。")
-    assert "已退回 1 點" in history(service, OWNER) and "退款待處理" not in history(service, OWNER)
+    assert "已退還 1 Nickel" in history(service, OWNER) and "退款待處理" not in history(service, OWNER)
 
 
 def test_scripted_uncertain_outcome_keeps_its_code_and_never_refunds() -> None:

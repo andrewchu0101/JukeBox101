@@ -190,7 +190,7 @@ def test_sdk_dispatch_rejects_unauthorized_interactions(gateway_client, gateway_
 @pytest.mark.parametrize("command_name, options, expected", [
     ("share", [{"name": "url", "type": 3, "value": "https://youtu.be/Abc_123-Xyz"}], "沒有儲存"),
     ("share", [{"name": "url", "type": 3, "value": "https://evil.example/@everyone"}], "只支援"),
-    ("exchange", [], "未扣點"), ("balance", [], "無法查詢餘額"), ("history", [], "無法查詢歷史"),
+    ("exchange", [], "未扣除 Nickel，也未建立推薦紀錄"),("balance", [], "無法查詢餘額"), ("history", [], "無法查詢歷史"),
     ("daily", [{"name": "mode", "type": 3, "value": "on"}], "設定未保存"),
     ("daily", [{"name": "mode", "type": 3, "value": "off"}], "設定未保存"),
 ])

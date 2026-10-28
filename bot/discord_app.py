@@ -75,7 +75,7 @@ class JukeBoxClient(discord.Client):
         super().__init__(intents=discord.Intents.none(), allowed_mentions=discord.AllowedMentions.none())
         self.tree = SafeCommandTree(self, interaction_guard=interaction_guard)  # [command registry]: Local registration only.
         self.handlers = CommandHandlers(service)
-        register_commands(self.tree, self.handlers)
+        register_commands(self.tree, self.handlers, include_claim=getattr(service, "nickel_claim_enabled", False) is True)
         if owner_review is not None:
             self.tree.add_command(build_owner_group(owner_review.service_provider, owner_review.owner_id,
                                                     owner_review.guild_id, owner_review.now))
@@ -131,6 +131,14 @@ class CommandHandlers:
             return
         await _respond(interaction, self.service.exchange, interaction.user.id)  # [production gate]: Unchanged fixed reply; no debit.
 
+    async def claim(self, interaction: discord.Interaction) -> None:
+        """@description: Route /claim to the service, which grants every missing approved Nickel in one transaction.
+        @param self: Handler routing this command.
+        @param interaction: Discord request carrying the requesting account.
+        @return: None.
+        """
+        await _respond(interaction, self.service.claim, interaction.user.id, f"discord:{interaction.id}")
+
     async def balance(self, interaction: discord.Interaction) -> None:
         """@description: Reply privately with the requesting recipient's credit balance.
         @param self: Handler routing this command.
@@ -161,17 +169,20 @@ class CommandHandlers:
         await _respond(interaction, self.service.daily, interaction.user.id, mode.value == "on")
 
 
-def register_commands(tree: app_commands.CommandTree, handlers: CommandHandlers) -> None:
+def register_commands(tree: app_commands.CommandTree, handlers: CommandHandlers, include_claim: bool = False) -> None:
     """@description: Register five local commands without contacting Discord's API.
     @param tree: Empty client-owned command registry.
     @param handlers: Callback owner with an injected application service.
+    @param include_claim: True only when the /claim switch is open; the command set stays unchanged while it is closed.
     @return: None.
     """
     tree.add_command(app_commands.Command(name="share", description="投稿 YouTube 影片供資格驗證", callback=handlers.share))
     tree.add_command(app_commands.Command(name="exchange", description="查詢交換功能開放狀態", callback=handlers.exchange))
-    tree.add_command(app_commands.Command(name="balance", description="查詢可用交換點數", callback=handlers.balance))
+    tree.add_command(app_commands.Command(name="balance", description="查詢可用 Nickel", callback=handlers.balance))
     tree.add_command(app_commands.Command(name="history", description="查詢本人投稿及目前審核狀態", callback=handlers.history))
-    tree.add_command(app_commands.Command(name="daily", description="設定每日推薦偏好（排程尚未啟用）", callback=handlers.daily))
+    tree.add_command(app_commands.Command(name="daily", description="每日推薦尚未開放", callback=handlers.daily))
+    if include_claim:
+        tree.add_command(app_commands.Command(name="claim", description="領取本週與入門 Nickel", callback=handlers.claim))
 
 
 async def synchronize_commands(client: JukeBoxClient, *, guild_id: int | None = None, global_sync: bool = False) -> list:

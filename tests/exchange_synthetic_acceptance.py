@@ -52,7 +52,7 @@ ORIGINAL_A = "synthetic-version-a"
 ORIGINAL_B = "synthetic-version-b"
 DELIVERY_LABELS = {"delivered": "已交付（合成）", "failed": "未送出（注入）", "uncertain": "結果未知（注入，保留）", "sending": "交付中",
                  "reserved": "已保留，待確認（尚未派送）"}  # [reserved]: Never claimed; shown as awaiting confirmation, not as delivered.
-REFUND_LABELS = {"refunded": "已退回 1 點", "pending": "退款待處理", "none": "無退款"}
+REFUND_LABELS = {"refunded": "已退還 1 Nickel", "pending": "退款待處理", "none": "無退款"}
 
 
 @dataclass(frozen=True)
@@ -202,7 +202,7 @@ class SyntheticExchangeService:
         @param discord_user_id: Requester.
         @return: Gate text without debit.
         """
-        return "交換功能待歌曲資格驗證與派送恢復流程完成後開放；本次未扣點。"
+        return "交換功能待歌曲資格驗證與派送恢復流程完成後開放；本次未扣除 Nickel。"
 
     async def synthetic_exchange(self, discord_user_id: int, request_key: str, sender, replier) -> ExchangeFlowResult:
         """@description: Run one labelled exchange with the scripted adapter; the handler's real adapter is never used.
@@ -284,7 +284,7 @@ def _exchange_text(flow: ExchangeFlowResult) -> str:
         return f"{SYNTHETIC_LABEL}合成交換成功；未實際發送 DM。{code}"
     if flow.delivery_status is DeliveryStatus.FAILED:
         if flow.refund_status in ("refunded", "already_released"):
-            return f"{SYNTHETIC_LABEL}模擬未送出（注入），已退回 1 點；未實際發送 DM。{code}"
+            return f"{SYNTHETIC_LABEL}模擬未送出（注入），已退還 1 Nickel；未實際發送 DM。{code}"
         return f"{SYNTHETIC_LABEL}模擬未送出（注入），退款待處理；未實際發送 DM。{code}"
     if flow.delivery_status is DeliveryStatus.UNCERTAIN:
         return f"{SYNTHETIC_LABEL}模擬結果未知（注入）：保留紀錄，不退款、不重送；未實際發送 DM。{code}"

@@ -424,9 +424,10 @@ def test_read_main_uses_one_secret_and_preserves_evidence(monkeypatch: pytest.Mo
     monkeypatch.setattr(recovery, 'read_journal', lambda _: (journal, digest, scope))
     monkeypatch.setattr(Path, 'read_bytes', lambda _: content)
     connection = MagicMock()
-    monkeypatch.setattr(recovery, 'open_read_only', lambda _: connection)
+    monkeypatch.setattr(recovery, 'open_recovery_readonly', lambda *_: connection)
     monkeypatch.setattr(recovery, 'inspect_connection', lambda *args: dict(recovery_writes_authorized=False))
-    stream = io.StringIO(json.dumps(dict(authorization='BATCH_B_RECOVERY_READONLY', journal='synthetic')) + '\n"synthetic-private"\n')
+    header = dict(authorization='BATCH_B_RECOVERY_READONLY', journal='synthetic', account='jukebox101_test_readonly')
+    stream = io.StringIO(json.dumps(header) + '\n"synthetic-private"\n')
     assert recovery.main(stream) == 0
     output = capsys.readouterr().out
     assert json.loads(output)['journal_sha256'] == digest

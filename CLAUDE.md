@@ -13,6 +13,15 @@
 - 保留本框架的通用規則。初始化後只更新「專案設定」及已核准的專案補充規則，不把整份文件改寫成一次性的工作紀錄。
 - 文件中的未設定欄位不代表可以任意選擇；依現有檔案、使用者需求與實際環境填寫，無法確認的項目標為「待確認」。
 
+### 1.1 Owner 決策的白話說明（已核准的協作偏好）
+
+- 當需要使用者做決定、裁決或授權時，先用白話說明「現在要決定什麼、為什麼需要決定，以及會影響使用者或管理者的哪些操作」，再列出技術細節。
+- PB、PD、Requirement ID 等代號須附中文名稱與意思，不只列代號、術語或檔案位置讓使用者自行理解。
+- 每個選項說明選擇後的實際效果、主要好處與代價，提供建議及理由；明確區分建議、已核准決策與尚未驗證的事實，不替使用者做決定。
+- 抽象概念可用貼近日常的比喻協助理解，但須保留重要限制，不用比喻取代精確說明。簡單問題不必硬加比喻。
+- 說明哪些事情現在必須決定、哪些可以延後，以及未決時究竟阻擋哪個階段；區分產品規則、技術方案與當次執行授權。
+- 多項決策可用簡短表格整理，最後提供可直接回覆的編號或文字範例；不得把建議選項當成使用者已核准，也不重問已裁決事項。
+
 ## 2. 初始化流程
 
 當使用者要求「初始化／init」時，依序執行以下步驟。既有專案只補齊必要內容，不覆寫現有成果或重建整個專案。
@@ -171,7 +180,7 @@
 2. **每日派送時區**：已更正。`bot/database/schema.sql` 第 4 行註明 `dispatch_date` 使用 Asia/Taipei 日曆日，符合 §9 §2 的時區定義要求；但派送邏輯尚未實作，實際執行時的日界判斷待確認。
 3. **點數一致性**：§9 §4 要求以帳本為準；`/balance` 讀取 `users.credit_balance` 快取，一致性依 `reward_settlement.py` 的 `LedgerBalanceMismatch` 檢查，本次未驗證。
 4. **Python 版本**：WSL 預設 `python3` 為 3.14.4，與 pyproject 的 3.12 範圍不符。
-5. **`.env` 憑證欄位**：`.env.example` 註解要求測試憑證不放入 `.env`（指 `TEST_DB_*`）。本機 `.env` 另含 `DB_TESTAPP_PASSWORD`、`DB_jukebox101_test_migrator_PASSWORD`、`DB_HARNESS_PASSWORD` 欄位名稱。查核結果：`bot/`、`tests/`、`scripts/` 與文件中無直接引用這三個名稱；應用程式只讀 `DB_USER`、`DB_HOST`、`DB_PASSWORD`、`DB_NAME`、`DB_PORT`。2026-10-23 嘗試移除這三個欄位時被權限限制阻擋，未執行；`.env` 維持原狀。是否移除仍待 Owner 決定，本次未讀取其值。
+5. **`.env` 憑證欄位**：`.env.example` 註解要求測試憑證不放入 `.env`（指 `TEST_DB_*`）。本機 `.env` 另含 `DB_TESTAPP_PASSWORD`、`DB_jukebox101_test_migrator_PASSWORD`、`DB_HARNESS_PASSWORD` 欄位名稱。查核結果：`bot/`、`tests/`、`scripts/` 與文件中無直接引用這三個名稱；應用程式只讀 `DB_USER`、`DB_HOST`、`DB_PASSWORD`、`DB_NAME`、`DB_PORT`。Owner 已決定保留（見 `docs/grilling-decisions.md` Q11），不列為 Beta 或 Recovery 的阻擋條件。本次未讀取其值。
 6. **Git remote**：`git remote -v` 無輸出，目前未設定遠端，待確認。
 7. **文件引用**：已於 README.md 結構列表更新為 `CLAUDE.md`。ROADMAP.md、README.md 批准紀錄與 `docs/` 中的歷史規格、驗收紀錄保留原檔名，理由見審計報告。
 

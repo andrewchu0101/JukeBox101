@@ -1,0 +1,51 @@
+# Gateway-only deployment of the Bot. No public port is published; the Bot connects out to Discord and to MySQL.
+# Secrets are never written here: the operator supplies the secret files at deploy time (see docs/deploy/owner-secrets.md).
+name: jukebox101
+
+services:
+  bot:
+    build: .
+    image: jukebox101-bot:dev
+    user: "10001:10001"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      DB_HOST: ${DB_HOST:?set DB_HOST to the external MySQL host}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_USER: ${DB_USER:?set DB_USER to the Bot application account}
+      DB_NAME: ${DB_NAME:?set DB_NAME to the application schema}
+      DISCORD_DEV_GUILD_ID: ${DISCORD_DEV_GUILD_ID:?set the private guild id}
+      DISCORD_EXPECTED_APPLICATION_ID: ${DISCORD_EXPECTED_APPLICATION_ID:?set the application id}
+      DISCORD_OWNER_USER_ID: ${DISCORD_OWNER_USER_ID:?set the Owner user id}
+      SECRET_EXPECTED_UID: "10001"
+      SECRET_EXPECTED_GID: "10001"
+      JUKEBOX_FORMAL_EXCHANGE: ${JUKEBOX_FORMAL_EXCHANGE:-off}
+      JUKEBOX_NICKEL_CLAIM: ${JUKEBOX_NICKEL_CLAIM:-off}
+    secrets:
+      - discord_bot_token
+      - db_password
+
+secrets:
+  discord_bot_token:
+    file: ${JB_SECRET_DIR:?set JB_SECRET_DIR to the host directory holding the secret files}/discord_bot_token.txt
+  db_password:
+    file: ${JB_SECRET_DIR:?set JB_SECRET_DIR to the host directory holding the secret files}/db_password.txt

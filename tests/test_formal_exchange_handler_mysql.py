@@ -177,7 +177,7 @@ def test_c4_an_explicit_not_sent_refunds_once_releases_the_song_and_a_replay_ref
     failed = interaction(USER_A, failed_client, interaction_id=558)
     asyncio.run(handler.exchange(failed))
     assert failed_client.user.send.await_count == 0
-    assert "已退回 1 點" in reply_texts(failed)[0]
+    assert "已退還 1 Nickel" in reply_texts(failed)[0]
     refunds = read_row(target, "SELECT COUNT(*) AS total FROM credit_ledger WHERE reason='delivery_refund'", ())["total"]
     assert refunds == 1
     assert read_row(target, "SELECT released_at FROM recommendations WHERE discord_user_id=%s", (USER_A,))["released_at"] is not None
