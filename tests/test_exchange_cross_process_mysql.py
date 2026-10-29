@@ -208,7 +208,8 @@ def test_two_processes_with_different_keys_reserve_once_and_refuse_once(funded_p
     with workers_for((("first", keys[0]), ("second", keys[1])), tmp_path) as (workers, go_file):
         release(workers, go_file)
         results = [worker.collect() for worker in workers]
-    assert sorted(result["status"] for result in results) == sorted([ExchangeStatus.RESERVED.value, ExchangeStatus.INSUFFICIENT_CREDITS.value])
+    # [open exchange first]: The loser always meets the winner's open reservation, which takes precedence over the credit check (commit 7990f2d).
+    assert sorted(result["status"] for result in results) == sorted([ExchangeStatus.RESERVED.value, ExchangeStatus.IN_PROGRESS.value])
     assert all(result["error_code"] is None for result in results)
     winner = next(index for index, result in enumerate(results) if result["status"] == ExchangeStatus.RESERVED.value)
     assert attribution_violations(keys[winner], results[winner]["recommendation_id"], before, fixture_snapshot(target)) == ()

@@ -56,12 +56,12 @@ def run_check(secret_path: Path, expected_owner_uid: str | None = str(CURRENT_UI
     )
 
 
-def test_missing_expected_owner_fails_with_configuration_message(tmp_path):
+def test_missing_expected_owner_fails_with_configuration_message(unix_permission_dir):
     """@description: Refuse to pass when the deployer has not stated which owner account is expected.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check exit status and the explanation.
     """
-    secret_path = make_secret_file(tmp_path, 0o440)
+    secret_path = make_secret_file(unix_permission_dir, 0o440)
 
     result = run_check(secret_path, expected_owner_uid=None)
 
@@ -70,12 +70,12 @@ def test_missing_expected_owner_fails_with_configuration_message(tmp_path):
     assert "未設定" in result.stdout
 
 
-def test_missing_expected_group_fails_with_configuration_message(tmp_path):
+def test_missing_expected_group_fails_with_configuration_message(unix_permission_dir):
     """@description: Refuse to pass when the deployer has not stated which secret group is expected.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check exit status and the explanation.
     """
-    secret_path = make_secret_file(tmp_path, 0o600)
+    secret_path = make_secret_file(unix_permission_dir, 0o600)
 
     result = run_check(secret_path, expected_group_gid=None)
 
@@ -83,12 +83,12 @@ def test_missing_expected_group_fails_with_configuration_message(tmp_path):
     assert "EXPECTED_GROUP_UNCONFIGURED" in result.stdout
 
 
-def test_unset_expectations_produce_an_executable_placeholder_template(tmp_path):
+def test_unset_expectations_produce_an_executable_placeholder_template(unix_permission_dir):
     """@description: Confirm the refusal output for unset expectations never prints the status word inside a command.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check the chown template uses placeholders.
     """
-    secret_path = make_secret_file(tmp_path, 0o640)
+    secret_path = make_secret_file(unix_permission_dir, 0o640)
 
     result = run_check(secret_path, expected_owner_uid=None, expected_group_gid=None)
     chown_lines = [line for line in result.stdout.splitlines() if "chown" in line]
@@ -97,12 +97,12 @@ def test_unset_expectations_produce_an_executable_placeholder_template(tmp_path)
     assert chown_lines == ["  chown <預期擁有者 uid>:<預期群組 gid> <秘密檔案路徑>"]
 
 
-def test_other_readable_file_is_refused_with_current_and_expected_values(tmp_path):
+def test_other_readable_file_is_refused_with_current_and_expected_values(unix_permission_dir):
     """@description: Refuse a host secret that other accounts can read, and show the current and expected identity.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check the reason and the repair guidance values.
     """
-    secret_path = make_secret_file(tmp_path, 0o604)
+    secret_path = make_secret_file(unix_permission_dir, 0o604)
 
     result = run_check(secret_path)
 
@@ -113,12 +113,12 @@ def test_other_readable_file_is_refused_with_current_and_expected_values(tmp_pat
     assert f"gid={CURRENT_GID}" in result.stdout
 
 
-def test_group_read_for_undedicated_group_is_refused_and_names_the_group_mismatch(tmp_path):
+def test_group_read_for_undedicated_group_is_refused_and_names_the_group_mismatch(unix_permission_dir):
     """@description: Refuse group-readable secrets whose group is not the designated one, and say so in the guidance.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check the reason and that the expected group is shown.
     """
-    secret_path = make_secret_file(tmp_path, 0o640)
+    secret_path = make_secret_file(unix_permission_dir, 0o640)
     other_group_gid = CURRENT_GID + 1
 
     result = run_check(secret_path, expected_group_gid=str(other_group_gid))
@@ -128,12 +128,12 @@ def test_group_read_for_undedicated_group_is_refused_and_names_the_group_mismatc
     assert f"gid={other_group_gid}" in result.stdout
 
 
-def test_owner_mismatch_is_refused(tmp_path):
+def test_owner_mismatch_is_refused(unix_permission_dir):
     """@description: Refuse a host secret that the expected deployment account does not own.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check the reason.
     """
-    secret_path = make_secret_file(tmp_path, 0o600)
+    secret_path = make_secret_file(unix_permission_dir, 0o600)
 
     result = run_check(secret_path, expected_owner_uid=str(CURRENT_UID + 1))
 
@@ -141,39 +141,40 @@ def test_owner_mismatch_is_refused(tmp_path):
     assert "UNEXPECTED_OWNER" in result.stdout
 
 
-@pytest.mark.parametrize("mode", [0o400, 0o600])
-def test_owner_only_file_passes(tmp_path, mode):
-    """@description: Accept owner-only host secrets that the expected account owns.
-    @param tmp_path: Temporary directory for the secret file.
-    @param mode: Owner-only permission bits.
+def test_sanctioned_0400_file_owned_by_expected_account_passes(unix_permission_dir):
+    """@description: Accept the approved 0400 host secret that the expected account owns.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check exit status 0.
     """
-    secret_path = make_secret_file(tmp_path, mode)
+    secret_path = make_secret_file(unix_permission_dir, 0o400)
 
     result = run_check(secret_path)
 
     assert result.returncode == 0, result.stdout
 
 
-def test_0440_with_designated_group_passes(tmp_path):
-    """@description: Accept the 0440 layout where only the designated secret group can read the file.
-    @param tmp_path: Temporary directory for the secret file.
-    @return: None; the assertions check exit status 0.
+@pytest.mark.parametrize("mode", [0o600, 0o440])
+def test_non_sanctioned_owner_or_group_modes_are_refused_as_not_sanctioned(unix_permission_dir, mode):
+    """@description: 0400 is the only approved host mode, so 0600 and the group-readable 0440 are refused even with the right owner and group.
+    @param unix_permission_dir: Temporary directory for the secret file.
+    @param mode: Non-approved permission bits.
+    @return: None; the assertions check the refusal exit status and reason.
     """
-    secret_path = make_secret_file(tmp_path, 0o440)
+    secret_path = make_secret_file(unix_permission_dir, mode)
 
     result = run_check(secret_path)
 
-    assert result.returncode == 0, result.stdout
+    assert result.returncode == 1
+    assert "NOT_SANCTIONED_MODE" in result.stdout
 
 
-def test_output_never_contains_the_secret_content(tmp_path):
+def test_output_never_contains_the_secret_content(unix_permission_dir):
     """@description: Prove that neither a pass nor a refusal prints anything from the secret file.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check both outputs.
     """
-    refused_path = make_secret_file(tmp_path, 0o644)
-    passed_path = tmp_path / "passing_secret"
+    refused_path = make_secret_file(unix_permission_dir, 0o644)
+    passed_path = unix_permission_dir / "passing_secret"
     passed_path.write_text(FAKE_SECRET_CONTENT, encoding="utf-8")
     os.chmod(passed_path, 0o400)
 
@@ -184,31 +185,33 @@ def test_output_never_contains_the_secret_content(tmp_path):
     assert FAKE_SECRET_CONTENT not in passed.stdout + passed.stderr
 
 
-def test_check_does_not_need_read_permission_on_the_file(tmp_path):
-    """@description: Confirm the check inspects metadata only, so a file without read bits is still judged on ownership and mode.
-    @param tmp_path: Temporary directory for the secret file.
-    @return: None; the assertion checks the file is judged without being opened.
+def test_check_does_not_need_read_permission_on_the_file(unix_permission_dir):
+    """@description: Confirm the check inspects metadata only, so a file without read bits is judged on its mode and never opened.
+    @param unix_permission_dir: Temporary directory for the secret file.
+    @return: None; the assertions check the refusal is about the mode, not an open failure.
     """
-    secret_path = make_secret_file(tmp_path, 0o000)
+    secret_path = make_secret_file(unix_permission_dir, 0o000)
 
     result = run_check(secret_path)
 
-    assert result.returncode == 0, result.stdout
+    assert result.returncode == 1
+    assert "NOT_SANCTIONED_MODE" in result.stdout
+    assert "OPEN" not in result.stdout
 
 
-def test_check_never_runs_chmod_chown_or_privilege_escalation(tmp_path):
+def test_check_never_runs_chmod_chown_or_privilege_escalation(unix_permission_dir):
     """@description: Use stub commands on PATH to prove a failing check does not repair, change owner or escalate.
-    @param tmp_path: Temporary directory for the secret file and stub commands.
+    @param unix_permission_dir: Temporary directory for the secret file and stub commands.
     @return: None; the assertions check that no stub was invoked and that the file mode is unchanged.
     """
-    stub_directory = tmp_path / "stubs"
+    stub_directory = unix_permission_dir / "stubs"
     stub_directory.mkdir()
-    invocation_log = tmp_path / "invocations.log"
+    invocation_log = unix_permission_dir / "invocations.log"
     for command_name in ("chmod", "chown", "sudo", "su"):
         stub_path = stub_directory / command_name
         stub_path.write_text(f"#!/bin/sh\necho {command_name} >> '{invocation_log}'\n", encoding="utf-8")
         os.chmod(stub_path, 0o755)
-    secret_path = make_secret_file(tmp_path, 0o644)
+    secret_path = make_secret_file(unix_permission_dir, 0o644)
 
     result = run_check(secret_path, extra_env={"PATH": f"{stub_directory}{os.pathsep}{os.environ['PATH']}"})
 
@@ -228,23 +231,23 @@ def test_script_text_contains_no_mutating_or_escalating_commands():
         assert forbidden_command not in script_text, forbidden_command
 
 
-def test_missing_secret_file_reports_cannot_inspect_without_contents(tmp_path):
+def test_missing_secret_file_reports_cannot_inspect_without_contents(unix_permission_dir):
     """@description: Stop with a distinct exit status when the file cannot be inspected, without printing secret text.
-    @param tmp_path: Temporary directory that does not contain the referenced file.
+    @param unix_permission_dir: Temporary directory that does not contain the referenced file.
     @return: None; the assertions check exit status 2 and the absence of secret text.
     """
-    result = run_check(tmp_path / "does-not-exist")
+    result = run_check(unix_permission_dir / "does-not-exist")
 
     assert result.returncode == 2
     assert FAKE_SECRET_CONTENT not in result.stdout + result.stderr
 
 
-def test_retired_expected_names_are_not_read(tmp_path):
+def test_retired_expected_names_are_not_read(unix_permission_dir):
     """@description: Confirm only the approved SECRET_EXPECTED_UID and SECRET_EXPECTED_GID names configure the check.
-    @param tmp_path: Temporary directory for the secret file.
+    @param unix_permission_dir: Temporary directory for the secret file.
     @return: None; the assertions check that the old names leave the expectations unset.
     """
-    secret_path = make_secret_file(tmp_path, 0o440)
+    secret_path = make_secret_file(unix_permission_dir, 0o440)
     environment = {
         "PATH": os.environ["PATH"],
         "PYTHON": sys.executable,

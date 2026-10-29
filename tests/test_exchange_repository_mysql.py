@@ -206,7 +206,8 @@ def test_repository_exchange_zero_balance_leaves_no_request_rows(funded_pair):
     assert repository.exchange(USER_A, "s1-spend", random.Random(1)).status is ExchangeStatus.RESERVED
     before = fixture_footprint(target)
     outcome = repository.exchange(USER_A, "s1-empty", random.Random(1))
-    assert outcome.status is ExchangeStatus.INSUFFICIENT_CREDITS
+    # [open exchange first]: The reservation from the spend is still open, so the refusal is IN_PROGRESS, not a credit shortage (commit 7990f2d).
+    assert outcome.status is ExchangeStatus.IN_PROGRESS
     assert outcome.recommendation_id is None
     assert_footprint_unchanged(target, before)
     assert_repository_state(funded_pair, 1, 0)
@@ -250,7 +251,8 @@ def test_repository_concurrent_requests_return_only_business_outcomes(funded_pai
     with ThreadPoolExecutor(max_workers=2) as workers:
         futures = [workers.submit(attempt, key) for key in keys]
         outcomes = [future.result(timeout=15) for future in futures]
-    loser_status = ExchangeStatus.REPLAYED if same_key else ExchangeStatus.INSUFFICIENT_CREDITS
+    # [open exchange first]: A different key meets the winner's open reservation before the balance check (commit 7990f2d).
+    loser_status = ExchangeStatus.REPLAYED if same_key else ExchangeStatus.IN_PROGRESS
     assert sorted(outcome.status.value for outcome in outcomes) == sorted([ExchangeStatus.RESERVED.value, loser_status.value])
     if same_key:
         assert outcomes[0].recommendation_id == outcomes[1].recommendation_id

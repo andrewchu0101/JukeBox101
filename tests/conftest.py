@@ -3,6 +3,11 @@
 Environment fixtures prevent local credentials from affecting mock-based verification.
 """
 
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from bot.config import load_database_settings
@@ -36,3 +41,16 @@ def database_settings(monkeypatch):
         monkeypatch.setenv(setting_name, setting_value)
     monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
     return load_database_settings()
+
+
+@pytest.fixture
+def unix_permission_dir(tmp_path):
+    """@description: Give permission-bit tests a directory on the Linux filesystem, because the project's pytest basetemp on a Windows drive mount ignores chmod.
+    @param tmp_path: Default temporary directory, used unchanged on Windows where permission bits are emulated.
+    @return: Directory whose mode changes persist, removed after the test.
+    """
+    if os.name != "posix":
+        return tmp_path
+    permission_dir = Path(tempfile.mkdtemp(prefix="jb101-perm-"))  # [Unix permission scope]: Created under the system temp directory, not the project drive.
+    yield permission_dir
+    shutil.rmtree(permission_dir, ignore_errors=True)

@@ -7,7 +7,7 @@
 
 | 名稱 | 種類 | 放置位置 | 用途 |
 |---|---|---|---|
-| `discord_bot_token.txt` | 秘密 | `JB_SECRET_DIR` 之下 | Discord Bot Token |
+| `discord_bot_token.txt` | 秘密 | `JB_SECRET_DIR` 之下 | Discord Bot Token。檔名沿用既有設定；內容即 Owner 手動提供的 `bot_token`（2026-10-29 核准保留檔名） |
 | `db_password.txt` | 秘密 | `JB_SECRET_DIR` 之下 | Bot 應用程式資料庫帳號的密碼 |
 | `SECRET_EXPECTED_UID` / `SECRET_EXPECTED_GID` | 非秘密設定 | Compose 檔已設為 10001 | 容器內秘密檔案預期的擁有者與群組（數字） |
 
@@ -38,6 +38,8 @@ sudo chmod 0400 /etc/jukebox101/secrets/*.txt
 ```bash
 SECRET_EXPECTED_UID=10001 SECRET_EXPECTED_GID=10001 \
   scripts/deploy/check-host-secrets.sh /etc/jukebox101/secrets/discord_bot_token.txt
+  SECRET_EXPECTED_UID=10001 SECRET_EXPECTED_GID=10001 \
+  scripts/deploy/check-host-secrets.sh /etc/jukebox101/secrets/db_password.txt
 echo "exit=$?"
 ```
 
@@ -103,7 +105,7 @@ Owner 命令列工具（`owner_cli`）目前只接受環境變數 `DB_PASSWORD`�
 
 1. **不要**把密碼放在命令列參數中（會留在 shell 歷史與程序清單）。
 2. **不要**寫入 `.env`、腳本或任何檔案。
-3. 只在**單次命令的環境**中設定，命令結束後清除：
+3. 這不是第三個秘密：它與 `db_password.txt` 是**同一項資料庫秘密的另一種輸入方式**（環境變數而非秘密檔）。它只存在於 Owner 的工作站單次命令環境中，**不得寫入部署包、`.env.example`、Compose 檔或任何持久保存的設定範例**。只在**單次命令的環境**中設定，命令結束後清除：
 
    ```bash
    # 密碼從密碼管理器的安全輸入取得，不要 echo、不要 export 到長期 shell
@@ -128,6 +130,9 @@ Owner 命令列工具（`owner_cli`）目前只接受環境變數 `DB_PASSWORD`�
 
 
 ## 15. 本次交付給夥伴的秘密（確切名稱，不含真值）
+
+- 兩個檔案由 Owner **另行**交給夥伴（例如以安全管道），不得進入 Git、Docker 建置內容、映像或部署包，也不得寫入文件、日誌或測試輸出。
+- 夥伴收到後，放入主機上的 `JB_SECRET_DIR`，檔名必須與下表完全相同，權限 0400、擁有者 UID 10001。
 
 | 項目 | 內容 |
 |---|---|

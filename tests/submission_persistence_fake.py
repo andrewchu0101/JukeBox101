@@ -353,7 +353,8 @@ def _update_recommendations(state: dict, sql: str, parameters: tuple) -> int:
         return 1
     if sql.startswith("UPDATE recommendations SET status=%s,discord_message_id=%s"):
         row = rows.get(parameters[3])
-        if row is None or row["status"] != "sending" or row["claim_token"] != parameters[4]:
+        replaceable = ("sending", "uncertain") if "status IN ('sending','uncertain')" in sql else ("sending",)  # [mirror of record_result]: Only not-sent may replace uncertain.
+        if row is None or row["status"] not in replaceable or row["claim_token"] != parameters[4]:
             return 0
         row.update(status=parameters[0], discord_message_id=parameters[1], delivered_at=parameters[2])
         return 1

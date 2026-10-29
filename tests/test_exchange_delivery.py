@@ -4,6 +4,7 @@ Synthetic reservations, a scripted async DM adapter and an in-memory reply recor
 """
 
 import asyncio
+import dataclasses
 import random
 from datetime import datetime, timedelta, timezone
 
@@ -243,8 +244,8 @@ def test_a_second_entry_while_another_worker_is_sending_does_not_send(two_submit
     assert result.status is DeliveryStatus.IN_PROGRESS and sender.attempts == []
 
 
-def test_a_late_result_never_overwrites_a_newer_terminal_state(two_submitters) -> None:
-    """@description: A result from an attempt whose lease expired cannot replace the uncertain state the recovery recorded.
+def test_a_late_result_from_another_claim_never_overwrites_the_uncertain_state(two_submitters) -> None:
+    """@description: A delivered result carrying a claim other than the one that holds the reservation cannot replace the uncertain state the recovery recorded.
     @param two_submitters: Two settled submitters with verified songs.
     @return: None.
     """
@@ -252,9 +253,153 @@ def test_a_late_result_never_overwrites_a_newer_terminal_state(two_submitters) -
     reservation = repository.exchange(101, "flow-late", random.Random(1))
     claim = repository.claim_delivery(reservation.recommendation_id, "token-late", NOW)[2]
     repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
-    stored = repository.record_delivery(claim, "delivered", 7008, NOW + timedelta(minutes=12))
+    other_claim = dataclasses.replace(claim, claim_token="token-late-other")
+    stored = repository.record_delivery(other_claim, "delivered", 7008, NOW + timedelta(minutes=12))
     assert stored == "uncertain"
     assert delivery_row(database, reservation.recommendation_id)["discord_message_id"] is None
+
+
+class LateSweepDm:
+    """@description: Model an attempt that stalls past its lease: a recovery sweep runs during the send, then the adapter returns the given result for that same attempt.
+    @param repository: Repository the concurrent recovery sweep runs against.
+    @param outcome: Result the adapter returns after the sweep.
+    @return: Adapter satisfying the direct-message sender protocol.
+    """
+
+    def __init__(self, repository, outcome: DmResult) -> None:
+        """@description: Keep the repository used by the in-flight sweep, the outcome to return and the attempts it saw.
+        @param self: Adapter instance.
+        @param repository: Repository the sweep runs against.
+        @param outcome: Result returned after the sweep.
+        @return: None.
+        """
+        self.repository = repository
+        self.outcome = outcome
+        self.attempts = []
+
+    async def send(self, discord_user_id: int, text: str) -> DmResult:
+        """@description: Run the lease sweep mid-send, then return this attempt's result.
+        @param self: Adapter instance.
+        @param discord_user_id: Synthetic recipient.
+        @param text: Direct-message body.
+        @return: Scripted result.
+        """
+        self.attempts.append((discord_user_id, text))
+        self.repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
+        return self.outcome
+
+
+def test_a_late_explicit_not_sent_after_the_lease_is_refunded_once(two_submitters) -> None:
+    """@description: An explicit not-sent result from the same attempt still refunds its point after a recovery sweep marked that attempt uncertain, and a repeat changes nothing.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    balance_before_exchange = balance(database, 101)
+    sender = LateSweepDm(repository, DmResult.not_sent("recipient_lookup_failed"))
+    flow = start(repository, sender, 101, "flow-late-not-sent")
+    assert flow.delivery_status is DeliveryStatus.FAILED and flow.refund_status == "refunded"
+    assert delivery_row(database, flow.recommendation_id)["status"] == "failed"
+    assert balance(database, 101) == balance_before_exchange and len(refund_rows(database)) == 1
+    assert len(sender.attempts) == 1
+    again = repository.refund_undelivered(flow.recommendation_id, NOW + timedelta(minutes=12))
+    assert again.status == "already_released" and len(refund_rows(database)) == 1
+
+
+def test_a_not_sent_from_a_different_attempt_never_moves_an_uncertain_reservation(two_submitters) -> None:
+    """@description: Only the attempt that holds the claim may move an uncertain reservation to failed, so a stale or foreign not-sent result changes nothing and refunds nothing.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    reservation = repository.exchange(101, "flow-stale-token", FirstPicks(1))
+    claim = repository.claim_delivery(reservation.recommendation_id, "token-current", NOW)[2]
+    repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
+    stale_claim = dataclasses.replace(claim, claim_token="token-stale")
+    assert repository.record_delivery(stale_claim, "failed", None, NOW + timedelta(minutes=12)) == "uncertain"
+    assert delivery_row(database, reservation.recommendation_id)["status"] == "uncertain"
+    assert repository.refund_undelivered(reservation.recommendation_id, NOW + timedelta(minutes=12)).status == "not_refundable"
+    assert refund_rows(database) == []
+
+
+def test_a_late_delivered_result_from_the_same_claim_records_the_message_and_never_refunds(two_submitters) -> None:
+    """@description: A late accepted-message result from the claim that holds the reservation completes it as delivered, stores the message identifier and time, and never refunds.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    reservation = repository.exchange(101, "flow-late-delivered", FirstPicks(1))
+    claim = repository.claim_delivery(reservation.recommendation_id, "token-late-delivered", NOW)[2]
+    repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
+    assert repository.record_delivery(claim, "delivered", 7010, NOW + timedelta(minutes=12)) == "delivered"
+    row = delivery_row(database, reservation.recommendation_id)
+    assert row["status"] == "delivered" and row["discord_message_id"] == 7010 and row["delivered_at"] == NOW + timedelta(minutes=12)
+    assert repository.refund_undelivered(reservation.recommendation_id, NOW + timedelta(minutes=12)).status == "not_refundable"
+    assert refund_rows(database) == []
+
+
+def test_a_repeated_delivered_result_changes_nothing_and_keeps_the_first_message(two_submitters) -> None:
+    """@description: A second delivered result for the same claim is idempotent: it reports the stored delivery and keeps the first message identifier.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    reservation = repository.exchange(101, "flow-repeat-delivered", FirstPicks(1))
+    claim = repository.claim_delivery(reservation.recommendation_id, "token-repeat-delivered", NOW)[2]
+    repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
+    repository.record_delivery(claim, "delivered", 7010, NOW + timedelta(minutes=12))
+    assert repository.record_delivery(claim, "delivered", 7011, NOW + timedelta(minutes=13)) == "delivered"
+    row = delivery_row(database, reservation.recommendation_id)
+    assert row["discord_message_id"] == 7010 and row["delivered_at"] == NOW + timedelta(minutes=12)
+
+
+def test_a_late_delivered_result_from_a_different_claim_never_completes_an_uncertain_reservation(two_submitters) -> None:
+    """@description: Only the claim that owns the reservation may complete it, so a delivered result carrying a foreign token leaves the uncertain state and its message identifier untouched.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    reservation = repository.exchange(101, "flow-foreign-delivered", FirstPicks(1))
+    claim = repository.claim_delivery(reservation.recommendation_id, "token-owner", NOW)[2]
+    repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
+    foreign_claim = dataclasses.replace(claim, claim_token="token-foreign")
+    assert repository.record_delivery(foreign_claim, "delivered", 7012, NOW + timedelta(minutes=12)) == "uncertain"
+    row = delivery_row(database, reservation.recommendation_id)
+    assert row["status"] == "uncertain" and row["discord_message_id"] is None
+
+
+@pytest.mark.parametrize("later_status", ["failed", "uncertain"])
+def test_a_later_not_sent_or_unknown_result_from_the_same_claim_never_overwrites_delivered(two_submitters, later_status) -> None:
+    """@description: Once the same claim has recorded delivered, a later not-sent or unknown result cannot change the delivered state, its message identifier, or the refund ledger.
+    @param two_submitters: Two settled submitters with verified songs.
+    @param later_status: Later result from the same claim, not-sent or unknown.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    reservation = repository.exchange(101, "flow-delivered-then-" + later_status, FirstPicks(1))
+    claim = repository.claim_delivery(reservation.recommendation_id, "token-delivered-then-" + later_status, NOW)[2]
+    assert repository.record_delivery(claim, "delivered", 7014, NOW + timedelta(minutes=1)) == "delivered"
+    assert repository.record_delivery(claim, later_status, None, None) == "delivered"
+    row = delivery_row(database, reservation.recommendation_id)
+    assert row["status"] == "delivered" and row["discord_message_id"] == 7014 and row["released_at"] is None
+    assert refund_rows(database) == []
+
+
+def test_a_delivered_result_after_a_refund_never_overwrites_the_released_failure(two_submitters) -> None:
+    """@description: Delivery and refund never both hold: once a same-claim not-sent result has been refunded, a later delivered result for that claim changes nothing.
+    @param two_submitters: Two settled submitters with verified songs.
+    @return: None.
+    """
+    database, repository, _ = two_submitters
+    reservation = repository.exchange(101, "flow-refund-then-delivered", FirstPicks(1))
+    claim = repository.claim_delivery(reservation.recommendation_id, "token-refund-then-delivered", NOW)[2]
+    repository.recover_interrupted_deliveries(NOW + timedelta(minutes=11))
+    assert repository.record_delivery(claim, "failed", None, NOW + timedelta(minutes=12)) == "failed"
+    assert repository.refund_undelivered(reservation.recommendation_id, NOW + timedelta(minutes=12)).status == "refunded"
+    assert repository.record_delivery(claim, "delivered", 7013, NOW + timedelta(minutes=13)) == "failed"
+    row = delivery_row(database, reservation.recommendation_id)
+    assert row["status"] == "failed" and row["discord_message_id"] is None and row["released_at"] is not None
+    assert len(refund_rows(database)) == 1
 
 
 def test_reply_failure_after_a_successful_dm_changes_nothing(two_submitters) -> None:

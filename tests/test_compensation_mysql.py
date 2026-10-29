@@ -10,6 +10,7 @@ Fixture rows of the synthetic identities are removed after each test, as the oth
 
 import json
 import os
+import re
 import random
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -255,7 +256,7 @@ def guarded_steps(isolated, request, compensation_enabled: bool, seed_candidates
     finally:
         connection = open_verified_connection(settings, pin)
         try:
-            guarded_cleanup(connection, evidence_dir, request.node.name, identity)
+            guarded_cleanup(connection, evidence_dir, re.sub(r'[^A-Za-z0-9_.-]+', '_', request.node.nodeid), identity)  # [unique file names]: The node id includes the module, so same-named tests in two modules never share a plan.
         finally:
             connection.close()
         require_empty_baseline(isolated)

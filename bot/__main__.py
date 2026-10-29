@@ -4,6 +4,7 @@ Only executing this module loads credentials and logs in; imports remain offline
 """
 
 import asyncio
+import errno
 import logging
 import os
 import signal
@@ -26,7 +27,8 @@ from bot.gateway_listener import GuildInteractionGuard
 from bot.discord_app import JukeBoxClient, OwnerReviewWiring
 from bot.owner_cli import TOKEN_TTL
 from bot.owner_review import OwnerReviewService
-from bot.secret_file_policy import ContainerMountedFile, ContainerProcess, MountedDirectory, evaluate_sanctioned_mount
+from bot.secret_file_policy import (ContainerMountedFile, ContainerProcess, MountedDirectory, SecretFileReason,
+                                    evaluate_sanctioned_mount)
 from bot.services import MusicService
 
 
@@ -77,6 +79,18 @@ def _opens_read_only(secret_file_path: str) -> bool:
         return False
 
 
+def _stat_failure_reason(stat_error: OSError) -> str:
+    """@description: Name the stable reason for a failed metadata read, so a refusal never echoes the path or the raw OS message.
+    @param stat_error: Failure raised while reading the mounted secret's or its parent's metadata.
+    @return: Reason code; EACCES means some directory on the path is not searchable (not necessarily the immediate parent), a missing file is named as such.
+    """
+    if stat_error.errno == errno.EACCES:
+        return SecretFileReason.PATH_NOT_SEARCHABLE.value
+    if stat_error.errno == errno.ENOENT:
+        return SecretFileReason.FILE_MISSING.value
+    return SecretFileReason.OPEN_FAILED.value
+
+
 def _mounted_secret_reasons(secret_file_path: str, expected_uid: int, expected_gid: int) -> list[str]:
     """@description: Judge one mounted secret under the approved 0400 scheme, using its numeric owner, group, parent directory and a real read probe.
     @param secret_file_path: Path named by the _FILE setting; never printed.
@@ -84,8 +98,11 @@ def _mounted_secret_reasons(secret_file_path: str, expected_uid: int, expected_g
     @param expected_gid: Declared numeric group of the mounted file.
     @return: Stable reason codes for every refusal; empty when the file passes.
     """
-    file_status = os.stat(secret_file_path)
-    parent_status = os.stat(os.path.dirname(secret_file_path) or ".")
+    try:
+        file_status = os.stat(secret_file_path)
+        parent_status = os.stat(os.path.dirname(secret_file_path) or ".")
+    except OSError as stat_error:
+        return [_stat_failure_reason(stat_error)]
     mounted_file = ContainerMountedFile(
         owner_uid=file_status.st_uid, group_gid=file_status.st_gid, mode=stat.S_IMODE(file_status.st_mode),
         is_blank=False,  # [blank check]: read_secret_file already refused empty content before this point.

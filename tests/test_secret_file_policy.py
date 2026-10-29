@@ -115,10 +115,10 @@ def test_group_read_for_undedicated_group_is_refused_not_warned():
     assert SecretFileReason.GROUP_READ_UNDEDICATED in decision.reasons
 
 
-@pytest.mark.parametrize("mode", [0o400, 0o600])
+@pytest.mark.parametrize("mode", [0o400])
 def test_owner_only_host_file_passes(mode):
-    """@description: Accept the owner-only permissions that the deployment checklist recommends.
-    @param mode: Owner-only permission bits.
+    """@description: Accept the approved 0400 owner-only host file, the only mode the deployment checklist sanctions.
+    @param mode: Approved owner-only permission bits.
     @return: None; the assertion checks the decision passes without reasons.
     """
     decision = host_decision(mode, group_gid=OTHER_HOST_GID)
@@ -127,14 +127,15 @@ def test_owner_only_host_file_passes(mode):
     assert decision.reasons == ()
 
 
-def test_host_file_0440_with_designated_group_passes():
-    """@description: Accept the 0440 layout where only the designated secret group can read the file.
+def test_host_file_0440_is_refused_because_0400_is_the_only_sanctioned_mode():
+    """@description: The group-readable 0440 layout is not approved, so the host check refuses it even with the designated group.
     @param: none
-    @return: None; the assertion checks the decision passes.
+    @return: None; the assertions check the refusal reason.
     """
     decision = host_decision(0o440)
 
-    assert decision.passed
+    assert not decision.passed
+    assert SecretFileReason.NOT_SANCTIONED_MODE in decision.reasons
 
 
 def test_host_check_refuses_when_expected_owner_is_not_configured():
@@ -181,7 +182,7 @@ def test_repair_guidance_lists_identity_and_commands_without_secret_material():
     assert "9999" in guidance
     assert "0644" in guidance
     assert f"{EXPECTED_OWNER_UID}:{EXPECTED_SECRET_GROUP_GID}" in guidance
-    assert "chmod 0440" in guidance
+    assert "chmod 0400" in guidance and "chmod 0440" not in guidance
 
 
 def test_repair_guidance_marks_unset_expectations_instead_of_guessing():

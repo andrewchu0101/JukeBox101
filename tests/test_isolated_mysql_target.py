@@ -3,6 +3,7 @@
 No connection is made: pymysql.connect is replaced with a function that fails the test if it is ever called.
 """
 
+import os
 from pathlib import Path
 
 import pymysql
@@ -18,7 +19,8 @@ VALID_ENVIRONMENT = {
     "TEST_ISOLATED_SERVER_UUID": "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE", "TEST_ISOLATED_RUN_DIR": str(RUN_DIR),
 }
 GOOD_IDENTITY = {
-    "port": 3307, "datadir": str(RUN_DIR / "data") + "\\", "version": "8.0.46", "server_uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    # [platform separator]: The trailing separator uses the host's own form, so normalisation sees the same directory on Windows and POSIX.
+    "port": 3307, "datadir": os.path.join(str(RUN_DIR), "data") + os.sep, "version": "8.0.46", "server_uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     "log_error": str(RUN_DIR / "error.log"), "socket": "jb101_test_3307", "database_name": "jukebox101_test",
 }
 

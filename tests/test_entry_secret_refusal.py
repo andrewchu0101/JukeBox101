@@ -157,13 +157,13 @@ def test_refusal_output_contains_no_secret_values(entry, isolated, monkeypatch, 
 
 
 @pytest.fixture
-def mounted_token(monkeypatch, tmp_path: Path) -> Path:
+def mounted_token(monkeypatch, unix_permission_dir: Path) -> Path:
     """@description: Provide a synthetic token file owned by this process with owner-only permissions, and a database password from the environment.
     @param monkeypatch: Environment isolation facility.
-    @param tmp_path: Temporary directory for the synthetic token file.
+    @param unix_permission_dir: Linux-filesystem directory for the synthetic token file, so its 0400 mode persists.
     @return: Path of the synthetic token file.
     """
-    token_file = tmp_path / "discord_bot_token"
+    token_file = unix_permission_dir / "discord_bot_token"
     token_file.write_text(SYNTHETIC_TOKEN + "\n", encoding="utf-8")
     token_file.chmod(0o400)  # [sanctioned mode]: Owner-only 0400, the approved scheme for mounted secrets.
     monkeypatch.setenv("DISCORD_BOT_TOKEN_FILE", str(token_file))

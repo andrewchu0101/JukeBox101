@@ -88,6 +88,8 @@
 - `sending → delivered | failed | uncertain`：只能由持有 claim_token 的 record。
 - `sending → uncertain`：只能由租約過期的 sweep（已存在）。
 - `failed → released`：只能由退款（已存在）。
+- `uncertain → failed`：只能由同一 `claim_token` 的 `NOT_SENT` record，且該結果有未送出證明（2026-10-29 實作，見工單 24「2026-10-29 修正」）。
+- `uncertain → delivered`：只能由同一 `claim_token` 的 `DELIVERED` record，且帶有效 Discord `message_id`；寫入 `message_id` 與 `delivered_at`；不觸發退款或重送（2026-10-30 實作，見工單 24「2026-10-30 修正」）。
 - `reserved → cancelled`（方案 B）：只能在 gate 下、狀態仍為 `reserved` 時。
 - `cancelled → released`（方案 B）：退款收據寫入與取消在同一交易。
 
@@ -95,6 +97,7 @@
 
 - `reserved → failed`（沒有 DM 嘗試就標為未送出，會錯誤地允許退款）。
 - `uncertain → failed | released`（沒有證明未送出，不得退款）。
+- `uncertain → delivered` 不帶 `message_id`、或來自其他 claim：不允許。
 - `uncertain → sending`（不得重送）。
 - `delivered → *`（不可逆）。
 

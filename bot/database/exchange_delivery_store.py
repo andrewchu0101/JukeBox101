@@ -82,6 +82,10 @@ def _has_incident(cursor: Any, recommendation_id: int) -> bool:
     return cursor.fetchone() is not None
 
 
+_SENDING_ONLY = "status='sending'"  # [live attempt only]: Uncertain results replace only the attempt that still owns sending.
+_OWN_OPEN_ATTEMPT = "status IN ('sending','uncertain')"  # [proof required]: Only this claim's not-sent or accepted-message result may replace its own uncertain state.
+
+
 def record_result(cursor: Any, claim: DeliveryClaim, status: str, message_id: int | None, delivered_at: Any) -> str:
     """@description: Record one attempt's outcome only while that exact attempt still owns the sending state.
     @param cursor: Cursor inside the locked transaction.
@@ -91,8 +95,9 @@ def record_result(cursor: Any, claim: DeliveryClaim, status: str, message_id: in
     @param delivered_at: Delivery time when delivered, otherwise None.
     @return: The status the database holds after the call; a late result never overwrites a newer state.
     """
+    replaceable_filter = _OWN_OPEN_ATTEMPT if status in ("failed", "delivered") else _SENDING_ONLY  # [proof required]: Only this claim's not-sent or accepted-message result may replace an uncertain state.
     cursor.execute("UPDATE recommendations SET status=%s,discord_message_id=%s,delivered_at=%s "
-                   "WHERE recommendation_id=%s AND status='sending' AND claim_token=%s",
+                   "WHERE recommendation_id=%s AND claim_token=%s AND " + replaceable_filter,
                    (status, message_id, delivered_at, claim.recommendation_id, claim.claim_token))
     if cursor.rowcount == 1:
         return status

@@ -32,6 +32,8 @@ class SecretFileReason(StrEnum):
     EXPECTED_GROUP_UNCONFIGURED = "EXPECTED_GROUP_UNCONFIGURED"
     RUNS_AS_ROOT = "RUNS_AS_ROOT"
     NOT_READABLE = "NOT_READABLE"
+    FILE_MISSING = "FILE_MISSING"
+    PATH_NOT_SEARCHABLE = "PATH_NOT_SEARCHABLE"
     EMPTY = "EMPTY"
     NOT_SANCTIONED_MODE = "NOT_SANCTIONED_MODE"
     GROUP_UNEXPECTED = "GROUP_UNEXPECTED"
@@ -99,6 +101,8 @@ def evaluate_host_source_file(
         reasons.append(SecretFileReason.OTHER_ACCESS)
     if host_file.mode & GROUP_WRITE_BIT:
         reasons.append(SecretFileReason.GROUP_WRITABLE)
+    if host_file.mode & 0o777 != SANCTIONED_SECRET_MODE:
+        reasons.append(SecretFileReason.NOT_SANCTIONED_MODE)
     reasons.extend(_host_identity_reasons(host_file, expected_owner_uid, expected_group_gid))
     return SecretFileDecision(passed=not reasons, reasons=tuple(reasons))
 
@@ -145,7 +149,7 @@ def build_host_repair_guidance(
         "修復範本（以實際路徑取代 <秘密檔案路徑>）：",
         f"  chown {_describe_command_identity(expected_owner_uid, '<預期擁有者 uid>')}:"
         f"{_describe_command_identity(expected_group_gid, '<預期群組 gid>')} <秘密檔案路徑>",
-        "  chmod 0440 <秘密檔案路徑>   # 容器群組需讀取時；僅擁有者讀取可改用 0600",
+        "  chmod 0400 <秘密檔案路徑>   # 唯一核准的權限；不得改為 0440、0600 或其他值",
     ])
 
 
