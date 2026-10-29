@@ -101,9 +101,11 @@ def read_secret_file(setting_name: str, secret_file_path: str) -> str:
         secret_text = Path(secret_file_path).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         raise ConfigurationError(f"{file_setting_name} must point to a readable UTF-8 secret file") from None
-    secret_value = secret_text.strip("\r\n")
+    secret_value = secret_text.strip("\r\n")  # [line ending only]: Docker tools add one trailing newline; any other edge whitespace is refused below.
     if not secret_value.strip():
         raise ConfigurationError(f"{setting_name} secret file must not be empty")
+    if secret_value != secret_value.strip():
+        raise ConfigurationError(f"{setting_name} secret file must not have spaces or tabs around the value")
     return secret_value
 
 

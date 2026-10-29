@@ -324,7 +324,7 @@ def _claim_reservation_rows(connection: FakeConnection, recommendation_id: int) 
     if reservation is None:
         return []
     song = next(row for row in connection.working["songs"].values() if row["song_id"] == reservation["song_id"])
-    return [{"status": reservation["status"], "discord_message_id": reservation["discord_message_id"],
+    return [{"status": reservation["status"], "claim_token": reservation["claim_token"], "discord_message_id": reservation["discord_message_id"],
              "discord_user_id": reservation["discord_user_id"], "youtube_url": song["youtube_url"]}]
 
 

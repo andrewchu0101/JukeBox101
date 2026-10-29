@@ -87,6 +87,20 @@ def test_empty_or_blank_secret_file_is_refused(tmp_path, file_content):
         required_secret_value("DB_PASSWORD", {"DB_PASSWORD_FILE": str(secret_path)})
 
 
+@pytest.mark.parametrize("file_content", [" " + FAKE_DISCORD_TOKEN + "\n", FAKE_DISCORD_TOKEN + " \n", FAKE_DISCORD_TOKEN + "\t", "\t" + FAKE_DISCORD_TOKEN])
+def test_secret_file_with_surrounding_spaces_or_tabs_is_refused(tmp_path, file_content):
+    """@description: Refuse a secret file whose value has spaces or tabs at either end, since only the trailing line ending is removed by design.
+    @param tmp_path: Temporary directory for the secret file.
+    @param file_content: Token with surrounding whitespace that is not a line ending.
+    @return: None; the assertion checks the refusal names only the setting.
+    """
+    secret_path = write_secret_file(tmp_path, "discord_token", file_content)
+
+    with pytest.raises(ConfigurationError, match="DISCORD_BOT_TOKEN") as refusal:
+        required_secret_value("DISCORD_BOT_TOKEN", {"DISCORD_BOT_TOKEN_FILE": str(secret_path)})
+    assert FAKE_DISCORD_TOKEN not in str(refusal.value)
+
+
 def test_missing_secret_file_is_refused_with_setting_name_only(tmp_path):
     """@description: Refuse an unreadable secret path and name only the setting, never the path contents.
     @param tmp_path: Temporary directory that does not contain the referenced file.

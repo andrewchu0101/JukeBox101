@@ -22,11 +22,11 @@ import pytest
 from bot.database.exchange_reservation import ExchangeStatus
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown
-from bot.exchange_delivery import DeliveryStatus, exchange_and_deliver
+from bot.exchange_delivery import DeliveryStatus, DmResult, exchange_and_deliver
 from tests.commit_fault_injector import FaultInjectingConnection, OperationRouter
 from tests.financial_invariants import attribution_violations
 from tests.isolated_mysql_target import ISOLATION_SWITCH, open_verified_connection
-from tests.test_exchange_mysql_integration import USER_A, fixture_footprint, fixture_snapshot, isolated
+from tests.test_exchange_mysql_integration import USER_A, count_rows, fixture_footprint, fixture_snapshot, isolated
 from tests.test_compensation_mysql import guarded_funded_pair  # [cleanup]: Recorded fixture; the tables exist, the switch is off, as in production.
 from tests.test_exchange_repository_mysql import assert_footprint_unchanged, assert_repository_state
 from tests.test_exchange_unknown_commit import FakeReplier, FakeSender
@@ -158,4 +158,128 @@ def test_caller_replays_once_and_delivers_the_original_through_a_fake_adapter(gu
     assert created[0].fired == 1
     assert len(sender.sent) == 1, "exactly one fake direct message for the original reservation"
     assert flow.delivery_status is DeliveryStatus.DELIVERED
+    assert_repository_state(guarded_funded_pair, 1, 0)
+
+
+class NotSentSender:
+    """Report an explicit non-delivery for every attempt; never contacts Discord."""
+
+    async def send(self, discord_user_id: int, text: str) -> DmResult:
+        """@description: Return the proven unsent classification without any network call.
+        @param discord_user_id: Recipient, unused.
+        @param text: Message body, unused.
+        @return: Not-sent result.
+        """
+        return DmResult.not_sent("dm_closed")
+
+
+class UnknownSender:
+    """Report an unknown direct-message outcome for every attempt; never contacts Discord."""
+
+    async def send(self, discord_user_id: int, text: str) -> DmResult:
+        """@description: Return the timeout classification without any network call.
+        @param discord_user_id: Recipient, unused.
+        @param text: Message body, unused.
+        @return: Unknown result.
+        """
+        return DmResult.unknown("timeout")
+
+
+def run_delivery_with_fault(target, operation: str, mode: str, sender, key: str):
+    """@description: Run one exchange through the production caller, faulting only the named delivery write on its first connection.
+    @param target: Tuple of settings and identity pin for the isolated target.
+    @param operation: Repository method that carries the single fault, either claim_delivery or record_delivery.
+    @param mode: Reviewed fault mode from the injector.
+    @param sender: Direct-message adapter, fake.
+    @param key: Technical request key.
+    @return: Tuple of the flow result and the injector that owns the faulted connection.
+    """
+    settings, pin = target
+    created: list = []
+
+    def factory():
+        """@description: Fault only the first connection of the faulted repository, which is the connection of the named write.
+        @return: Connection for the next worker.
+        """
+        connection = open_verified_connection(settings, pin)
+        if not created:
+            wrapped = FaultInjectingConnection(connection, mode)
+            created.append(wrapped)
+            return wrapped
+        return connection
+
+    faulted = SubmissionRepository(factory, OWNER_ID)
+    repository = OperationRouter(faulted, clean_repository(target), operation)  # [stage]: Only the named write carries the fault; reservation and sweeps run clean.
+    flow = asyncio.run(exchange_and_deliver(repository, sender, FakeReplier(), USER_A, key, random.Random(1),
+                                            datetime(2026, 10, 24, 12, 0, tzinfo=timezone.utc), new_token=lambda: f"{key}-token"))
+    return flow, created
+
+
+def test_claim_lost_acknowledgement_resumes_the_same_claim_and_sends_once(guarded_funded_pair) -> None:
+    """@description: A claim committed without acknowledgement is resumed under the same token, so the single DM is sent and recorded as delivered without a refund.
+    @param guarded_funded_pair: Two funded submitters and one candidate over real MySQL.
+    @return: None.
+    """
+    target, _, _ = guarded_funded_pair
+    sender = FakeSender()
+    flow, created = run_delivery_with_fault(target, "claim_delivery", "lost_ack_after_commit", sender, "s-claim-ack")
+    assert created[0].fired == 1 and len(sender.sent) == 1
+    assert flow.delivery_status is DeliveryStatus.DELIVERED and flow.refund_status is None
+    assert count_rows(target, "SELECT COUNT(*) AS total FROM recommendations WHERE recommendation_id=%s AND status='delivered' AND discord_message_id=990001",
+                      (flow.recommendation_id,)) == 1
+    assert_repository_state(guarded_funded_pair, 1, 0)
+
+
+def test_claim_failure_before_commit_is_replayed_and_sends_once(guarded_funded_pair) -> None:
+    """@description: A claim that never committed is claimed by the replay under the same token, then the single DM is sent once.
+    @param guarded_funded_pair: Two funded submitters and one candidate over real MySQL.
+    @return: None.
+    """
+    target, _, _ = guarded_funded_pair
+    sender = FakeSender()
+    flow, created = run_delivery_with_fault(target, "claim_delivery", "fail_before_commit", sender, "s-claim-precommit")
+    assert created[0].fired == 1 and len(sender.sent) == 1
+    assert flow.delivery_status is DeliveryStatus.DELIVERED
+    assert_repository_state(guarded_funded_pair, 1, 0)
+
+
+def test_not_sent_lost_acknowledgement_is_refunded_exactly_once(guarded_funded_pair) -> None:
+    """@description: A proven non-delivery whose recording committed without acknowledgement is refunded once from the original debit and released.
+    @param guarded_funded_pair: Two funded submitters and one candidate over real MySQL.
+    @return: None.
+    """
+    target, _, _ = guarded_funded_pair
+    flow, created = run_delivery_with_fault(target, "record_delivery", "lost_ack_after_commit", NotSentSender(), "s-not-sent-ack")
+    assert created[0].fired == 1
+    assert flow.delivery_status is DeliveryStatus.FAILED and flow.refund_status == "refunded"
+    assert count_rows(target, "SELECT COUNT(*) AS total FROM credit_ledger WHERE recommendation_id=%s AND reason='delivery_refund' AND credit_delta=1",
+                      (flow.recommendation_id,)) == 1
+    assert count_rows(target, "SELECT COUNT(*) AS total FROM recommendations WHERE recommendation_id=%s AND status='failed' AND released_at IS NOT NULL",
+                      (flow.recommendation_id,)) == 1
+    assert_repository_state(guarded_funded_pair, 1, 1)
+
+
+def test_delivered_lost_acknowledgement_keeps_the_message_and_never_refunds(guarded_funded_pair) -> None:
+    """@description: An accepted DM whose recording committed without acknowledgement keeps its message identifier and is never refunded.
+    @param guarded_funded_pair: Two funded submitters and one candidate over real MySQL.
+    @return: None.
+    """
+    target, _, _ = guarded_funded_pair
+    flow, created = run_delivery_with_fault(target, "record_delivery", "lost_ack_after_commit", FakeSender(), "s-delivered-ack")
+    assert created[0].fired == 1 and flow.delivery_status is DeliveryStatus.DELIVERED and flow.refund_status is None
+    assert count_rows(target, "SELECT COUNT(*) AS total FROM recommendations WHERE recommendation_id=%s AND status='delivered' AND discord_message_id=990001",
+                      (flow.recommendation_id,)) == 1
+    assert_repository_state(guarded_funded_pair, 1, 0)
+
+
+def test_uncertain_lost_acknowledgement_stays_uncertain_and_is_never_refunded(guarded_funded_pair) -> None:
+    """@description: An unknown DM outcome whose recording committed without acknowledgement stays uncertain, with no refund and no second send.
+    @param guarded_funded_pair: Two funded submitters and one candidate over real MySQL.
+    @return: None.
+    """
+    target, _, _ = guarded_funded_pair
+    flow, created = run_delivery_with_fault(target, "record_delivery", "lost_ack_after_commit", UnknownSender(), "s-uncertain-ack")
+    assert created[0].fired == 1 and flow.delivery_status is DeliveryStatus.UNCERTAIN and flow.refund_status is None
+    assert count_rows(target, "SELECT COUNT(*) AS total FROM recommendations WHERE recommendation_id=%s AND status='uncertain'",
+                      (flow.recommendation_id,)) == 1
     assert_repository_state(guarded_funded_pair, 1, 0)

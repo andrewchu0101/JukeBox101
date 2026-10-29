@@ -33,7 +33,7 @@ class DeliveryClaim:
 
 
 def claim_reservation(cursor: Any, recommendation_id: int, claim_token: str, now: datetime, guard_incidents: bool = False) -> tuple[str, int | None, DeliveryClaim | None]:
-    """@description: Move one reserved recommendation to sending under this attempt's token, or report its current state without any new send.
+    """@description: Move one reserved recommendation to sending under this attempt's token, resume that same token's claim after an unacknowledged commit, or report the current state without any new send.
     @param cursor: Cursor inside the locked transaction.
     @param recommendation_id: Reservation identifier from the exchange result.
     @param claim_token: Unique token of this attempt.
@@ -41,11 +41,14 @@ def claim_reservation(cursor: Any, recommendation_id: int, claim_token: str, now
     @param guard_incidents: Refuse the claim while the reservation belongs to a compensation incident; set when the switch is on or the compensation tables exist.
     @return: Current status, message identifier, and a claim only when this call moved it to sending.
     """
-    cursor.execute("SELECT r.status,r.discord_message_id,r.discord_user_id,s.youtube_url FROM recommendations r "
+    cursor.execute("SELECT r.status,r.claim_token,r.discord_message_id,r.discord_user_id,s.youtube_url FROM recommendations r "
                    "JOIN songs s ON s.song_id=r.song_id WHERE r.recommendation_id=%s FOR UPDATE", (recommendation_id,))
     row = cursor.fetchone()  # [locked reservation]: Status and link are read under the same gate as the transition.
     if row is None:
         raise ValueError("Unknown exchange reservation")
+    if row["status"] == "sending" and row["claim_token"] == claim_token:
+        # [own replay]: An earlier commit with this token already claimed the row, and its acknowledgement was lost before any DM was attempted, so the same attempt may send once.
+        return "sending", None, DeliveryClaim(recommendation_id, claim_token, row["discord_user_id"], row["youtube_url"])
     if row["status"] != "reserved":
         return row["status"], row["discord_message_id"], None
     if guard_incidents:

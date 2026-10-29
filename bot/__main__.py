@@ -151,6 +151,7 @@ class ShutdownGate:
         """
         self._guard = guard  # [admission rules]: Unchanged; only consulted while the gate is open.
         self._admitting = True  # [admission open]: Becomes False at the first shutdown step.
+        self._admitted_tasks: set[asyncio.Task] = set()  # [command work in flight]: Tasks admitted through the gate, kept until each finishes.
 
     def stop_admitting(self) -> None:
         """@description: Close admission permanently for this process.
@@ -158,6 +159,13 @@ class ShutdownGate:
         @return: None.
         """
         self._admitting = False
+
+    def unfinished_admitted_tasks(self) -> set:
+        """@description: Report the admitted command tasks that have not finished, so shutdown can wait for their database and DM work.
+        @param self: Gate instance.
+        @return: Set of admitted tasks still running.
+        """
+        return {task for task in self._admitted_tasks if not task.done()}
 
     async def __call__(self, interaction) -> bool:
         """@description: Admit an interaction only while the gate is open and the existing guard admits it.
@@ -167,6 +175,11 @@ class ShutdownGate:
         """
         if not self._admitting:
             return False
+        # discord.py calls this check inside the command's own task, so that task is the one shutdown must wait for.
+        # It is registered before the guard awaits, so a shutdown that starts during the guard still sees it.
+        admitted_task = asyncio.current_task()
+        self._admitted_tasks.add(admitted_task)
+        admitted_task.add_done_callback(self._admitted_tasks.discard)
         return await self._guard(interaction)
 
 
@@ -190,14 +203,15 @@ def _exit_code(report: ShutdownReport) -> int:
     return 0
 
 
-def _in_flight_interactions() -> set:
-    """@description: Find the interaction tasks that are still running, excluding the shutdown task itself.
-    @param: none
-    @return: Set of unfinished interaction dispatch tasks.
+def _in_flight_interactions(gate: ShutdownGate) -> set:
+    """@description: Find the interaction tasks still running, both gate-admitted command tasks and discord.py event dispatch tasks, excluding the shutdown task itself.
+    @param gate: Admission gate that recorded every command task it admitted.
+    @return: Set of unfinished interaction tasks.
     """
     current = asyncio.current_task()
-    return {task for task in asyncio.all_tasks()
-            if task is not current and not task.done() and task.get_name().startswith(INTERACTION_TASK_PREFIX)}
+    dispatch_tasks = {task for task in asyncio.all_tasks()
+                      if task is not current and not task.done() and task.get_name().startswith(INTERACTION_TASK_PREFIX)}
+    return dispatch_tasks | (gate.unfinished_admitted_tasks() - {current})
 
 
 def _exit_now(exit_code: int) -> None:
@@ -262,7 +276,7 @@ async def _shut_down(client, gate: ShutdownGate, report: ShutdownReport) -> None
     interaction_deadline = started + INTERACTION_WAIT_SECONDS  # [interaction share]: Only tasks still running at this instant are cancelled.
     close_deadline = started + SHUTDOWN_DEADLINE_SECONDS  # [total budget]: The Discord close must finish before this instant.
     gate.stop_admitting()  # [admission first]: No new interaction can start while in-flight work drains.
-    in_flight = _in_flight_interactions()
+    in_flight = _in_flight_interactions(gate)
     if in_flight:
         _, unfinished = await asyncio.wait(in_flight, timeout=_seconds_until(interaction_deadline))
         report.incomplete_count = len(unfinished)

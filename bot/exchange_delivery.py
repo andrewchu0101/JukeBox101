@@ -7,15 +7,17 @@ import asyncio
 import logging
 import uuid
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, TypeVar
 
 from bot.database.exchange_delivery_store import RefundContradiction
 from bot.database.exchange_reservation import ExchangeStatus
 from bot.database.submission_transaction import CommitOutcomeUnknown
 
 LOGGER = logging.getLogger(__name__)
+T = TypeVar("T")
 DM_TIMEOUT_SECONDS = 20.0  # [bounded attempt]: Must stay far below DELIVERY_LEASE so a live attempt is never mistaken for a lost one.
 PENDING_REVIEW_TEXT = "你有一筆交換尚待確認（已保留但尚未派送），目前暫停新的交換。請聯絡 Owner 處理。"  # [owner contact]: No link, no balance detail.
 NO_CANDIDATE_TEXT = "目前沒有符合條件的歌曲"  # [reviewed wording]: S25 reply when no eligible song exists; nothing is charged.
@@ -136,12 +138,12 @@ async def deliver_recommendation(repository: Any, sender: DirectMessageSender, r
     @param claim_token: Unique token of this attempt.
     @return: Recorded outcome; an already started or finished attempt sends nothing.
     """
-    state, message_id, claim = await asyncio.to_thread(repository.claim_delivery, recommendation_id, claim_token, now)
+    state, message_id, claim = await asyncio.to_thread(_run_with_one_replay, partial(repository.claim_delivery, recommendation_id, claim_token, now))  # [same token]: The replay resumes this attempt's own claim, never a new one.
     if claim is None:
         return DeliveryOutcome(_STATE_TO_STATUS[state], recommendation_id, message_id)
     result = await _attempt(sender, claim.discord_user_id, claim.youtube_url)  # [network outside lock]: Sending state is already committed.
-    stored = await asyncio.to_thread(repository.record_delivery, claim, _KIND_TO_STATE[result.kind],
-                                     result.message_id, now if result.kind is DmKind.DELIVERED else None)
+    stored = await asyncio.to_thread(_run_with_one_replay, partial(repository.record_delivery, claim, _KIND_TO_STATE[result.kind],
+                                                                   result.message_id, now if result.kind is DmKind.DELIVERED else None))  # [same token, no resend]: Only the write is replayed.
     accepted = result.message_id if stored == "delivered" else None
     return DeliveryOutcome(_STATE_TO_STATUS[stored], recommendation_id, accepted)
 
@@ -178,7 +180,7 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
     """
     await asyncio.to_thread(repository.recover_interrupted_deliveries, now)  # [lease sweep]: Expired sending rows are found on the next request too.
     await asyncio.to_thread(repository.retry_pending_refunds, now)  # [refund retry]: A failed earlier refund is retried, still once.
-    exchange = await _exchange_with_one_replay(repository, discord_user_id, request_key, rng)  # [reservation first]: Debit and reservation commit together.
+    exchange = await asyncio.to_thread(_run_with_one_replay, partial(repository.exchange, discord_user_id, request_key, rng))  # [reservation first]: Debit and reservation commit together.
     if exchange.status is ExchangeStatus.NO_CANDIDATE:
         return await _finish(replier, ExchangeFlowResult(NO_CANDIDATE_TEXT, False, None, None, None))
     if exchange.status is ExchangeStatus.INSUFFICIENT_CREDITS:
@@ -193,19 +195,16 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
     return await _finish(replier, flow)
 
 
-async def _exchange_with_one_replay(repository: Any, discord_user_id: int, request_key: str, rng: Any):
-    """@description: Repeat the same durable request once after an unknown commit, so a commit that already happened is found by its key instead of debited again.
-    @param repository: Repository exposing the exchange transition.
-    @param discord_user_id: Requesting user.
-    @param request_key: Durable technical identity, reused unchanged for the replay.
-    @param rng: Injected random source.
-    @return: Exchange outcome of the attempt that confirmed the durable state.
+def _run_with_one_replay(operation: Callable[[], T]) -> T:
+    """@description: Repeat one durable database write once after an unknown commit, so a commit that already landed is found by its key or token instead of applied twice.
+    @param operation: Zero-argument call that carries its durable key or claim token unchanged on the replay.
+    @return: Result of the attempt that confirmed the durable state.
     """
     try:
-        return await asyncio.to_thread(repository.exchange, discord_user_id, request_key, rng)
+        return operation()
     except CommitOutcomeUnknown as first_unknown:
         try:
-            return await asyncio.to_thread(repository.exchange, discord_user_id, request_key, rng)  # [same key, fresh connection]: Exactly one repeat.
+            return operation()  # [same key or token, fresh connection]: Exactly one repeat; no network call is ever repeated here.
         except Exception as replay_error:
             unknown = CommitOutcomeUnknown("Replay after an unknown commit did not confirm the outcome")
             unknown.add_note(f"replay failed with {type(replay_error).__name__}")  # [class only]: Never the message, which may echo database detail.
