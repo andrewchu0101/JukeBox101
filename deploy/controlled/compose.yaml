@@ -1,0 +1,64 @@
+# REVIEW ONLY: not installed. Root must own this file, env file and every parent.
+# No caller-supplied Compose paths or settings may be accepted by a future adapter.
+name: jukebox101
+services:
+  bot:
+    image: ${JB_IMAGE:?reviewed immutable digest required}
+    labels:
+      com.jukebox101.gateway.application: ${DISCORD_EXPECTED_APPLICATION_ID:?root-managed application required}
+    user: '10001:10001'
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+    healthcheck:
+      test: [CMD, python, -m, bot.healthcheck]
+      interval: 10s
+      timeout: 30s
+      retries: 3
+      start_period: 1m
+    environment:
+      DB_HOST: ${DB_HOST:?root-managed database hostname required}
+      DB_PORT: '5432'
+      DB_NAME: jukebox101
+      DB_USER: jukebox101_app
+      DB_SSLMODE: verify-full
+      DB_SSLROOTCERT: /run/secrets/db_ca.crt
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
+      DISCORD_EXPECTED_APPLICATION_ID: ${DISCORD_EXPECTED_APPLICATION_ID:?root-managed application required}
+      DISCORD_OWNER_USER_ID: ${DISCORD_OWNER_USER_ID:?root-managed owner required}
+      DISCORD_OWNER_GUILD_ID: ${DISCORD_OWNER_GUILD_ID:-}
+      SECRET_EXPECTED_UID: '10001'
+      SECRET_EXPECTED_GID: '10001'
+      JUKEBOX_FORMAL_EXCHANGE: 'off'
+      JUKEBOX_NICKEL_CLAIM: 'off'
+    secrets: [discord_bot_token, db_password, db_ca.crt]
+    networks: [egress, database]
+secrets:
+  discord_bot_token:
+    file: /etc/jukebox101/secrets/discord_bot_token.txt
+  db_password:
+    file: /etc/jukebox101/secrets/db_password.txt
+  db_ca.crt:
+    file: /etc/jukebox101/db_ca.crt
+networks:
+  egress:
+    external: true
+    name: ${JB_EGRESS_NETWORK:?administrator must review existing egress network}
+  database:
+    external: true
+    name: ${JB_DATABASE_NETWORK:?administrator must review existing private database network}

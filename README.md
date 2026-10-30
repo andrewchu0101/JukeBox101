@@ -58,6 +58,10 @@ git status
 - 交付包放在主專案的 `artifacts/jukebox101-v7/`，秘密檔另行保存，不納入 Git。檔案同步與 GitHub 推送是兩件事，新的修改仍須另行 commit／push。
 - 本節是此電腦的本機路徑安排；夥伴部署位置依部署手冊自行設定。
 
+### CI/CD 雲端工作分支（待審查，正式 CD 關閉）
+
+新增 PR/main CI、主程序 Gateway 健康訊號與隔離回滾演練。這些檔案尚未安裝到正式 VPS，未發布 GHCR，也未改動正式 Bot／DB。驗證層級、實際測試結果及啟用阻擋項目見 [雲端 CI/CD 交接](docs/deploy/cloud-cicd-2026-10-30.md)。
+
 ### 唯一部署入口
 
 **`docs/deploy/v7-postgresql-deployment.md`**：涵蓋外部 PostgreSQL 準備、TLS、角色與秘密、migration、Compose、邀請連結、指令同步、健康檢查、備份與還原，以及人工驗收。
@@ -66,7 +70,7 @@ git status
 |---|---|
 | 資料庫一次性設定（由 DBA 執行） | `docs/deploy/postgres-setup.sql` |
 | Schema migration | `docker compose --profile migrate run --rm migrate plan`，確認後再執行 `... migrate apply --apply` |
-| 就緒檢查（唯讀） | `python -m bot.readiness`（Compose 的 healthcheck 也是用它） |
+| 就緒檢查（唯讀） | `python -m bot.readiness`（DB-only）；新版 Compose 用 `python -m bot.healthcheck` 同時檢查主 Gateway |
 | 邀請連結 | `python -m bot.invite_link --application-id <id>` |
 | 指令同步 | `python -m bot.command_sync preview`；確認後才執行 `apply`（需要明確旗標與 digest） |
 | 舊 MySQL 資料 | `docs/deploy/mysql-to-postgresql-migration-plan.md`（**未執行**的方案） |

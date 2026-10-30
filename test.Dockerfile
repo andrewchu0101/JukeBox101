@@ -8,7 +8,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /work
 COPY ${REQUIREMENTS_FILE} ./requirements-test-pinned.txt
-RUN pip install --no-cache-dir -r requirements-test-pinned.txt
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+    pip install --no-cache-dir -r requirements-test-pinned.txt
 COPY . ./
 RUN useradd --system --uid 10002 --home-dir /work --shell /usr/sbin/nologin jbtest && chown -R jbtest /work
 USER 10002

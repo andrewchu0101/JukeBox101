@@ -100,9 +100,11 @@ docker compose -f compose.yaml --profile migrate run --rm migrate apply --apply
 
 ```bash
 docker compose -f compose.yaml up -d --no-build      # 一律加上 --no-build
-docker compose -f compose.yaml ps                    # 每 5 分鐘以 python -m bot.readiness 做唯讀檢查
+docker compose -f compose.yaml ps                    # 新版 Compose 每 10 秒以 python -m bot.healthcheck 檢查 DB 與主 Gateway
 docker compose -f compose.yaml logs --tail=100 bot
 ```
+
+新版工作分支的 `bot.healthcheck` 同時要求：主程序 PID 1 的 boot/start 身分相符、READY、10 秒內事件迴圈樣本、90 秒內 Discord heartbeat ACK、DB verify-full／角色／control 正常，以及兩個功能開關關閉。沒有公開健康埠，也不另登入 Discord。只跑 `bot.readiness` 不能證明 Gateway 在線。這項變更尚未部署，詳見 [CI/CD 雲端交接](cloud-cicd-2026-10-30.md)。
 
 `python -m bot.readiness` 會回報 `ready`，或列出問題代碼：
 

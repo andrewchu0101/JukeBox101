@@ -1,0 +1,51 @@
+name: CI
+
+'on':
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    concurrency:
+      group: jukebox101-ci-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Build pinned Python 3.12 test image
+        run: docker build --pull -f test.Dockerfile -t jukebox101-test:v7-local .
+      - name: Offline regression with structured zero-skip gate
+        run: python3 -m scripts.ci.offline
+      - name: Build runtime once and freeze its local image ID
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --platform linux/amd64 \
+            --label org.opencontainers.image.source=https://github.com/andrewchu0101/JukeBox101 \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t jukebox101-runtime:ci .
+          image_id="$(docker image inspect --format '{{.Id}}' jukebox101-runtime:ci)"
+          [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'RUNTIME_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
+      - name: Exact-runtime offline smoke and Compose policy
+        run: python3 -m scripts.ci.runtime_smoke
+      - name: Disposable PostgreSQL 18.6, TLS and exact-runtime DB contract
+        run: python3 scripts/dev/verify-fresh-postgres.py
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ci-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-evidence/
+          if-no-files-found: warn
+          retention-days: 14

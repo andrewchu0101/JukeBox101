@@ -24,8 +24,10 @@ from bot.database.repository import MusicRepository
 from bot.database.connection import open_connection
 from bot.database.submission_repository import SubmissionRepository
 from bot.interaction_policy import MultiGuildInteractionGuard
+from bot.gateway_health import GatewayHealth
 from bot.production_config import ProductionDiscordSettings, load_production_discord_settings
-from bot.discord_app import JukeBoxClient, OwnerReviewWiring
+from bot.discord_app import OwnerReviewWiring
+from bot.gateway_client import ProductionGatewayClient as JukeBoxClient
 from bot.owner_cli import TOKEN_TTL
 from bot.owner_review import OwnerReviewService
 from bot.secret_file_policy import (ContainerMountedFile, ContainerProcess, MountedDirectory, SecretFileReason,
@@ -277,6 +279,7 @@ async def _shut_down(client, gate: ShutdownGate, report: ShutdownReport) -> None
     interaction_deadline = started + INTERACTION_WAIT_SECONDS  # [interaction share]: Only tasks still running at this instant are cancelled.
     close_deadline = started + SHUTDOWN_DEADLINE_SECONDS  # [total budget]: The Discord close must finish before this instant.
     gate.stop_admitting()  # [admission first]: No new interaction can start while in-flight work drains.
+    _invalidate_gateway_health(client, report)
     in_flight = _in_flight_interactions(gate)
     if in_flight:
         _, unfinished = await asyncio.wait(in_flight, timeout=_seconds_until(interaction_deadline))
@@ -288,6 +291,19 @@ async def _shut_down(client, gate: ShutdownGate, report: ShutdownReport) -> None
             await asyncio.wait(unfinished, timeout=min(CANCELLATION_SETTLE_SECONDS, _seconds_until(settle_until)))
     await _close_within_budget(client, close_deadline, report)
     _report_and_exit(report)
+
+
+def _invalidate_gateway_health(client, report: ShutdownReport) -> None:
+    """@description: Never let a health-file I/O error prevent bounded Discord shutdown.
+    @param client: Gateway client, optionally owning a health writer.
+    @param report: Receives a safe cleanup failure code.
+    @return: None; Discord cleanup must continue even if tmpfs writes fail.
+    """
+    try:
+        if getattr(client, 'gateway_health', None) is not None:
+            client.gateway_health.mark('stopping')
+    except OSError:
+        report.failed_steps.append('invalidate_gateway_health:OSError')
 
 
 def _termination_handler(client, gate: ShutdownGate) -> Callable:
@@ -339,11 +355,23 @@ def main() -> None:
     owner_review = _optional_owner_review(submission_repository, discord_settings)
     gate = ShutdownGate(MultiGuildInteractionGuard(discord_settings.application_id))
     client = JukeBoxClient(service, interaction_guard=gate, owner_review=owner_review)
-    signal.signal(signal.SIGTERM, _termination_handler(client, gate))
+    _run_gateway(client, gate, discord_settings)
+
+
+def _run_gateway(client: JukeBoxClient, gate: ShutdownGate, settings: ProductionDiscordSettings) -> None:
+    """@description: Hold the local application lease across login, reconnects and shutdown.
+    @param client: Locally constructed production client.
+    @param gate: Admission gate closed by SIGTERM before draining work.
+    @param settings: Validated Discord settings, never logged.
+    @return: None; a failed singleton or login exits without another Gateway.
+    """
     try:
-        client.run(discord_settings.discord.token, log_handler=None)
+        with GatewayHealth(settings.application_id) as health:
+            client.gateway_health = health
+            signal.signal(signal.SIGTERM, _termination_handler(client, gate))
+            client.run(settings.discord.token, log_handler=None)
     except (discord.LoginFailure, discord.HTTPException, OSError) as startup_error:
-        raise SystemExit("Discord startup failed: " + type(startup_error).__name__) from None
+        raise SystemExit('Discord startup failed: ' + type(startup_error).__name__) from None
 
 
 def _optional_owner_review(repository: SubmissionRepository, settings: ProductionDiscordSettings) -> OwnerReviewWiring | None:

@@ -3,7 +3,10 @@
 FROM python:3.12-slim-bookworm AS build
 WORKDIR /build
 COPY requirements-docker.txt ./
-RUN pip install --no-cache-dir --prefix=/install -r requirements-docker.txt
+# Optional managed-session CA mount; never copied into a layer and TLS stays enabled.
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -f /run/secrets/proxy_ca ]; then export PIP_CERT=/run/secrets/proxy_ca; fi; \
+    pip install --no-cache-dir --prefix=/install -r requirements-docker.txt
 
 FROM python:3.12-slim-bookworm
 ENV PYTHONDONTWRITEBYTECODE=1 \
