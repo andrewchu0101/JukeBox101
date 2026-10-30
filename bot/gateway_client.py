@@ -84,4 +84,3 @@ class ProductionGatewayClient(JukeBoxClient):
         if self.gateway_health is not None and self.gateway_health.task is not None:
             self.gateway_health.task.cancel()
             await asyncio.gather(self.gateway_health.task, return_exceptions=True)
-
