@@ -1,5 +1,5 @@
 # JukeBox101
-
+# yuipan
 對外顯示名稱：**JukeBox101 v1.0.0 (Beta)**。此名稱對應已驗證的 **v7** 交付包；打包檔名、映像 tag 與程式技術版本保持原樣。夥伴交接清單見 `docs/deploy/partner-handoff-v1.0.0-beta.md`。
 
 Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**，正式資料庫為 **PostgreSQL 18**。
