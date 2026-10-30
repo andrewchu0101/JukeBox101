@@ -85,7 +85,7 @@ def wired(monkeypatch):
     class RecordingService(OwnerReviewService):
         """Keep a handle on the service the entry builds so the test can drive the same instance."""
 
-        def __init__(self, repository, owner_id, clock_source, token_ttl=timedelta(minutes=5, settlement_followup=None)):
+        def __init__(self, repository, owner_id, clock_source, token_ttl=timedelta(minutes=5), settlement_followup=None):
             """@description: Build the real service and remember it.
             @param repository: Repository the entry supplied.
             @param owner_id: Configured Owner identifier.
