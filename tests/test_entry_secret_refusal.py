@@ -64,7 +64,7 @@ def isolated(monkeypatch):
         raise AssertionError("A database connection must not be opened on refusal")
 
     monkeypatch.setattr(discord.Client, "run", fake_run)
-    monkeypatch.setattr("pymysql.connect", fake_connect)
+    monkeypatch.setattr("psycopg.connect", fake_connect)
     return recorders
 
 

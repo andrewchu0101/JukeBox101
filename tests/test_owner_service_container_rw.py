@@ -5,7 +5,6 @@ read or write. The live Owner read and write against the dedicated migration con
 because it needs that container to be reachable from the test host.
 """
 
-import os
 from datetime import datetime, timezone
 
 import pytest
@@ -14,7 +13,6 @@ from bot.owner_review import OwnerReviewService, ReviewAction
 
 OWNER_ID = 900000000000000001  # [configured Owner]: Stand-in identifier for the offline cases only.
 NON_OWNER_ID = 900000000000000002  # [other caller]: Any identifier that is not the configured Owner.
-LIVE_OPT_IN = "JUKEBOX_RUN_OWNER_CONTAINER_RW"  # [live opt-in]: Exactly "1" allows the container-backed Owner test to run.
 
 
 class _RefusingRepository:
@@ -60,7 +58,5 @@ def test_a_non_integer_caller_is_refused_as_not_the_owner():
     with pytest.raises(PermissionError):
         _service().list_pending(str(OWNER_ID))
 
-
-@pytest.mark.skipif(os.environ.get(LIVE_OPT_IN) != "1", reason="Live Owner read-write against the dedicated migration container is not run here")
-def test_the_owner_reads_pending_operations_from_the_migration_container():
-    pytest.skip("Live container path is not implemented in this offline checkpoint; see docs/owner-migration-verification.md")
+# The former MySQL live placeholder (always skipped) is replaced by tests/test_postgres_owner_review.py, which reads
+# pending operations through the real service and the app role on a disposable PostgreSQL database.

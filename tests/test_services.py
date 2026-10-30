@@ -8,7 +8,8 @@ import threading
 from datetime import datetime
 from unittest.mock import MagicMock
 
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from bot.models import DeliveryHistoryEntry, HISTORY_LIMIT, MAX_REPLY_LENGTH, SubmissionResult
@@ -78,7 +79,7 @@ def test_database_failure_is_safe_and_not_zero(caplog):
     @return: None.
     """
     repository = MagicMock()
-    repository.balance.side_effect = pymysql.OperationalError(2003, "synthetic-password-secret")
+    repository.balance.side_effect = psycopg.OperationalError("synthetic-password-secret")
     with pytest.raises(ServiceUnavailable) as captured_error:
         asyncio.run(MusicService(repository).balance(123))
     assert captured_error.value.__context__ is None

@@ -1,0 +1,12 @@
+[
+  {"layer": 1, "path": "usr/lib/x86_64-linux-gnu/libgnutls.so.30.34.3", "rule": "private_key_header",
+   "reason": "Unmodified Debian file of libgnutls30:amd64 3.7.9-2+deb12u7 (md5 equals dpkg md5sums); GnuTLS embeds public self-test keys. Base image layer, not project content."},
+  {"layer": 1, "path": "usr/lib/x86_64-linux-gnu/libunistring.so.2.2.0", "rule": "aws_access_key",
+   "reason": "Unmodified Debian file of libunistring2:amd64 1.0-2 (md5 equals dpkg md5sums); match lies inside the Unicode character-name table."},
+  {"layer": 3, "path": "usr/local/lib/python3.12/site-packages/pip/_internal/cli/cmdoptions.py", "rule": "credential_in_uri",
+   "reason": "pip help text placeholder 'scheme://[user:passwd@]proxy.server:port'. Official Python base image layer."},
+  {"layer": 3, "path": "usr/local/lib/python3.12/site-packages/pip/_vendor/urllib3/contrib/socks.py", "rule": "credential_in_uri",
+   "reason": "Docstring placeholder '<username>:<password>@proxy-host'. Official Python base image layer."},
+  {"layer": 3, "path": "usr/local/lib/python3.12/site-packages/pip/_vendor/urllib3/util/url.py", "rule": "credential_in_uri",
+   "reason": "Docstring example 'username:password@host.com'. Official Python base image layer."}
+]

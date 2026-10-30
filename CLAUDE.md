@@ -159,15 +159,15 @@
 | 目標使用者與核心流程 | Discord 伺服器成員；`/share` → 點數 → `/exchange` 或每日 DM 派送；`/history`、`/balance` 查詢（來源：§9 §2） |
 | MVP 範圍與不做事項 | 範圍見 §9 §2。目前私人 Beta 路徑：`/share`（僅 YouTube）、`/history`、`/balance` 已接線；`/exchange`、`/daily` 回覆未開放。Spotify 投稿目前被拒絕，與 §9 §2 不一致，見第 9.3 節 |
 | 驗收條件 | 各階段驗收見 ROADMAP.md 與 `docs/*-acceptance.md`；整體 MVP 驗收條件待確認 |
-| 目標平台與正式驗收環境 | Discord Bot；部署目標為低成本或免費 Linux 主機加 MySQL 8.0+（§9 §1）。正式驗收環境待確認；開發機為 Windows（D 槽）加 WSL2 |
+| 目標平台與正式驗收環境 | Discord Bot（同一 Application 服務多個 Guild，Gateway 單一實例）；部署目標為 Linux amd64 加外部 PostgreSQL 18（TLS verify-full）。正式驗收環境待確認；開發機為 Windows 加 WSL2 |
 | 語言、Runtime 與版本範圍 | Python 3.12（pyproject.toml：`>=3.12,<3.13`）。Windows `.venv` 為 3.12.10；WSL 預設 `python3` 為 3.14.4，不符合專案範圍 |
-| 框架與主要依賴 | discord.py（pyproject 範圍 `>=2.4,<3`，dependency-versions.txt 釘選 2.7.1）、PyMySQL 1.2.3、python-dotenv 1.2.4；測試用 pytest 8.4.2。不引入 ORM（§9 §1） |
-| 套件管理器與鎖定檔 | pip 加 pyproject.toml；版本清單為 dependency-versions.txt。未找到 pip lock 或 uv 鎖定檔；兩者的權威關係待確認 |
-| 原始碼、測試與資源目錄 | `bot/`（含 `bot/database/`、`schema.sql`、`migrations/002_submission_economy.sql`）、`tests/`、`scripts/`（PowerShell）、`docs/` |
+| 框架與主要依賴 | discord.py 2.7.1、psycopg 3.3.6（純 Python，搭配 Debian bookworm libpq5 15.x）、python-dotenv 1.2.4；測試用 pytest 8.4.2。不引入 ORM。v7 分支 `feature/postgresql-multi-guild`（2026-10-30，未 commit） |
+| 套件管理器與鎖定檔 | pip 加 pyproject.toml；執行期釘選 `requirements-docker.txt`，測試釘選 `requirements-test.txt`，開發版本清單 `dependency-versions.txt` |
+| 原始碼、測試與資源目錄 | `bot/`（含 `bot/database/postgres/0001-0003.sql` 版本化 schema）、`tests/`、`scripts/deploy`、`scripts/dev`、`docs/`；MySQL 歷史程式與測試在 `legacy/mysql/`（不收集、不進映像） |
 | 本機工作目錄與隔離環境 | `D:\Project\MusicBased\discordBot_JukeBox101`；隔離環境為專案內 `.venv`（Windows，2026-10-23 觀察） |
 | 開發工具實際位置與查核日期 | Python 3.12.10 位於 `C:\Users\Yume\AppData\Local\Programs\Python\Python312`（讀取自 `.venv/pyvenv.cfg`，2026-10-23）。WSL `/usr/bin/python3` 為 3.14.4（2026-10-23）。既有 C 槽工具依 CLAUDE.md §3.1 保留 |
 | 下載／快取設定與作用範圍 | pytest 暫存於專案內 `.pytest_tmp/`、`.pytest_cache/`（已 gitignore）；pip 快取位置待確認 |
-| 安裝、啟動、測試、檢查與建置命令 | 已確認：`python -m pytest`（pyproject.toml 已設定 testpaths 與 pythonpath；`mysql` 標記需手動開啟）。待確認：安裝命令（推定 `pip install -e ".[test]"`）、啟動命令（推定 `python -m bot`，入口為 `bot/__main__.py`）。2026-10-23 未執行任何命令 |
+| 安裝、啟動、測試、檢查與建置命令 | 測試：`docker build -f test.Dockerfile ...` 後 `-m "not postgres"`（離線）與 `compose.test.yaml`（PostgreSQL 18.6 拋棄式）；部署：`docker compose --profile migrate run --rm migrate plan/apply --apply`、`docker compose up -d --no-build`；就緒：`python -m bot.readiness`；邀請：`python -m bot.invite_link`；指令同步：`python -m bot.command_sync preview/apply`（需明確 opt-in）。見 `docs/deploy/v7-postgresql-deployment.md` |
 | 隱私、離線、資料與外部服務限制 | 不爬取平台、不下載音訊、不假設 API 配額或條款；YouTube 與 Spotify 元資料來源未核准（ROADMAP.md 標示 UNRESOLVED）；不加 AI 模型、付費服務或遙測（§9 §3、§10） |
 | 受保護目錄、公開契約與生命週期限制 | 點數帳本（`credit_ledger`、`users.credit_balance`）、`jb2_*` 結算表、Control 單例（`snapshot_ready`、`legacy_writers_quiesced`、`settlement_enabled`）、既有 schema 與 migration。未經授權不得做破壞性 DDL 或刪除資料（§9 §5；`docs/stage-b-only-run.md`）。指令契約見 `bot/development_command_contract.json` |
 | 格式、Lint、型別檢查與測試設定位置 | `pyproject.toml`（pytest）。未見 formatter、linter 或型別檢查設定檔。Rule One 與 docstring 的 AST 檢查由完整 pytest 涵蓋（檔案位置待確認） |

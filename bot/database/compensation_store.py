@@ -102,9 +102,9 @@ def _insert_incident(cursor: Any, recommendation_id: int, owner_id: int, reason_
     row = cursor.fetchone()
     debit = _legitimate_debit(cursor, recommendation_id, row["discord_user_id"])  # [binding]: Refused before any write when the debit is not lawful.
     cursor.execute("INSERT INTO exchange_incidents (recommendation_id, debit_ledger_id, discord_user_id, song_id, reason_code, approved_by, approved_at, state) "
-                   "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                   "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING incident_id",
                    (recommendation_id, debit, row["discord_user_id"], row["song_id"], reason_code, owner_id, now, state))  # [open at creation]: closed_at stays empty until settlement or delivery closes it.
-    incident = cursor.lastrowid
+    incident = cursor.fetchone()["incident_id"]
     _event(cursor, incident, state, owner_id, now, reason_code)
     return {"incident_id": incident, "state": state, "created": True}
 
@@ -201,8 +201,8 @@ def _refund_original_debit(cursor: Any, incident: dict, now: datetime) -> int:
         raise RefundContradiction("Bound debit changed since approval; settlement refused")  # [binding check]: The stored debit is the only one refunded.
     key = "refund:" + hashlib.sha256(str(recommendation_id).encode("ascii")).hexdigest()  # [shared refund key]: The existing path can never refund this reservation again.
     cursor.execute("INSERT INTO credit_ledger (discord_user_id, credit_delta, reason, idempotency_key, recommendation_id, created_at) "
-                   "VALUES (%s, 1, 'delivery_refund', %s, %s, %s)", (user, key, recommendation_id, now))
-    refund = cursor.lastrowid
+                   "VALUES (%s, 1, 'delivery_refund', %s, %s, %s) RETURNING ledger_id", (user, key, recommendation_id, now))
+    refund = cursor.fetchone()["ledger_id"]
     cursor.execute("UPDATE users SET credit_balance = credit_balance + 1 WHERE discord_user_id = %s", (user,))
     if cursor.rowcount != 1:
         raise DeliveryStateMismatch("Refund recipient disappeared")
@@ -221,8 +221,8 @@ def _issue_grant(cursor: Any, incident: dict, now: datetime) -> int:
     @return: Grant identifier.
     """
     cursor.execute("INSERT INTO exchange_redelivery_grants (incident_id, discord_user_id, song_id, granted_at, state, holds_song) "
-                   "VALUES (%s, %s, %s, %s, 'open', 1)", (incident["incident_id"], incident["discord_user_id"], incident["song_id"], now))
-    return cursor.lastrowid
+                   "VALUES (%s, %s, %s, %s, 'open', TRUE) RETURNING grant_id", (incident["incident_id"], incident["discord_user_id"], incident["song_id"], now))
+    return cursor.fetchone()["grant_id"]
 
 
 def _close_settlement(cursor: Any, incident_id: int, refund: int, redelivery_approved: bool, closure: str, now: datetime) -> None:
@@ -367,7 +367,7 @@ def record_owner_disposition(cursor: Any, grant_id: int, owner_id: int, disposit
         raise DispositionRefused("ALREADY_RECORDED")
     if disposition not in CLOSABLE_STATES.get(row["state"], ()):
         raise DispositionRefused("NOT_CLOSABLE_FOR_STATE")
-    holds = 0 if (row["state"] == "not_sent" and disposition == "no_further_action") else 1  # [designated rule]: Only a not_sent closure releases the song; uncertain closures keep it.
+    holds = not (row["state"] == "not_sent" and disposition == "no_further_action")  # [designated rule]: Only a not_sent closure releases the song; uncertain closures keep it.
     cursor.execute("UPDATE exchange_redelivery_grants SET owner_disposition = %s, disposition_by = %s, disposition_at = %s, closed_at = %s, "
                    "holds_song = %s WHERE grant_id = %s AND owner_disposition = 'none' AND state = %s",
                    (disposition, owner_id, now, now, holds, grant_id, row["state"]))
@@ -397,7 +397,7 @@ def held_grant_song_ids(cursor: Any, user: int) -> frozenset:
     @param user: Requester.
     @return: Song identifiers held through grants.
     """
-    cursor.execute("SELECT song_id FROM exchange_redelivery_grants WHERE discord_user_id = %s AND holds_song = 1", (user,))
+    cursor.execute("SELECT song_id FROM exchange_redelivery_grants WHERE discord_user_id = %s AND holds_song = TRUE", (user,))
     return frozenset(row["song_id"] for row in cursor.fetchall())
 
 

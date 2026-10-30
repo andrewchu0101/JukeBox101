@@ -25,3 +25,6 @@ htmlcov/
 # Runtime secrets
 discord_bot_token.txt
 db_password.txt
+
+# Local Docker delivery images, test evidence and extracted verification artifacts
+/artifacts/

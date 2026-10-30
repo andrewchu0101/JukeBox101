@@ -1,4 +1,4 @@
-"""Read database and Discord execution settings from environment and optional dotenv files.
+"""Read PostgreSQL and Discord execution settings from environment and optional dotenv files.
 
 Validated settings feed explicit application boundaries without exposing credentials in representations.
 """
@@ -10,8 +10,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-DEFAULT_MYSQL_PORT = 3306
+DEFAULT_POSTGRES_PORT = 5432
 MAX_TCP_PORT = 65535
+# [TLS modes]: verify-full is the default; verify-ca is allowed; disable exists only for isolated local test networks.
+# libpq's prefer/allow/require modes are refused because they do not verify the server certificate.
+DEFAULT_SSL_MODE = "verify-full"
+VERIFYING_SSL_MODES = frozenset({"verify-full", "verify-ca"})
+ALLOWED_SSL_MODES = VERIFYING_SSL_MODES | {"disable"}
+# [administrative roles]: Names the Bot must never use; the application role is a separate least-privilege login.
+ADMINISTRATIVE_DATABASE_USERS = frozenset({"postgres", "root", "rdsadmin", "azure_superuser", "cloudsqladmin"})
 
 
 FORMAL_EXCHANGE_ENV = "JUKEBOX_FORMAL_EXCHANGE"  # [formal /exchange switch]: Absent or a disabling value keeps the route closed; anything else refuses startup.
@@ -49,6 +56,8 @@ class DatabaseSettings:
     user: str
     password: str = field(repr=False)
     database: str
+    sslmode: str = DEFAULT_SSL_MODE  # [transport security]: One of ALLOWED_SSL_MODES; verify-full unless explicitly changed.
+    sslrootcert: str | None = None  # [trust anchor]: CA bundle path for verify-* modes; None uses libpq's default location.
 
 
 @dataclass(frozen=True)
@@ -110,12 +119,12 @@ def read_secret_file(setting_name: str, secret_file_path: str) -> str:
 
 
 def configured_database_port() -> int:
-    """@description: Reject malformed ports before contacting MySQL.
+    """@description: Reject malformed ports before contacting PostgreSQL.
     @param: none
     @return: TCP port within the valid network range.
     """
     try:
-        database_port = int(os.environ.get("DB_PORT", str(DEFAULT_MYSQL_PORT)))
+        database_port = int(os.environ.get("DB_PORT", str(DEFAULT_POSTGRES_PORT)))
     except ValueError:
         raise ConfigurationError("DB_PORT must be an integer") from None
     if not 1 <= database_port <= MAX_TCP_PORT:
@@ -132,15 +141,32 @@ def load_database_settings(dotenv_path: Path | None = None) -> DatabaseSettings:
         load_dotenv(dotenv_path=dotenv_path, override=False)
     # [application account]: Administrative accounts are forbidden for application access.
     database_user = required_environment_value("DB_USER")
-    if database_user.casefold() == "root":
+    if database_user.casefold() in ADMINISTRATIVE_DATABASE_USERS:
         raise ConfigurationError("DB_USER must be a non-administrative application account")
+    sslmode, sslrootcert = configured_tls()
     return DatabaseSettings(
         host=required_environment_value("DB_HOST"),
         port=configured_database_port(),
         user=database_user,
         password=required_secret_value("DB_PASSWORD"),
         database=required_environment_value("DB_NAME"),
+        sslmode=sslmode,
+        sslrootcert=sslrootcert,
     )
+
+
+def configured_tls() -> tuple[str, str | None]:
+    """@description: Choose a verifying TLS mode by default and refuse modes that encrypt without checking the server.
+    @param: none
+    @return: (sslmode, optional CA bundle path); the path is not secret and is never read here.
+    """
+    sslmode = os.environ.get("DB_SSLMODE", DEFAULT_SSL_MODE).strip() or DEFAULT_SSL_MODE
+    if sslmode not in ALLOWED_SSL_MODES:
+        raise ConfigurationError("DB_SSLMODE must be verify-full, verify-ca or disable (isolated local test only)")
+    sslrootcert = os.environ.get("DB_SSLROOTCERT", "").strip() or None
+    if sslmode == "disable" and sslrootcert is not None:
+        raise ConfigurationError("DB_SSLROOTCERT must not be set when DB_SSLMODE=disable")
+    return sslmode, sslrootcert
 
 
 def load_discord_settings(dotenv_path: Path | None = None) -> DiscordSettings:

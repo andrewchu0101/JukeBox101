@@ -33,7 +33,7 @@ def database_settings(monkeypatch):
     """
     # [test configuration]: Synthetic credentials must never reach a real connection.
     environment_values = {
-        "DB_HOST": "127.0.0.1", "DB_PORT": "3306",
+        "DB_HOST": "127.0.0.1", "DB_PORT": "5432",
         "DB_USER": "jukebox101_app", "DB_PASSWORD": "synthetic-secret",
         "DB_NAME": "jukebox101",
     }
@@ -54,3 +54,30 @@ def unix_permission_dir(tmp_path):
     permission_dir = Path(tempfile.mkdtemp(prefix="jb101-perm-"))  # [Unix permission scope]: Created under the system temp directory, not the project drive.
     yield permission_dir
     shutil.rmtree(permission_dir, ignore_errors=True)
+
+
+@pytest.fixture(scope="session")
+def pg_cluster():
+    """@description: Provide the verified disposable PostgreSQL server, or skip postgres-marked tests when none is configured.
+    @return: Prepared cluster description (random role passwords held in memory only).
+    """
+    from tests.postgres_support import _environment_cluster, prepare_cluster
+    cluster = _environment_cluster()
+    if cluster is None:
+        pytest.skip("JB_PG_TEST_HOST and admin password are not set; disposable PostgreSQL not configured")
+    prepare_cluster(cluster)
+    return cluster
+
+
+@pytest.fixture
+def pg_database(pg_cluster):
+    """@description: Create a fresh, fully migrated test database for one test and always drop it afterwards.
+    @param pg_cluster: Verified disposable server.
+    @return: Settings for each production role on the new database.
+    """
+    from tests.postgres_support import create_database, drop_database
+    database = create_database(pg_cluster)
+    try:
+        yield database
+    finally:
+        drop_database(pg_cluster, database.name)

@@ -9,7 +9,8 @@ import asyncio
 import random
 from datetime import datetime, timezone
 
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from bot.database.exchange_delivery_store import DeliveryClaim
@@ -197,19 +198,19 @@ def test_replay_failing_with_a_database_error_is_still_reported_as_unknown() -> 
     @return: None.
     """
     first = CommitOutcomeUnknown("commit ack lost")
-    repository = FakeRepository([first, pymysql.err.OperationalError(1205, "Lock wait timeout exceeded")])
+    repository = FakeRepository([first, pg_errors.LockNotAvailable("Lock wait timeout exceeded")])
     with pytest.raises(CommitOutcomeUnknown) as error:
         run_flow(repository, FakeSender(), FakeReplier())
     assert error.value.__cause__ is first
-    assert "OperationalError" in " ".join(error.value.__notes__)
+    assert "LockNotAvailable" in " ".join(error.value.__notes__)  # [lock wait timeout]: SQLSTATE 55P03, an OperationalError subclass.
 
 
 def test_a_definite_database_error_is_not_replayed() -> None:
     """@description: A database error before any commit is definite and is raised once, without a replay.
     @return: None.
     """
-    repository = FakeRepository([pymysql.err.OperationalError(1205, "Lock wait timeout exceeded")])
-    with pytest.raises(pymysql.err.OperationalError):
+    repository = FakeRepository([pg_errors.LockNotAvailable("Lock wait timeout exceeded")])
+    with pytest.raises(psycopg.OperationalError):
         run_flow(repository, FakeSender(), FakeReplier())
     assert len(repository.exchange_calls) == 1
 

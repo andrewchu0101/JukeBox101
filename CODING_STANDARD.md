@@ -118,10 +118,10 @@
 - **魔術數字**：改為具名常數或設定，例如 `MAX_DAILY_DELIVERIES_PER_USER = 1`。
 - **Docstring**：每個模組 2 至 3 句；每個函式（含私有 helper）須含 `@description:`、`@param <name>:`（無參數寫 `@param: none`）與 `@return:`。核心狀態變數首次宣告時加 `# [purpose]:` 註解。使用 `#` 註解，不用 `//`。
 - **例外邊界**：只在 Discord 指令、排程工作與交易單元處理例外；捕捉具體例外型別，保留可追查的日誌，不靜默吞掉失敗。
-- **SQL 與分層**：只用 PyMySQL 原生 SQL 加 `%s` 參數化，不插值使用者輸入，不引入 ORM。SQL 置於 repository 或 database 層，業務規則在 service，Discord 互動在 command handler 或 cog。
+- **SQL 與分層**：v7 起只用 psycopg 3（PostgreSQL 18）原生 SQL 加 `%s` 參數化，不插值使用者輸入，不引入 ORM；PyMySQL 僅存於 `legacy/mysql/` 歷史區（2026-10-30 依使用者 PostgreSQL 遷移要求修訂）。PostgreSQL 任何 SQL 錯誤會使整個交易失效：不得「捕捉唯一鍵錯誤後繼續同一交易」，改用 `ON CONFLICT ... DO NOTHING RETURNING` 或 SAVEPOINT；產生的 ID 以 `RETURNING` 取得。SQL 置於 repository 或 database 層，業務規則在 service，Discord 互動在 command handler 或 cog。
 - **阻塞式資料庫操作**：以 `asyncio.to_thread` 執行；每個 worker 自行建立、使用與關閉連線，不跨執行緒共用連線；交易保持短小，commit 與 rollback 明確。
 - **點數與派送一致性**：點數以交易與唯一約束保護；派送與兌換以 row lock 或唯一約束防止重複；排程工作對每位使用者與每個日曆日必須冪等。
 - **Discord 設定**：只申請必要 intents；回覆沿用既有的 ephemeral 與 `AllowedMentions.none` 設定；不記錄私人內容或 Token。
 - **設定與秘密**：只由環境變數讀取；`.env.example` 只列實際欄位與假值；不 commit `.env`。
-- **測試**：以 pytest 為準；Discord 互動在單元測試中 mock；真實 MySQL 測試為明確開啟的 opt-in（`mysql` 標記），不得宣稱已驗證真實 Discord 行為。
+- **測試**：以 pytest 為準；Discord 互動在單元測試中 mock；真實 PostgreSQL 測試為明確開啟的 opt-in（`postgres` 標記，只連 `cluster_name=jukebox101-disposable-test` 的拋棄式伺服器），不得宣稱已驗證真實 Discord 行為。
 - **Migration**：schema 變更使用版本化 SQL 腳本；未經核准不執行破壞性 migration，也不刪除生產資料。

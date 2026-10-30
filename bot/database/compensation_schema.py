@@ -7,6 +7,8 @@ compensation table is read. Only a missing-table error is translated; every othe
 
 from typing import Any
 
+from psycopg import errors as pg_errors
+
 SCHEMA_SPEC = {
     "exchange_incidents": {
         "columns": ("incident_id", "recommendation_id", "debit_ledger_id", "discord_user_id", "song_id", "reason_code", "approved_by",
@@ -28,7 +30,7 @@ SCHEMA_SPEC = {
     },
 }  # [reviewed specification]: Changing it requires changing the candidate DDL and the offline SQLite mirror in the same change.
 COMPENSATION_TABLES = tuple(SCHEMA_SPEC)
-MISSING_TABLE_CODE = 1146  # [MySQL]: ER_NO_SUCH_TABLE.
+# [PostgreSQL]: SQLSTATE 42P01 (undefined_table) is the only translated probe failure.
 
 
 class CompensationDisabled(RuntimeError):
@@ -44,12 +46,14 @@ class CompensationSchemaMismatch(RuntimeError):
 
 
 def _is_missing_table(error: Exception) -> bool:
-    """@description: Recognise only the missing-table error of MySQL or of the offline stand-in.
+    """@description: Recognise only the missing-table error of PostgreSQL or of the offline stand-in.
     @param error: Exception raised by a probe statement.
     @return: True only when the error says the table does not exist.
     """
+    if isinstance(error, pg_errors.UndefinedTable):
+        return True
     code = error.args[0] if error.args else None
-    return code == MISSING_TABLE_CODE or (isinstance(code, str) and "no such table" in code)
+    return isinstance(code, str) and "no such table" in code
 
 
 def _columns(cursor: Any, table: str) -> set:
@@ -66,7 +70,7 @@ def _unique_keys(cursor: Any, table: str, dialect: str) -> set:
     """@description: Read the unique keys of one table as sets of column names, using the dialect's catalogue.
     @param cursor: Cursor inside the gated transaction.
     @param table: Constant table name.
-    @param dialect: Either mysql or sqlite.
+    @param dialect: Either postgres or sqlite.
     @return: Set of frozensets of column names, one per unique key.
     """
     if dialect == "sqlite":
@@ -77,8 +81,10 @@ def _unique_keys(cursor: Any, table: str, dialect: str) -> set:
                 cursor.execute(f"PRAGMA index_info({index[1]})")
                 keys.add(frozenset(column[2] for column in cursor.fetchall()))
         return keys
-    cursor.execute("SELECT INDEX_NAME AS index_name, COLUMN_NAME AS column_name FROM information_schema.STATISTICS "
-                   "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND NON_UNIQUE = 0", (table,))
+    cursor.execute("SELECT i.indexrelid::regclass::text AS index_name, a.attname AS column_name FROM pg_index i "
+                   "JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace "
+                   "JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(i.indkey) "
+                   "WHERE n.nspname = current_schema() AND t.relname = %s AND i.indisunique", (table,))
     grouped: dict = {}
     for row in cursor.fetchall():
         grouped.setdefault(row["index_name"], set()).add(row["column_name"])
@@ -89,7 +95,7 @@ def _checks(cursor: Any, table: str, dialect: str) -> set:
     """@description: Read the names of the CHECK constraints of one table, using the dialect's catalogue.
     @param cursor: Cursor inside the gated transaction.
     @param table: Constant table name.
-    @param dialect: Either mysql or sqlite.
+    @param dialect: Either postgres or sqlite.
     @return: Set of CHECK constraint names present on the table.
     """
     if dialect == "sqlite":
@@ -97,17 +103,18 @@ def _checks(cursor: Any, table: str, dialect: str) -> set:
         row = cursor.fetchone()
         text = row["sql"] if row is not None else ""
         return {name for name in SCHEMA_SPEC[table]["checks"] if name in text}
-    cursor.execute("SELECT CONSTRAINT_NAME AS name FROM information_schema.TABLE_CONSTRAINTS "
-                   "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND CONSTRAINT_TYPE = 'CHECK'", (table,))
+    cursor.execute("SELECT c.conname AS name FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid "
+                   "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                   "WHERE n.nspname = current_schema() AND t.relname = %s AND c.contype = 'c'", (table,))
     return {row["name"] for row in cursor.fetchall()}
 
 
 def _dialect(cursor: Any) -> str:
-    """@description: Name the catalogue family of a cursor; the offline stand-in declares itself, every production cursor is MySQL.
+    """@description: Name the catalogue family of a cursor; the offline stand-in declares itself, every production cursor is PostgreSQL.
     @param cursor: Cursor inside the gated transaction.
-    @return: sqlite or mysql.
+    @return: sqlite or postgres.
     """
-    return getattr(cursor, "catalogue_dialect", "mysql")
+    return getattr(cursor, "catalogue_dialect", "postgres")
 
 
 def _check_table(cursor: Any, table: str, spec: dict, dialect: str) -> None:
@@ -115,7 +122,7 @@ def _check_table(cursor: Any, table: str, spec: dict, dialect: str) -> None:
     @param cursor: Cursor inside the gated transaction.
     @param table: Constant table name.
     @param spec: Specification entry of the table.
-    @param dialect: Catalogue family, mysql or sqlite.
+    @param dialect: Catalogue family, postgres or sqlite.
     @return: None; the first mismatch raises a code-only error.
     """
     try:
@@ -154,8 +161,8 @@ def compensation_tables_present(cursor: Any) -> bool:
     if _dialect(cursor) == "sqlite":
         cursor.execute("SELECT name AS table_name FROM sqlite_master WHERE type = 'table' AND name IN (%s,%s,%s)", COMPENSATION_TABLES)
     else:
-        cursor.execute("SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (%s,%s,%s)",
-                       COMPENSATION_TABLES)
+        cursor.execute("SELECT table_name::text AS table_name FROM information_schema.tables WHERE table_schema = current_schema() "
+                       "AND table_name IN (%s,%s,%s)", COMPENSATION_TABLES)
     present = {row["table_name"] for row in cursor.fetchall()}  # [present tables]: Only names are read; no row data.
     if not present:
         return False

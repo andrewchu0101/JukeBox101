@@ -1,3 +1,5 @@
+> **v6／MySQL 歷史文件，不適用 v7**：v7（PostgreSQL 18 + 多 Discord 伺服器）的部署請見 `docs/deploy/v7-postgresql-deployment.md`。本檔保留原文供追溯，未改寫內容。
+
 # 擁有者秘密配置與輪替手冊
 
 - 適用：Owner 為正式部署準備秘密、資料庫帳號與輪替。

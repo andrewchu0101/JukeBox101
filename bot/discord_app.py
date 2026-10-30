@@ -87,7 +87,7 @@ class OwnerReviewWiring:
 
     service_provider: Callable[[], OwnerReviewService]  # [review service]: Returns the synchronous review service.
     owner_id: int  # [Owner identity]: Configured Discord user id checked on every Owner command.
-    guild_id: int  # [private guild]: The only guild where the owner group is registered.
+    guild_id: int  # [Owner management guild]: The only guild where the owner group is registered and admitted.
     now: Callable[[], datetime]  # [clock]: Supplies timestamps for evidence and judgements.
 
 
@@ -169,20 +169,35 @@ class CommandHandlers:
         await _respond(interaction, self.service.daily, interaction.user.id, mode.value == "on")
 
 
+GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False)  # [where usable]: Guild channels only.
+GUILD_INSTALL_ONLY = app_commands.AppInstallationType(guild=True, user=False)  # [how installed]: Server install via invite link only.
+
+
+def guild_command(name: str, description: str, callback: Callable) -> app_commands.Command:
+    """@description: Define one global command usable by every member in any installed guild, never in DMs.
+    @param name: Slash command name.
+    @param description: User-facing description.
+    @param callback: Handler coroutine.
+    @return: Command with guild-only contexts and no default member permission restriction.
+    """
+    return app_commands.Command(name=name, description=description, callback=callback,
+                                allowed_contexts=GUILD_ONLY_CONTEXTS, allowed_installs=GUILD_INSTALL_ONLY)
+
+
 def register_commands(tree: app_commands.CommandTree, handlers: CommandHandlers, include_claim: bool = False) -> None:
-    """@description: Register five local commands without contacting Discord's API.
+    """@description: Register the global command set locally without contacting Discord's API.
     @param tree: Empty client-owned command registry.
     @param handlers: Callback owner with an injected application service.
     @param include_claim: True only when the /claim switch is open; the command set stays unchanged while it is closed.
     @return: None.
     """
-    tree.add_command(app_commands.Command(name="share", description="投稿 YouTube 影片供資格驗證", callback=handlers.share))
-    tree.add_command(app_commands.Command(name="exchange", description="查詢交換功能開放狀態", callback=handlers.exchange))
-    tree.add_command(app_commands.Command(name="balance", description="查詢可用 Nickel", callback=handlers.balance))
-    tree.add_command(app_commands.Command(name="history", description="查詢本人投稿及目前審核狀態", callback=handlers.history))
-    tree.add_command(app_commands.Command(name="daily", description="每日推薦尚未開放", callback=handlers.daily))
+    tree.add_command(guild_command(name="share", description="投稿 YouTube 影片供資格驗證", callback=handlers.share))
+    tree.add_command(guild_command(name="exchange", description="查詢交換功能開放狀態", callback=handlers.exchange))
+    tree.add_command(guild_command(name="balance", description="查詢可用 Nickel", callback=handlers.balance))
+    tree.add_command(guild_command(name="history", description="查詢本人投稿及目前審核狀態", callback=handlers.history))
+    tree.add_command(guild_command(name="daily", description="每日推薦尚未開放", callback=handlers.daily))
     if include_claim:
-        tree.add_command(app_commands.Command(name="claim", description="領取本週與入門 Nickel", callback=handlers.claim))
+        tree.add_command(guild_command(name="claim", description="領取本週與入門 Nickel", callback=handlers.claim))
 
 
 async def synchronize_commands(client: JukeBoxClient, *, guild_id: int | None = None, global_sync: bool = False) -> list:

@@ -74,8 +74,8 @@ def _award(cursor: Any, control: dict, operation_id: str) -> RewardDecision:
     song_id = cursor.fetchone()["song_id"]  # [legacy ledger FK]: Preserve the original six-table constraints.
     ledger_key = "jb2:" + hashlib.sha256(operation_id.encode("utf-8")).hexdigest()  # [ledger idempotency]: Bounded and deterministic.
     cursor.execute("INSERT INTO credit_ledger (discord_user_id,credit_delta,reason,idempotency_key,awarded_song_id) "
-                   "VALUES (%s,%s,%s,%s,%s)", (candidate.submitter_id, 1, "submission_award", ledger_key, song_id))
-    ledger_id = cursor.lastrowid  # [audit link]: AUTO_INCREMENT is an identifier, never intake priority.
+                   "VALUES (%s,%s,%s,%s,%s) RETURNING ledger_id", (candidate.submitter_id, 1, "submission_award", ledger_key, song_id))
+    ledger_id = cursor.fetchone()["ledger_id"]  # [audit link]: An identity value is an identifier, never intake priority.
     cursor.execute("INSERT INTO jb2_claims (version_id,operation_id,ledger_id,discord_user_id) VALUES (%s,%s,%s,%s)",
                    (candidate.identity.version.value, operation_id, ledger_id, candidate.submitter_id))
     cursor.execute("UPDATE users SET credit_balance=credit_balance+1 WHERE discord_user_id=%s", (candidate.submitter_id,))
@@ -98,7 +98,7 @@ def lock_reconciled_account(cursor: Any, discord_user_id: int) -> int:
     """
     cursor.execute("SELECT credit_balance FROM users WHERE discord_user_id=%s FOR UPDATE", (discord_user_id,))
     account = cursor.fetchone()  # [locked available credits]: Cannot change during this reward transaction.
-    cursor.execute("SELECT COALESCE(SUM(credit_delta),0) AS total FROM credit_ledger WHERE discord_user_id=%s", (discord_user_id,))
+    cursor.execute("SELECT COALESCE(SUM(credit_delta),0)::bigint AS total FROM credit_ledger WHERE discord_user_id=%s", (discord_user_id,))
     ledger = cursor.fetchone()  # [audit balance]: No direct balance repair is authorized.
     if account is None or account["credit_balance"] != ledger["total"]:
         raise LedgerBalanceMismatch("Account requires audited ledger reconciliation")
@@ -112,5 +112,5 @@ def persist_decisions(cursor: Any, decisions: tuple[RewardDecision, ...]) -> Non
     @return: None.
     """
     for decision in decisions:
-        cursor.execute("UPDATE jb2_events SET reward_status=%s, conflict_frozen=IF(%s,TRUE,conflict_frozen) WHERE operation_id=%s",
+        cursor.execute("UPDATE jb2_events SET reward_status=%s, conflict_frozen=CASE WHEN %s THEN TRUE ELSE conflict_frozen END WHERE operation_id=%s",
                        (decision.status.value, decision.status is RewardCandidateStatus.CONFLICT, decision.operation_id))

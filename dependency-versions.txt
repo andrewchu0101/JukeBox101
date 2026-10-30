@@ -12,9 +12,9 @@ multidict==7.1.0
 packaging==26.3
 pluggy==1.6.0
 propcache==0.5.4
+psycopg==3.3.6
 pycparser==3.12
 Pygments==2.21.0
-PyMySQL==1.2.3
 PyNaCl==1.6.2
 pytest==8.4.2
 python-dotenv==1.2.4

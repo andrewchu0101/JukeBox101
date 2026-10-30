@@ -784,7 +784,7 @@ def _mirror_legacy_identity(cursor: Any, identity: VersionAssignment) -> None:
     @param identity: Identity just persisted for the video.
     @return: None.
     """
-    cursor.execute("UPDATE jb2_legacy l JOIN jb2_videos v ON v.song_id=l.song_id SET l.identity_json=%s WHERE v.video_id=%s",
+    cursor.execute("UPDATE jb2_legacy l SET identity_json=%s FROM jb2_videos v WHERE v.song_id=l.song_id AND v.video_id=%s",
                    (encode_contract(identity), identity.video.video_id))
 
 

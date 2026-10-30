@@ -41,8 +41,8 @@ from bot.ledger_integrity import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = REPO_ROOT / "bot" / "database" / "schema.sql"
-MIGRATION_002_PATH = REPO_ROOT / "bot" / "database" / "migrations" / "002_submission_economy.sql"
+SCHEMA_PATH = REPO_ROOT / "bot" / "database" / "postgres" / "0001_initial_schema.sql"
+MIGRATION_002_PATH = SCHEMA_PATH  # [PostgreSQL]: The former MySQL migration 002 tables (jb2_claims) are declared in schema 0001.
 SPEC_PATH = REPO_ROOT / "docs" / "recovery-batchb-private-beta-spec.md"
 
 # [synthetic balance]: Distinctive value used to prove verdicts never echo balance amounts.
@@ -439,7 +439,7 @@ def table_columns(sql_text: str, table_name: str) -> set[str]:
     @param table_name: Table whose declared columns are needed.
     @return: Set of lowercase column names; constraints and keywords are excluded.
     """
-    pattern = rf"CREATE TABLE IF NOT EXISTS {table_name}\s*\((.*?)\)\s*ENGINE=InnoDB"
+    pattern = rf"CREATE TABLE {table_name}\s*\((.*?)\n\);"  # [block]: Each PostgreSQL table body ends with a line holding only ");".
     match = re.search(pattern, strip_sql_comments(sql_text), flags=re.DOTALL)
     assert match, table_name
     columns = set()
@@ -567,8 +567,9 @@ def test_design_level_jb2_claims_declarations_in_migration_text():
     @return: None.
     """
     migration_text = strip_sql_comments(MIGRATION_002_PATH.read_text(encoding="utf-8"))
-    assert re.search(r"version_id\s+VARCHAR\(128\)\s+NOT NULL PRIMARY KEY", migration_text)
-    assert re.search(r"ledger_id\s+BIGINT UNSIGNED NOT NULL UNIQUE", migration_text)
+    claims_block = re.search(r"CREATE TABLE jb2_claims\s*\((.*?)\n\);", migration_text, flags=re.DOTALL).group(1)
+    assert re.search(r"version_id\s+VARCHAR\(128\)\s+COLLATE \"C\"\s+NOT NULL PRIMARY KEY", claims_block)
+    assert re.search(r"ledger_id\s+BIGINT NOT NULL UNIQUE", claims_block)
     assert "claim_id" not in known_schema()["jb2_claims"]
     assert "claim_id" not in migration_text
 

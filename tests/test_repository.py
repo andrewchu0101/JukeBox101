@@ -6,7 +6,8 @@ Mocked connections expose parameters and failure cleanup without evaluating real
 from unittest.mock import MagicMock
 from functools import partial
 
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from bot.database import connection as database_boundary
@@ -41,7 +42,7 @@ def test_pending_submission_transaction(repository_context, existing_submission)
     assert result.duplicate_submission == (existing_submission is not None)
     statements = [call.args[0] for call in cursor.execute.call_args_list]
     assert "FOR UPDATE" in statements[2]
-    assert "ON DUPLICATE KEY UPDATE song_id = song_id" in statements[1]
+    assert "ON CONFLICT (platform, platform_track_id) DO NOTHING" in statements[1]  # [first provenance kept]: A duplicate video never overwrites the stored row.
     assert cursor.execute.call_args_list[1].args[1] == ("youtube", video.video_id, video.source_url)
     assert all("credit_ledger" not in statement and "credit_balance" not in statement for statement in statements)
     assert len(statements) == (4 if existing_submission else 5)
@@ -73,13 +74,13 @@ def test_query_failure_rolls_back(repository_context, operation):
     @return: None.
     """
     repository, connection, cursor = repository_context
-    cursor.execute.side_effect = pymysql.OperationalError(1205, "Synthetic lock timeout")
+    cursor.execute.side_effect = pg_errors.LockNotAvailable("Synthetic lock timeout")
     operations = {
         "share": partial(repository.submit_pending, 123, parse_youtube_url("https://youtu.be/Abc_123-Xyz")),
         "balance": partial(repository.balance, 123), "daily": partial(repository.set_daily, 123, True),
         "history": partial(repository.history, 123),
     }
-    with pytest.raises(pymysql.OperationalError):
+    with pytest.raises(psycopg.OperationalError):
         operations[operation]()
     connection.rollback.assert_called_once()
     connection.commit.assert_not_called()

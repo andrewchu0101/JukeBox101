@@ -10,12 +10,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
-import pymysql
-
 from bot.nickel_grant_policy import GrantKind, GrantLine, plan_claim, weekly_period_key
 
 LIFETIME_PERIOD = "LIFETIME"  # [entry period]: The entry grant is keyed by this literal, never NULL, so the unique key applies.
-DUPLICATE_KEY_ERROR = 1062  # [MySQL error]: A repeated unique key; here it means the request was already recorded.
 REASON_BY_KIND = {GrantKind.ENTRY: "nickel_entry_grant", GrantKind.WEEKLY: "nickel_weekly_grant"}  # [ledger reasons]: Must match migration 004.
 
 
@@ -42,20 +39,19 @@ def _claimed_state(cursor, discord_user_id: int, period: str, current_read: bool
     @param cursor: Open cursor inside the caller's transaction.
     @param discord_user_id: Discord account id.
     @param period: Weekly period key.
-    @param current_read: True inside a claim, where the read must see the latest committed grants (LOCK IN SHARE MODE); False for the read-only balance view.
+    @param current_read: True inside a claim (after the account row lock), False for the read-only balance view.
     @return: Tuple (entry_claimed, weekly_claimed_for_period).
     """
-    # [current read]: A claim reads the latest committed grants, not its REPEATABLE READ snapshot, so an earlier
-    # consistent read in the same transaction cannot hide a claim another connection committed. LOCK IN SHARE MODE
-    # is a current read that needs only SELECT privilege; FOR UPDATE would need UPDATE, which the account does not hold.
-    suffix = " LOCK IN SHARE MODE" if current_read else ""
+    # [current read]: Under READ COMMITTED every PostgreSQL statement sees the latest committed rows, and a claim holds
+    # the account row lock first, so no locking clause is needed (FOR SHARE would require UPDATE privilege).
+    del current_read  # [same statement]: Both callers issue the identical read; the lock order provides currency.
     cursor.execute(
-        "SELECT grant_kind, grant_period FROM nickel_grants WHERE discord_user_id=%s AND (grant_kind='entry' OR grant_period=%s)" + suffix,
+        "SELECT grant_kind, grant_period FROM nickel_grants WHERE discord_user_id=%s AND (grant_kind='entry' OR grant_period=%s)",
         (discord_user_id, period),
     )
     rows = cursor.fetchall()
-    entry_claimed = any(kind == "entry" for kind, _ in rows)
-    weekly_claimed = any(kind == "weekly" and grant_period == period for kind, grant_period in rows)
+    entry_claimed = any(row["grant_kind"] == "entry" for row in rows)
+    weekly_claimed = any(row["grant_kind"] == "weekly" and row["grant_period"] == period for row in rows)
     return entry_claimed, weekly_claimed
 
 
@@ -70,10 +66,10 @@ def _insert_grant(cursor, discord_user_id: int, line: GrantLine, period: str) ->
     grant_period = LIFETIME_PERIOD if line.kind is GrantKind.ENTRY else period
     idempotency_key = f"nickel_{line.kind.value}:{discord_user_id}:{grant_period}"
     cursor.execute(
-        "INSERT INTO credit_ledger (discord_user_id, credit_delta, reason, idempotency_key) VALUES (%s, %s, %s, %s)",
+        "INSERT INTO credit_ledger (discord_user_id, credit_delta, reason, idempotency_key) VALUES (%s, %s, %s, %s) RETURNING ledger_id",
         (discord_user_id, line.amount, REASON_BY_KIND[line.kind], idempotency_key),
     )
-    ledger_id = cursor.lastrowid
+    ledger_id = cursor.fetchone()["ledger_id"]
     cursor.execute(
         "INSERT INTO nickel_grants (discord_user_id, grant_kind, grant_period, amount, ledger_id) VALUES (%s, %s, %s, %s, %s)",
         (discord_user_id, line.kind.value, grant_period, line.amount, ledger_id),
@@ -89,16 +85,13 @@ def _record_request(cursor, discord_user_id: int, request_key: str, period: str)
     @param period: Weekly period the request is evaluated in.
     @return: True when the request is new; False when the key was already recorded.
     """
-    try:
-        cursor.execute(
-            "INSERT INTO nickel_claim_requests (request_key, discord_user_id, grant_period) VALUES (%s, %s, %s)",
-            (request_key, discord_user_id, period),
-        )
-    except pymysql.err.IntegrityError as error:
-        if error.args[0] != DUPLICATE_KEY_ERROR:
-            raise
-        return False
-    return True
+    # [no error path]: A duplicate key must not raise, because a PostgreSQL error would abort the whole claim transaction.
+    cursor.execute(
+        "INSERT INTO nickel_claim_requests (request_key, discord_user_id, grant_period) VALUES (%s, %s, %s) "
+        "ON CONFLICT (request_key) DO NOTHING RETURNING request_key",
+        (request_key, discord_user_id, period),
+    )
+    return cursor.fetchone() is not None
 
 
 def _stored_period(cursor, request_key: str) -> str:
@@ -108,7 +101,7 @@ def _stored_period(cursor, request_key: str) -> str:
     @return: Stored weekly period key.
     """
     cursor.execute("SELECT grant_period FROM nickel_claim_requests WHERE request_key=%s", (request_key,))
-    return cursor.fetchone()[0]
+    return cursor.fetchone()["grant_period"]
 
 
 def claim_nickel_grants(connection, discord_user_id: int, request_key: str, instant: datetime, enabled: bool) -> ClaimResult:
@@ -124,7 +117,8 @@ def claim_nickel_grants(connection, discord_user_id: int, request_key: str, inst
         return ClaimResult(ClaimStatus.DISABLED, [], None)
     period = weekly_period_key(instant)
     with connection.cursor() as cursor:
-        cursor.execute("INSERT IGNORE INTO users (discord_user_id) VALUES (%s)", (discord_user_id,))
+        cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")  # [lock-order reasoning]: Stated, not assumed from server defaults.
+        cursor.execute("INSERT INTO users (discord_user_id) VALUES (%s) ON CONFLICT (discord_user_id) DO NOTHING", (discord_user_id,))
         cursor.execute("SELECT discord_user_id FROM users WHERE discord_user_id=%s FOR UPDATE", (discord_user_id,))
         if not _record_request(cursor, discord_user_id, request_key, period):
             replay_period = _stored_period(cursor, request_key)

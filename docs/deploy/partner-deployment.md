@@ -1,3 +1,5 @@
+> **v6／MySQL 歷史文件，不適用 v7**：v7（PostgreSQL 18 + 多 Discord 伺服器）的部署請見 `docs/deploy/v7-postgresql-deployment.md`。本檔保留原文供追溯，未改寫內容。
+
 # 夥伴部署與更新手冊（Gateway-only，Docker Compose）
 
 - 適用：夥伴在自己管理的 Linux amd64 主機上部署 Bot。

@@ -4,7 +4,8 @@ These tests use a recording fake connection, so the injector's stage can be chec
 Each mode names the stage it must hit: lost acknowledgement after a real commit, failure before the commit is sent, or one failing statement.
 """
 
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from tests.commit_fault_injector import FaultInjectingConnection
@@ -96,7 +97,7 @@ def test_lost_ack_fires_only_after_the_real_commit_and_only_once() -> None:
     connection.begin()
     with connection.cursor() as cursor:
         cursor.execute(LEDGER_STATEMENT)
-    with pytest.raises(pymysql.err.OperationalError):
+    with pytest.raises(psycopg.OperationalError):
         connection.commit()
     assert inner.committed is True
     assert inner.events == ["begin", f"statement:{LEDGER_STATEMENT[:24]}", "commit_real"]
@@ -112,7 +113,7 @@ def test_fail_before_commit_never_reaches_the_real_commit() -> None:
     inner = RecordingConnection()
     connection = FaultInjectingConnection(inner, "fail_before_commit")
     connection.begin()
-    with pytest.raises(pymysql.err.OperationalError):
+    with pytest.raises(psycopg.OperationalError):
         connection.commit()
     assert inner.committed is False
     assert "commit_real" not in inner.events
@@ -128,9 +129,9 @@ def test_fail_statement_fires_before_the_first_matching_statement_only() -> None
     connection.begin()
     with connection.cursor() as cursor:
         cursor.execute(GATE_STATEMENT)
-        with pytest.raises(pymysql.err.OperationalError) as error:
+        with pytest.raises(psycopg.OperationalError) as error:
             cursor.execute(LEDGER_STATEMENT)
-    assert error.value.args[0] == 1213  # [definite rollback]: a deadlock victim is rolled back by the server.
+    assert isinstance(error.value, pg_errors.DeadlockDetected)  # [definite rollback]: SQLSTATE 40P01, the victim's transaction is rolled back.
     assert f"statement:{LEDGER_STATEMENT[:24]}" not in inner.events
     assert connection.fired == 1
 

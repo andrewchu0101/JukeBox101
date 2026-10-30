@@ -6,11 +6,12 @@ Two outcomes are deliberately distinct: a lost acknowledgement after a real comm
 (the real connection is rolled back by the production transaction, so nothing is durable).
 """
 
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 
 MODES = ("lost_ack_after_commit", "fail_before_commit", "fail_statement")  # [reviewed stages]: Any other name is refused.
-LOST_CONNECTION = 2013  # [unknown acknowledgement]: The client cannot tell whether the server committed.
-DEADLOCK_VICTIM = 1213  # [definite rollback]: InnoDB rolls back the whole transaction for the victim.
+# [unknown acknowledgement]: A psycopg OperationalError on COMMIT means the client cannot tell whether the server committed.
+# [definite rollback]: DeadlockDetected (SQLSTATE 40P01) means PostgreSQL rolled back the victim's whole transaction.
 
 
 class FaultInjectingConnection:
@@ -44,11 +45,11 @@ class FaultInjectingConnection:
         """
         if self._mode == "fail_before_commit" and not self.fired:
             self.fired += 1
-            raise pymysql.err.OperationalError(LOST_CONNECTION, "injected: connection lost before COMMIT was sent")
+            raise psycopg.OperationalError("injected: connection lost before COMMIT was sent")
         self._connection.commit()
         if self._mode == "lost_ack_after_commit" and not self.fired:
             self.fired += 1
-            raise pymysql.err.OperationalError(LOST_CONNECTION, "injected: COMMIT completed but the acknowledgement was lost")
+            raise psycopg.OperationalError("injected: COMMIT completed but the acknowledgement was lost")
 
     def __getattr__(self, name: str):
         """@description: Forward every other connection operation unchanged.
@@ -92,7 +93,7 @@ class _FaultCursor:
         owner = self._owner
         if owner._mode == "fail_statement" and not owner.fired and owner._marker in sql:
             owner.fired += 1
-            raise pymysql.err.OperationalError(DEADLOCK_VICTIM, "injected: deadlock victim before the statement")
+            raise pg_errors.DeadlockDetected("injected: deadlock victim before the statement")
         return self._cursor.execute(sql, args)
 
     def __getattr__(self, name: str):

@@ -1,6 +1,6 @@
 """Simulate the new repository's SQL protocol with bounded Python transaction locks.
 
-This fake checks application write coordination and failure recovery, not MySQL isolation, collation or foreign-key semantics.
+This fake checks application write coordination and failure recovery, not PostgreSQL isolation, collation or foreign-key semantics.
 """
 
 from copy import deepcopy
@@ -185,6 +185,9 @@ class FakeCursor:
             return
         if statement.startswith("INSERT"):
             self.lastrowid = insert_row(self.connection, statement, parameters)
+            returning = re.search(r"RETURNING (\w+)$", statement)  # [generated key]: PostgreSQL returns it as a row, not lastrowid.
+            if returning:
+                self.rows = [{returning.group(1): self.lastrowid}]
             return
         if statement.startswith("UPDATE"):
             count = update_rows(self.connection, statement, parameters)
@@ -220,16 +223,16 @@ def _answer_schema_probe(cursor: "FakeCursor", statement: str, parameters: tuple
         hidden = cursor.connection.database.compensation_hidden_columns.get(table, set())
         cursor.description = [(name,) for name in SCHEMA_SPEC[table]["columns"] if name not in hidden]
         return True
-    if "information_schema.TABLES" in statement:
+    if "information_schema.tables" in statement:
         database = cursor.connection.database
         if database.compensation_probe_fault:
             raise RuntimeError("synthetic catalogue failure")
         cursor.rows = [{"table_name": name} for name in parameters if name in database.compensation_tables]
         return True
-    if "information_schema.STATISTICS" in statement:
+    if "FROM pg_index" in statement:
         cursor.rows = [{"index_name": "_".join(keys), "column_name": column} for keys in SCHEMA_SPEC[parameters[0]]["unique"] for column in keys]
         return True
-    if "information_schema.TABLE_CONSTRAINTS" in statement:
+    if "FROM pg_constraint" in statement:
         cursor.rows = [{"name": name} for name in SCHEMA_SPEC[parameters[0]]["checks"]]
         return True
     return False
@@ -302,7 +305,7 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
         return _ledger_reservation_rows(connection, parameters[0])
     if "FROM jb2_claims" in sql:
         return _claim_rows(connection, sql, parameters)
-    if "UTC_TIMESTAMP" in sql:
+    if "statement_timestamp()" in sql:  # [database clock]: The fake answers with its fixed synthetic UTC time.
         return [{"now_utc": connection.database.now, "summary_date": connection.database.now.date()}]
     if "COALESCE(SUM" in sql:
         return [{"total": sum(row["credit_delta"] for row in connection.working["credit_ledger"].values()
@@ -516,7 +519,7 @@ def insert_row(connection: FakeConnection, sql: str, parameters: tuple) -> int:
         return 0
     key = (row["video_id"], row["revision"]) if table == "jb2_review_history" else row[PRIMARY_KEYS[table]]
     if key in connection.working[table]:
-        if "ON DUPLICATE KEY" in sql:
+        if "ON CONFLICT" in sql:
             return row.get("ledger_id", 0)
         raise ValueError("synthetic duplicate primary key")
     _check_uniqueness(connection, table, row)

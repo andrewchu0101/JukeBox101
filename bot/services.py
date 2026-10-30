@@ -11,8 +11,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
-import pymysql
-
+from bot.database.errors import DatabaseError
 from bot.database.nickel_grant_store import ClaimResult, ClaimStatus, claim_nickel_grants
 from bot.nickel_claim_replies import format_claim_reply
 from bot.database.repository import MusicRepository
@@ -154,7 +153,7 @@ class MusicService:
         except CommitOutcomeUnknown:
             LOGGER.error("Exchange commit outcome is unknown")  # [no payload]: Class-level only.
             return ExchangeFlowResult(label + "交換結果未確認，請勿重新執行 /exchange；稍後以 /history 查詢。", False, None, None, None)
-        except (pymysql.MySQLError, PersistenceNotReady):
+        except (DatabaseError, PersistenceNotReady):
             LOGGER.error("Exchange stopped at persistence boundary")  # [no payload]: Class-level only.
             return ExchangeFlowResult(label + "資料服務暫時無法使用，本次交換未完成，請稍後再試。", False, None, None, None)
 
@@ -305,7 +304,7 @@ async def _database_operation(operation: Callable[..., OperationResult], *argume
         return await asyncio.to_thread(operation, *arguments)
     except PersistenceNotReady:
         raise ServiceUnavailable("投稿資料庫尚未通過啟用檢查；本次未受理，請聯絡 Owner。") from None
-    except pymysql.MySQLError as database_error:
+    except DatabaseError as database_error:
         LOGGER.error("Database operation failed: %s", type(database_error).__name__)
     raise ServiceUnavailable("資料服務暫時無法使用，請稍後再試。")
 

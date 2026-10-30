@@ -1,6 +1,7 @@
-"""Start the explicitly configured Discord application without remote command synchronization.
+"""Start the multi-guild Discord application on PostgreSQL without remote command synchronization.
 
-Only executing this module loads credentials and logs in; imports remain offline and inert.
+Only executing this module loads credentials and logs in; imports remain offline and inert. Commands are admitted
+from any guild that installed the Bot; DMs, foreign applications and unauthorized Owner actions are refused.
 """
 
 import asyncio
@@ -22,8 +23,8 @@ from bot.config import (SECRET_FILE_SUFFIX, ConfigurationError, load_database_se
 from bot.database.repository import MusicRepository
 from bot.database.connection import open_connection
 from bot.database.submission_repository import SubmissionRepository
-from bot.acceptance_config import environment_snowflake, load_development_guild_settings
-from bot.gateway_listener import GuildInteractionGuard
+from bot.interaction_policy import MultiGuildInteractionGuard
+from bot.production_config import ProductionDiscordSettings, load_production_discord_settings
 from bot.discord_app import JukeBoxClient, OwnerReviewWiring
 from bot.owner_cli import TOKEN_TTL
 from bot.owner_review import OwnerReviewService
@@ -49,7 +50,7 @@ def build_owner_review_wiring(repository: SubmissionRepository, owner_id: int, g
     """@description: Build the Owner review collaborators over the same repository type the Owner CLI uses, keeping one preview store for the process.
     @param repository: Submission repository shared with the rest of the entry, so no second write path exists.
     @param owner_id: Configured Owner Discord user id, read once by the entry.
-    @param guild_id: Private guild where the owner group is registered.
+    @param guild_id: Owner management guild where the owner group is registered and admitted.
     @return: Wiring whose provider always returns the single service built here.
     """
     review_service = OwnerReviewService(repository, owner_id, _utc_now, token_ttl=TOKEN_TTL)  # [single preview store]: Tokens live only in this instance.
@@ -324,8 +325,8 @@ def main() -> None:
     """
     logging.basicConfig(level=logging.INFO)
     try:
-        guild_settings = load_development_guild_settings()
-        owner_id = environment_snowflake("DISCORD_OWNER_USER_ID")
+        discord_settings = load_production_discord_settings()
+        owner_id = discord_settings.owner_id
         database_settings = load_database_settings()
         formal_exchange = load_formal_exchange_enabled()  # [formal /exchange]: Off unless the setting is explicitly enabled.
         nickel_claim = load_nickel_claim_enabled()  # [/claim]: Off unless the setting is explicitly enabled.
@@ -335,14 +336,26 @@ def main() -> None:
     submission_repository = SubmissionRepository(partial(open_connection, database_settings), owner_id)
     service = MusicService(MusicRepository(database_settings), submission_repository, formal_exchange=formal_exchange,
                            nickel_claim_enabled=nickel_claim, nickel_connection_factory=partial(open_connection, database_settings))
-    owner_review = build_owner_review_wiring(submission_repository, owner_id, guild_settings.guild_id)
-    gate = ShutdownGate(GuildInteractionGuard(guild_settings))
+    owner_review = _optional_owner_review(submission_repository, discord_settings)
+    gate = ShutdownGate(MultiGuildInteractionGuard(discord_settings.application_id))
     client = JukeBoxClient(service, interaction_guard=gate, owner_review=owner_review)
     signal.signal(signal.SIGTERM, _termination_handler(client, gate))
     try:
-        client.run(guild_settings.discord.token, log_handler=None)
+        client.run(discord_settings.discord.token, log_handler=None)
     except (discord.LoginFailure, discord.HTTPException, OSError) as startup_error:
         raise SystemExit("Discord startup failed: " + type(startup_error).__name__) from None
+
+
+def _optional_owner_review(repository: SubmissionRepository, settings: ProductionDiscordSettings) -> OwnerReviewWiring | None:
+    """@description: Wire Owner review commands only into the configured Owner management guild, never globally.
+    @param repository: Shared submission repository.
+    @param settings: Production Discord settings.
+    @return: Wiring, or None when no Owner management guild is configured (Owner uses the CLI instead).
+    """
+    if settings.owner_guild_id is None:
+        LOGGER.info("Owner commands are not registered: DISCORD_OWNER_GUILD_ID is not set")
+        return None
+    return build_owner_review_wiring(repository, settings.owner_id, settings.owner_guild_id)
 
 
 if __name__ == "__main__":

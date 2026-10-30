@@ -75,8 +75,8 @@ def trapped_connect(*args, **kwargs):
 
 discord.Client.start = fake_start
 discord.Client.close = fake_close
-import pymysql
-pymysql.connect = trapped_connect
+import psycopg
+psycopg.connect = trapped_connect
 entry.main()
 """
 

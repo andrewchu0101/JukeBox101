@@ -11,7 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from bot.database.submission_repository import SubmissionRepository
@@ -29,7 +30,7 @@ def beta_context(monkeypatch):
     @param monkeypatch: External boundary replacement facility.
     @return: Existing fake, injected submission repository, original reader and actual service.
     """
-    monkeypatch.setattr("pymysql.connect", MagicMock(side_effect=AssertionError("No real MySQL")))
+    monkeypatch.setattr("psycopg.connect", MagicMock(side_effect=AssertionError("No real MySQL")))
     database = FakeDatabase()  # [offline storage]: No driver connection is created.
     database.state["control"]["settlement_enabled"] = False
     submissions = SubmissionRepository(database.connect, 777)
@@ -177,8 +178,8 @@ def test_history_select_closes_on_success_and_failure(failed):
     cursor = connection.cursor.return_value.__enter__.return_value
     repository = SubmissionRepository(MagicMock(return_value=connection), 777)
     if failed:
-        cursor.execute.side_effect = pymysql.OperationalError(2013, "synthetic-secret")
-        with pytest.raises(pymysql.OperationalError):
+        cursor.execute.side_effect = psycopg.OperationalError("synthetic-secret")
+        with pytest.raises(psycopg.OperationalError):
             repository.history(123)
     else:
         repository.history(123)
@@ -215,7 +216,8 @@ def test_balance_reuses_reader_and_daily_does_not_write(beta_context):
     assert not database.connections
 
 
-@pytest.mark.parametrize("missing", ["DISCORD_DEV_GUILD_ID", "DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"])
+# v7 multi-guild: DISCORD_DEV_GUILD_ID is no longer a production setting (see test_multi_guild_entry.py).
+@pytest.mark.parametrize("missing", ["DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"])
 def test_private_startup_missing_configuration_never_logs_in(database_settings, monkeypatch, missing):
     """@description: Keep production startup closed when the private target or Owner is unspecified.
     @param database_settings: Synthetic database configuration, never connected.
@@ -224,13 +226,13 @@ def test_private_startup_missing_configuration_never_logs_in(database_settings, 
     @return: None.
     """
     from bot import __main__ as entry
-    for name in ("DISCORD_DEV_GUILD_ID", "DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"):
+    for name in ("DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"):
         monkeypatch.setenv(name, "456")
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "synthetic-token")
     monkeypatch.delenv(missing)
     login = MagicMock()
     monkeypatch.setattr(discord.Client, "run", login)
-    monkeypatch.setattr("pymysql.connect", MagicMock(side_effect=AssertionError("No network")))
+    monkeypatch.setattr("psycopg.connect", MagicMock(side_effect=AssertionError("No network")))
     with pytest.raises(SystemExit, match=missing):
         entry.main()
     login.assert_not_called()
@@ -331,7 +333,7 @@ def test_database_failures_reply_privately_without_driver_details(beta_context, 
     database, submissions, reader, service = beta_context
     target = reader if operation == "balance" else submissions
     method = "accept_pending" if operation == "share" else operation
-    setattr(target, method, MagicMock(side_effect=pymysql.OperationalError(2003, "synthetic-secret")))
+    setattr(target, method, MagicMock(side_effect=psycopg.OperationalError("synthetic-secret")))
     interaction = _private_interaction(operation, [])
     client = JukeBoxClient(service)
     arguments = (URL,) if operation == "share" else ()

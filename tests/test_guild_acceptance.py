@@ -29,7 +29,7 @@ def no_external_boundaries(monkeypatch):
     @return: None.
     """
     blocked = MagicMock(side_effect=AssertionError("External boundary reached"))
-    monkeypatch.setattr("pymysql.connect", blocked)
+    monkeypatch.setattr("psycopg.connect", blocked)
     monkeypatch.setattr("discord.http.HTTPClient.request", AsyncMock(side_effect=AssertionError("Real HTTP reached")))
     monkeypatch.setattr(discord.Client, "login", AsyncMock(side_effect=AssertionError("Real login reached")))
     monkeypatch.setattr(discord.Client, "connect", AsyncMock(side_effect=AssertionError("Gateway reached")))

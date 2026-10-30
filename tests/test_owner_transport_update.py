@@ -183,8 +183,12 @@ def test_full_contract_treats_absent_defaults_and_remote_key_order_as_equal(clie
     trimmed = copy.deepcopy(base)
     for payload in trimmed:
         payload.pop("nsfw", None)
-        payload.pop("contexts", None)
     assert diff_contracts(full_contract(base), full_contract(trimmed)) == []
+    # v7: contexts=[0] (guild only) is a deliberate safety constraint, not a default; a remote set without it differs.
+    without_contexts = copy.deepcopy(base)
+    for payload in without_contexts:
+        payload.pop("contexts", None)
+    assert diff_contracts(full_contract(base), full_contract(without_contexts))
 
 
 # ---- read-only inspection reports the remote five against the local five ----

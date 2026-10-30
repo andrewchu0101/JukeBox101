@@ -22,18 +22,18 @@ from tests.submission_persistence_fake import FakeDatabase
 from tests.test_discord_owner_review import FakeInteraction, _command, _refusal_texts, _run
 
 OWNER_ID = "123"  # [Owner snowflake text]: Matches ENTRY_SETTINGS in the environment.
-GUILD_ID = 456  # [private guild]: Matches DISCORD_DEV_GUILD_ID.
+GUILD_ID = 456  # [Owner management guild]: Matches DISCORD_OWNER_GUILD_ID.
 OTHER_GUILD_ID = 789  # [wrong guild]: Any guild that is not the private one.
 OTHER_USER_ID = 999  # [non-Owner]: Any user that is not the configured Owner.
 OPERATION_ID = "op-1"  # [seeded operation]: Accepted intake the Owner reviews.
 START = datetime(2026, 10, 28, 9, 0, tzinfo=timezone.utc)  # [synthetic clock start]: Fixed instant for previews.
 ENTRY_SETTINGS = {
     "DISCORD_BOT_TOKEN": "SYNTHETIC-TOKEN-0123456789",
-    "DISCORD_DEV_GUILD_ID": str(GUILD_ID),
+    "DISCORD_OWNER_GUILD_ID": str(GUILD_ID),
     "DISCORD_EXPECTED_APPLICATION_ID": "789001",
     "DISCORD_OWNER_USER_ID": OWNER_ID,
     "DB_HOST": "db.synthetic.invalid",
-    "DB_PORT": "3306",
+    "DB_PORT": "5432",
     "DB_NAME": "jukebox_synthetic",
     "DB_USER": "jukebox_app",
     "DB_PASSWORD": "SYNTHETIC-DB-PASSWORD-9876",
@@ -97,7 +97,7 @@ def wired(monkeypatch):
             created_services.append(self)
 
     monkeypatch.setattr(discord.Client, "run", fake_run)
-    monkeypatch.setattr("pymysql.connect", lambda *args, **kwargs: database.connect())
+    monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: database.connect())
     monkeypatch.setattr(entry, "SubmissionRepository", lambda _factory, owner_id: SubmissionRepository(database.connect, owner_id))
     monkeypatch.setattr(entry, "OwnerReviewService", RecordingService)
     monkeypatch.setattr(entry, "_utc_now", clock)

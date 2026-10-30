@@ -41,7 +41,7 @@ APPROVED_OWNER_SUBCOMMANDS = frozenset({"list", "show", "approve", "reject", "co
 OWNER_GROUP_NAME = "owner"
 TOP_LEVEL_COMMAND_FILE = "bot/discord_app.py"
 OWNER_COMMAND_FILE = "bot/discord_owner_review.py"
-COMMAND_FACTORY_NAMES = frozenset({"command", "Command", "Group", "__init__"})
+COMMAND_FACTORY_NAMES = frozenset({"command", "Command", "Group", "__init__", "guild_command"})  # [v7]: guild_command wraps global guild-only commands.
 FORBIDDEN_MANUAL_NICKEL_TOKENS = ("adjust", "grant", "mint", "issue", "manual", "set_balance", "debit", "refund", "award")
 
 # [balance write pattern]: Matches an UPDATE or INSERT statement that names credit_balance as a written column.

@@ -61,7 +61,7 @@ CREATE TABLE exchange_incident_events (event_id INTEGER PRIMARY KEY AUTOINCREMEN
 
 
 class AdapterCursor:
-    """Forward one SQLite cursor, translating only the MySQL-specific syntax the production SQL uses."""
+    """Forward one SQLite cursor, translating only the PostgreSQL-specific syntax the production SQL uses."""
 
     def __init__(self, cursor) -> None:
         """@description: Wrap one real SQLite cursor.
@@ -91,6 +91,8 @@ class AdapterCursor:
         @return: None.
         """
         statement = sql.strip()
+        if not self._cursor.connection.in_transaction:
+            self._cursor.connection.execute("BEGIN")  # [implicit begin]: Mirrors psycopg, which opens a transaction at the first statement.
         if statement.upper().startswith("SET "):
             self._cursor.execute("SELECT 1 WHERE 0")  # [session setting]: SQLite has none; an empty result keeps fetch calls valid.
             return
@@ -142,10 +144,11 @@ class AdapterConnection:
         self._connection.execute("BEGIN")
 
     def commit(self) -> None:
-        """@description: Commit the explicit transaction.
+        """@description: Commit the open transaction; like psycopg, a commit with no open transaction does nothing.
         @return: None.
         """
-        self._connection.execute("COMMIT")
+        if self._connection.in_transaction:
+            self._connection.execute("COMMIT")
 
     def rollback(self) -> None:
         """@description: Roll back when a transaction is open.

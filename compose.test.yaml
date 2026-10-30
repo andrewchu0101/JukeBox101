@@ -1,0 +1,47 @@
+# LOCAL TEST ONLY. Disposable PostgreSQL 18 plus the development test runner, isolated from production by project,
+# network and volume names. Never point production settings at this file, and never use it on a production host.
+#   JB_LOCALTEST_PG_PASSWORD=<random> docker compose -f compose.test.yaml up -d postgres
+#   JB_LOCALTEST_PG_PASSWORD=<random> docker compose -f compose.test.yaml --profile tests run --rm tests
+#   docker compose -f compose.test.yaml down -v        # removes only this project's container, network and volume
+name: jukebox101-localtest
+
+services:
+  postgres:
+    image: postgres:18.6-bookworm
+    command: ["postgres", "-c", "cluster_name=jukebox101-disposable-test"]  # [safety marker]: The test harness refuses any other server.
+    environment:
+      POSTGRES_PASSWORD: ${JB_LOCALTEST_PG_PASSWORD:?set JB_LOCALTEST_PG_PASSWORD to a random test-only password}
+    volumes:
+      - localtest-pg:/var/lib/postgresql
+    networks:
+      - localtest
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  tests:
+    profiles: ["tests"]
+    build:
+      context: .
+      dockerfile: test.Dockerfile
+    image: jukebox101-test:v7-local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      JB_PG_TEST_HOST: postgres
+      JB_PG_TEST_ADMIN_USER: postgres
+      JB_PG_TEST_ADMIN_PASSWORD: ${JB_LOCALTEST_PG_PASSWORD:?set JB_LOCALTEST_PG_PASSWORD}
+    networks:
+      - localtest
+    command: ["-q", "-p", "no:cacheprovider", "-m", "postgres"]
+
+networks:
+  localtest: {}
+
+volumes:
+  localtest-pg:
+    labels:
+      com.jukebox101.disposable: "localtest"
