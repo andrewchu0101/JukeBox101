@@ -6,11 +6,16 @@
 .env.*
 !.env.example
 .local
+artifacts
+.agents
+.codex
+.aws
 **/__pycache__
 **/*.py[cod]
 .pytest_cache
 .pytest_tmp
 discord_bot_token.txt
 db_password.txt
+db_migrator_password.txt
 *.pem
 *.key

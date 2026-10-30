@@ -2,7 +2,7 @@
 
 對外顯示名稱：**JukeBox101 v1.0.0 (Beta)**。此名稱對應已驗證的 **v7** 交付包；打包檔名、映像 tag 與程式技術版本保持原樣。夥伴交接清單見 `docs/deploy/partner-handoff-v1.0.0-beta.md`。
 
-Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**，正式資料庫為 **PostgreSQL 18**。
+Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**，資料庫使用 **PostgreSQL**（原 v7 驗證 18.6；指定 Supabase 環境已補驗證 17.11）。
 
 > 狀態（2026-10-30）：v7 為開發分支 `feature/postgresql-multi-guild` 的成果，交付包封裝時來源尚未 commit；後續提交以 Git 紀錄為準。真實 Discord 與正式資料庫尚未驗收。
 > 程式已完成，並通過離線測試與 PostgreSQL 18.6 拋棄式資料庫的整合測試；這些結果不代表正式部署已驗收。
@@ -61,6 +61,8 @@ git status
 ### 唯一部署入口
 
 **`docs/deploy/v7-postgresql-deployment.md`**：涵蓋外部 PostgreSQL 準備、TLS、角色與秘密、migration、Compose、邀請連結、指令同步、健康檢查、備份與還原，以及人工驗收。
+
+指定 Supabase 專案已於 2026-10-30 建立專用 schema、角色及 25 張表，使用現有 `postgres` 資料庫；實際設定、驗證結果與尚待完成的外部連線步驟見 **`docs/deploy/supabase-environment-status.md`**。原 v7 壓縮包維持不變。
 
 | 主題 | 文件或指令 |
 |---|---|

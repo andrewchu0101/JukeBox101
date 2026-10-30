@@ -5,6 +5,7 @@ refusals, the single-runner lock and the empty-database guard of the control boo
 """
 
 import hashlib
+import os
 
 import psycopg
 import pytest
@@ -51,7 +52,8 @@ def test_fresh_database_gets_every_version_and_a_rerun_changes_nothing(pg_databa
     assert [(row["version"], row["sha256"]) for row in ledger] == [(item.version, item.sha256) for item in shipped]
     summary = _run(pg_database.migrator, apply=True)
     assert summary["pending_before"] == [] and summary["applied_now"] == []
-    assert summary["server_version"].startswith("18.")
+    expected_major = int(os.environ.get("JB_PG_TEST_EXPECTED_MAJOR", "18"))
+    assert summary["server_version"].startswith(f"{expected_major}.")
     control = admin_query(pg_database, "SELECT * FROM jb2_control")
     assert control == [{"singleton_id": 1, "schema_version": "2b2-b1", "accepted_sequence": 0, "revision": 0,
                         "snapshot_ready": True, "legacy_writers_quiesced": True, "settlement_enabled": False}]
