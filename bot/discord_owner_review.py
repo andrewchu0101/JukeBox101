@@ -42,6 +42,8 @@ INTERNAL_ERROR_TEXT = "系統內部錯誤，操作未完成。請先使用 /owne
 PREVIEW_RENDER_FAILED_TEXT = "預覽內容無法顯示，未建立確認按鈕，此次決定未送出。請回報開發者。"  # [render failure]: The issued token has no button, so it cannot be confirmed.
 STALE_PAGE_TEXT = "此分頁已過期，請重新執行 /owner list。"  # [stale cursor]: Plain message; never resolves to any case.
 CANCELLED_CONFIRM_TEXT = "此預覽已取消，請重新預覽。"  # [forbidden preview]: Confirm after a cancel never reaches the service.
+SETTLEMENT_UNCONFIRMED_TEXT = "決定已儲存，但自動結算尚未完成；系統會自動重試，不會重複發放。請稍後用 /owner show 核對。"  # [follow-up failure]: The decision itself committed.
+MAX_DURATION_OPTION_SECONDS = 86400  # [input bound]: Longer values are typing mistakes; the hard limit decides within this range.
 BOTH_OR_NEITHER_CITATION_TEXT = "evidence_id 與 source 必須二擇一：既有證據填 evidence_id，新證據填 source。"  # [citation rule]: Refused before any service call.
 
 REVIEW_LABELS = {  # [status text]: Owner-facing names for each review state.
@@ -61,6 +63,7 @@ ACTION_LABELS = {  # [action text]: Owner-facing name for every decision a previ
     ReviewAction.REJECT: "拒絕",
     ReviewAction.REEXAMINE: "重審",
     ReviewAction.CONFIRM_VERSION: "確認版本",
+    ReviewAction.DURATION: "補完整影片時長",
 }
 _LOGGER = logging.getLogger(__name__)
 
@@ -214,9 +217,22 @@ class ConfirmView(discord.ui.View):
         except Exception:
             self._state = ConfirmState.OPEN  # [refused before commit]: The service did not write, so the preview is still usable.
             raise
-        self._result_text = _confirmed_text(snapshot)
+        self._result_text = _confirmed_text(snapshot) + await self._settlement_note()
         self._state = ConfirmState.DONE
         return [_Reply(self._result_text)]
+
+
+    async def _settlement_note(self) -> str:
+        """@description: Report automatic settlement after the decision committed; its failure never rewrites the committed decision into a failed one.
+        @param self: Confirmation view.
+        @return: Reward sentence with a leading newline, or an empty string when settlement is off.
+        """
+        try:
+            note = await _call_service(self._service_provider, lambda service: service.settlement_note(self._actor_id, self._operation_id))
+        except Exception as error:  # [committed decision]: Only the follow-up failed; the periodic sweep retries it.
+            _LOGGER.error("Settlement after an Owner decision failed: %s", type(error).__name__)
+            return "\n" + SETTLEMENT_UNCONFIRMED_TEXT
+        return f"\n{note}" if note else ""
 
 
 @dataclass(frozen=True)
@@ -385,6 +401,23 @@ class OwnerReviewGroup(app_commands.Group):
         @return: None.
         """
         await self._serve(interaction, partial(self._show_reply, interaction.user.id, operation))
+
+    @app_commands.command(name="duration", description="預覽補完整影片時長（需確認）")
+    @app_commands.describe(operation="案件 ID", seconds="完整影片秒數", source="時長來源（可追溯，例如影片網址與核對方式）", reason="決定理由")
+    async def duration(self, interaction: discord.Interaction, operation: str,
+                       seconds: app_commands.Range[int, 0, MAX_DURATION_OPTION_SECONDS], source: str, reason: str) -> None:
+        """@description: Preview an Owner-stated duration for a case official metadata could not settle, pending confirmation.
+        @param self: Command handler.
+        @param interaction: Owner's slash-command interaction.
+        @param operation: Accepted operation identifier.
+        @param seconds: Full-video duration in seconds.
+        @param source: Traceable source of the observation.
+        @param reason: Audit explanation.
+        @return: None.
+        """
+        await self._serve(interaction, partial(self._preview_reply, interaction.user.id,
+                                               partial(_duration_preview, actor_id=interaction.user.id, operation_id=operation,
+                                                       seconds=seconds, source=source, reason=reason)))
 
     @app_commands.command(name="approve", description="預覽核准為歌曲（需確認）")
     @app_commands.describe(operation="案件 ID", citation="證據引用", reason="決定理由")
@@ -647,6 +680,20 @@ def _approve_preview(service: OwnerReviewService, *, actor_id: int, operation_id
     content = ContentJudgement(video=projection.review.video, judged_by=actor_id, reason=reason,
                                retrieved_at=retrieved_at, evidence_reference=citation, is_song=True)
     return service.preview(actor_id, operation_id, ReviewAction.APPROVE, reason, projection.review.version, citation, content)
+
+
+def _duration_preview(service: OwnerReviewService, *, actor_id: int, operation_id: str, seconds: int, source: str,
+                      reason: str) -> ReviewPreview:
+    """@description: Preview an Owner-stated duration against the current revision.
+    @param service: Review service running on a worker thread.
+    @param actor_id: Admitted Owner identifier.
+    @param operation_id: Operation to validate.
+    @param seconds: Full-video duration in seconds.
+    @param source: Traceable source of the observation.
+    @param reason: Audit explanation.
+    @return: Duration preview.
+    """
+    return service.preview_duration(actor_id, operation_id, seconds, source, reason)
 
 
 def _reject_preview(service: OwnerReviewService, *, actor_id: int, operation_id: str, citation: str,

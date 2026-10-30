@@ -41,7 +41,7 @@ async def check_policy() -> dict:
     await service.exchange(123)
     await service.daily(123, True)
     await service.claim(123, 'ci-disabled')
-    if service.formal_exchange_enabled or service.synthetic_exchange_enabled or repository._compensation_enabled:
+    if service.auto_pipeline is not None or service.formal_exchange_enabled or service.synthetic_exchange_enabled or repository._compensation_enabled:
         raise RuntimeError('business policy enabled')
     await client.close()
     return {'result': 'passed', 'claim_registered': False, 'formal_exchange': False,

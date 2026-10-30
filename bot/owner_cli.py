@@ -114,6 +114,17 @@ def settle_digest(operations: list, switch_enabled: bool, owner_id: int) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
 
 
+def switch_digest(enabled: bool, current: bool, owner_id: int) -> str:
+    """@description: Bind a settlement mode change to the target and the value it was previewed against.
+    @param enabled: Target switch value.
+    @param current: Switch value read at preview or write time.
+    @param owner_id: Acting Owner identifier.
+    @return: Lowercase hexadecimal SHA-256.
+    """
+    payload = {"kind": "settlement-switch", "enabled": enabled, "current": current, "owner": owner_id}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
+
+
 def build_duration(video_id: str, seconds: int, source: str, full_video_confirmed: bool, reliable_confirmed: bool) -> DurationEvidence:
     """@description: Turn the Owner's explicit statements into duration evidence; reliability and full-video status are never assumed.
     @param video_id: Video the stored operation names.
@@ -141,6 +152,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_approval_commands(commands)
     _add_version_commands(commands)
     _add_settlement_commands(commands)
+    _add_switch_commands(commands)
     return parser
 
 
@@ -209,6 +221,39 @@ def _add_settlement_commands(commands: Any) -> None:
     for name in ("preview", "write"):
         settle_actions.add_parser(name).add_argument("--operation", action="append", required=True)
     settle_actions.choices["write"].add_argument("--digest", required=True)
+
+
+def _add_switch_commands(commands: Any) -> None:
+    """@description: Register the explicit database switch used when entering or leaving automatic settlement mode.
+    @param commands: Top-level subparser collection that receives the settlement-switch command.
+    @return: None.
+    """
+    switch = commands.add_parser("settlement-switch", help="Set the database settlement switch for automatic settlement mode")
+    switch_actions = switch.add_subparsers(dest="action", required=True)
+    for name in ("preview", "write"):
+        switch_actions.add_parser(name).add_argument("--enabled", choices=("on", "off"), required=True)
+    switch_actions.choices["write"].add_argument("--digest", required=True)
+
+
+def _settlement_switch(args: argparse.Namespace, repository: Any, owner: int) -> int:
+    """@description: Preview or write the settlement switch, then read it back; no reward is settled by this command.
+    @param args: Parsed arguments of the settlement-switch subcommand.
+    @param repository: Repository the operator reads and writes through.
+    @param owner: Acting Owner identifier.
+    @return: Process exit code.
+    """
+    enabled = args.enabled == "on"
+    current = repository.settlement_enabled(owner)
+    digest = switch_digest(enabled, current, owner)
+    if args.action == "preview":
+        _report([f"settlement switch now: {current}", f"target: {enabled}", f"digest: {digest}", "writes: none (preview only)"])
+        return 0
+    if digest != args.digest:
+        raise OperatorRefused("CONFIRMATION_DIGEST_MISMATCH")
+    repository.set_settlement_enabled(owner, enabled)
+    stored = repository.settlement_enabled(owner)
+    _report([f"settlement switch now: {stored}"])
+    return 0 if stored is enabled else 1
 
 
 def _report(lines: list) -> None:
@@ -374,6 +419,25 @@ def _settle(args: argparse.Namespace, repository: Any, owner: int) -> int:
     return _settle_window(repository, owner, operations)
 
 
+def _dispatch(args: argparse.Namespace, repository: Any, owner: int, now: Callable[[], datetime]) -> int:
+    """@description: Route one parsed subcommand to its handler.
+    @param args: Parsed arguments.
+    @param repository: Repository the operator reads and writes through.
+    @param owner: Acting Owner identifier.
+    @param now: Timezone-aware clock.
+    @return: Process exit code.
+    """
+    if args.command == "duration":
+        return _duration(args, repository, owner)
+    if args.command == "approve":
+        return _approval(args, repository, owner, now)
+    if args.command == "version":
+        return _version(args, repository, owner, now)
+    if args.command == "settlement-switch":
+        return _settlement_switch(args, repository, owner)
+    return _settle(args, repository, owner)
+
+
 def main(argv: list | None = None, *, environ: Mapping[str, str] | None = None,
          repository_factory: Callable[[DatabaseSettings, int], Any] | None = None,
          clock: Callable[[], datetime] | None = None) -> int:
@@ -395,13 +459,7 @@ def main(argv: list | None = None, *, environ: Mapping[str, str] | None = None,
         settings = operator_settings(settings_source)  # [validated before any connection]: Refusals happen before the factory is called.
         factory = repository_factory or (lambda s, o: SubmissionRepository(partial(open_connection, s), o))
         repository = factory(settings, owner)
-        if args.command == "duration":
-            return _duration(args, repository, owner)
-        if args.command == "approve":
-            return _approval(args, repository, owner, now)
-        if args.command == "version":
-            return _version(args, repository, owner, now)
-        return _settle(args, repository, owner)
+        return _dispatch(args, repository, owner, now)
     except OperatorRefused as refusal:
         _report([f"refused: {refusal}"])
     except ConfigurationError:

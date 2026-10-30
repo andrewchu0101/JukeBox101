@@ -183,3 +183,7 @@ Harness 最終安全收斂（離線）：保持 submissions 僅 SELECT 與 18 �
 - Claude 前輪安裝／測試授權為已完成的限定工作，不延伸為離線持續執行權限。使用者恢復前不自動部署、建立資源、Apply、連線 DB／Discord、同步指令或發 DM。
 - 不讀 .env／秘密／.local，不解密、不增權、不清理重建資料；不提交／push，除非另行明確授權。不 force push、不 PR、不 merge、不碰 main；hook 失敗或遠端分歧停止，不繞過、不自行 rebase。
 - Claude prompt 提醒使用可用且適合的 tdd／start-dev-team skill；不可用或未使用如實說明，不主動要求建立團隊。先前 Auto mode classifier 無 verdict 曾造成工具中斷，後來已恢復；不要當成目前持續故障。
+
+## 自動審核與 Nickel 自動發放 MVP（2026-10-31）
+
+Implemented／Offline Tested／PostgreSQL 17.11 與 18.6 拋棄式資料庫 Tested；未部署、未啟用，真實 YouTube API、Session Pooler 與 Discord 待驗收，資料保存方案待 Owner 決定。見 [部署與啟用](docs/deploy/auto-review-nickel-enable.md)。
