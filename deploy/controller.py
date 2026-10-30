@@ -70,12 +70,12 @@ class Controller:
         with exclusive(self.directory):
             self.document = load(self.path)
             self._recover()
-            if any(item['status'] == 'rollback_failed' for item in self.document['requests'].values()):
-                return 'rejected'
             key = f"{request['run']}-{request['attempt']}"
             existing = self.document['requests'].get(key)
             if existing is not None:
                 return existing['status'] if existing['request'] == request else 'rejected'
+            if any(item['status'] == 'rollback_failed' for item in self.document['requests'].values()):
+                return 'rejected'
             if not self._admissible(request):
                 return 'rejected'
             transaction = {'request': request, 'previous': self.document['last_known_good']}

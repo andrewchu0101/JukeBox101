@@ -4,6 +4,38 @@
 
 起點與重新確認的 main：`c5eb7f9ac43a431b5a0a896511314557c9951b2d`。分支：`work/cloud-cicd-health-rollback`。沒有 AGENTS.md；已讀 CLAUDE.md、CODING_STANDARD.md、README、v7 PostgreSQL 手冊。Mac 的本機路徑不參與本輪工作。
 
+## 最新授權與執行結果
+
+使用者後續已明確表示「可以正式部署了」，授權執行既定的 JukeBox101 首次安裝／自動更新部署；不再把缺少正式部署同意列為阻礙。保留其他服務、正式資料庫、功能關閉與單 Gateway 的既定界線。下方「原交付」中的禁止發布／待授權描述是先前階段紀錄，以本節為最新狀態。
+
+**正式部署仍未執行。** 本次重新確認 main 未變，建立工作分支再次收到 GitHub **403 Resource not accessible by integration**；沒有遠端分支、draft PR 或 hosted CI。Hostinger 操作工具未提供，工作階段未配置 Hostinger MCP；此前已觀察的雲端瀏覽器登入限制仍適用，未重試登入。缺少 Docker CLI/socket/capabilities。這些是連線、權限與驗收缺口，不是再次要求使用者同意。
+
+新增的正式介面實作仍為 **未安裝、預設拒絕的審查版本**：
+
+| 元件 | 已實作與限制 |
+|---|---|
+| `deploy/receipt.py` | 委託固定 `/usr/bin/gh attestation verify` 做密碼學驗證，並核對固定 repo ID、目前 main、成功且已完成的 release workflow run/attempt、精確大小寫的 source ref/digest、workflow、subject digest、invocation 與 reviewed workflow/schema blob。真實 CLI／簽章／GHCR 尚未驗收；單元 fixture 絕不是可信 receipt |
+| `deploy/host_policy.py` | 固定 root-owned 設定與父路徑，拒絕 symlink／其他使用者可寫的控制檔；Compose/env 雜湊、最小 Docker 環境、secret uid/gid/type/mode/nlink/size metadata。測試沒有讀取秘密內容 |
+| `deploy/docker_backend.py` | 固定 local socket、project `jukebox101`、service `bot`、root Compose/env；只 pull immutable digest。先檢查舊版健康，再 stop 並確認退出才 up 唯一 Bot；檢查 image ID、restart count、combined health，設定 180 秒 startup＋120 秒觀察。真實容器、Compose render 與時間門檻均未驗收 |
+| `deploy/queue.py`、`host_ingress.py`、`host_worker.py` | 有界持久佇列、獨立 ingress/worker/controller 鎖、冪等、固定協定、部分 stdin 的總逾時、未完成 request 恢復；terminal receipt 不會被定期重跑。未安裝 forced command、sudo、systemd、帳號或 key |
+| 控制器修正 | 已中斷的 rollback 恢復為 `rollback_failed` 後，同鍵查詢回傳真實失敗；新請求仍拒絕，不會反覆回滾 |
+
+主機 worker 同時要求 `enabled`、`crypto_acceptance_verified`、`docker_acceptance_verified`、`baseline_supports_gateway_health` 全為明確 true；缺少設定或任一驗收不成立即拒絕。此次沒有在任何主機設為 true。原 `ssh_request.py` 仍拒絕所有部署，未將新入口接上正式主機。release/deploy workflow 仍只有停用草案，尚未建立可發布的流程。
+
+**舊 v7 回滾相容性缺口：** 已知舊版沒有新的 `bot.healthcheck`／Gateway 訊號，且僅有 local image tag。新 adapter 只接受 GHCR digest，不能假裝可直接把 v7 當自動回滾的 LKG。首次 bootstrap 必須保存原 v7 image ID／設定，另以已驗證且支援新健康契約的版本建立相容 LKG；實際 bootstrap／復原程序尚待審查與真實演練。labeled 容器計數也不能偵測未加標籤或其他主機上的 Gateway，仍需首次 inventory。
+
+release verifier 要求 release run 已完成成功，因此後續部署必須由分開的 dispatch／workflow_run 流程提交；放在同一個尚未結束的 release job 會被正確拒絕。主機安裝包須包含 `deploy` 與其共用的 `scripts.ci.runtime_smoke` 模組；目前尚未提供已驗收的安裝／systemd 包。
+
+| 最新檢查 | 狀態 |
+|---|---|
+| Gateway／SIGTERM／控制器／CI 政策與新主機介面 focused | **Passed：145 passed／0 failed／0 skipped**，`deployment-focused.xml`。來源／Docker 是 fake boundary，真實的是本地 pipe、鎖、落盤與 fake Gateway 子程序 |
+| 最新完整離線回歸 | **Failed：1879 passed／2 failed／0 skipped**，1881 selected，35 PostgreSQL deselected，34.215 秒；`offline-formal.xml`。仍是兩個既有 mounted-secret 測試拒絕雲端 UID 0；未降低測試門檻或放寬政策 |
+| Python compile／新增 source conventions／git diff whitespace | **Passed**；包含 deploy、CI helpers 與新增 host tests 的函式長度、深度、docstring 檢查 |
+| 真實 Docker／PG18.6 TLS／exact runtime／Compose／GHCR 簽章／hosted Actions | **Not Run**，不以單元／模擬測試代替 |
+| 正式 GHCR publish／VPS 安裝／Bot 切換／SSH/systemd/reboot 演練 | **Not Run / Manual Pending**，已授權但前置條件不具備；未操作正式服務 |
+
+後續需要可用的 Hostinger 管理連線、GitHub App 對此 repo 的實際寫入能力與必要管理設定，先完成真正 hosted CI／isolated Docker／簽章及 bootstrap 演練，才可把受限部署入口接到正式 Bot。不要把當前 review adapter 複製到主機後直接打開 gate。
+
 ## 實作與草案修正
 
 | 檔案／元件 | 本輪行為 |

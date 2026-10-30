@@ -155,7 +155,7 @@ def test_recovery_at_durable_phase_boundaries(lab, phase, expected):
     journal['highwater'] = 10
     persist(directory / 'journal.json', journal)
     result = Controller(directory, backend, authorize=lambda _: True).execute(request())
-    assert result == ('rejected' if expected == 'rollback_failed' else expected)
+    assert result == expected
     assert load(directory / 'journal.json')['requests']['10-1']['status'] == expected
     assert load(directory / 'journal.json')['last_known_good'] == OLD
 

@@ -4,6 +4,8 @@ name: jukebox101
 services:
   bot:
     image: ${JB_IMAGE:?reviewed immutable digest required}
+    labels:
+      com.jukebox101.gateway.application: ${DISCORD_EXPECTED_APPLICATION_ID:?root-managed application required}
     user: '10001:10001'
     restart: unless-stopped
     stop_grace_period: 30s

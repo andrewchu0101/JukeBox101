@@ -1,4 +1,4 @@
-> 2026-10-30 雲端 CI/CD 工作分支：已實作 PR/main CI、Gateway 程序健康訊號及隔離控制器演練；正式 CD 未啟用、未部署。結果與待辦以 [交接報告](docs/deploy/cloud-cicd-2026-10-30.md) 為準；本段不表示已合併或正式驗收。
+> 2026-10-30 雲端 CI/CD 工作分支：使用者已授權正式部署；新增預設拒絕的 receipt／固定 Docker adapter／持久佇列審查實作，focused 145 passed、完整離線 1879 passed／2 UID 0 failure。GitHub App 寫入 403、無 Hostinger 管理連線與 Docker，正式 CD 仍未啟用、未部署。最新證據與 bootstrap 缺口見 [交接報告](docs/deploy/cloud-cicd-2026-10-30.md)；不表示已合併或正式驗收。
 
 # JukeBox101 Roadmap
 
