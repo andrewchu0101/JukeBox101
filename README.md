@@ -38,6 +38,26 @@ Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord �
 
 ## 開發者說明（dev）
 
+### 固定工作目錄與同步方式
+
+目前這台開發電腦統一使用以下主專案目錄；Windows 與 WSL 的 `/mnt/c/...` 路徑是同一份檔案：
+
+| 操作環境 | 專案路徑 |
+|---|---|
+| Windows／編輯器 | `C:\Users\student\Project\jukebox101-pg-multiguild` |
+| WSL 終端機 | `/mnt/c/Users/student/Project/jukebox101-pg-multiguild` |
+
+```bash
+cd /mnt/c/Users/student/Project/jukebox101-pg-multiguild
+git status
+```
+
+- 舊 WSL 路徑 `/home/gaston/jukebox101-pg-multiguild` 已改為指向主專案的符號連結，兩個入口讀寫同一份檔案，不需要手動複製或 pull 來同步。
+- 原 WSL 目錄完整保留在 `/home/gaston/jukebox101-pg-multiguild-backup-*`；該目錄只作歷史備份，不在裡面開發或執行 Git 操作。
+- `.git` 指標維持原樣。不要刪除或重設它；先前兩份獨立目錄共用 Git metadata，不能靠相同 commit 判斷檔案已同步。
+- 交付包放在主專案的 `artifacts/jukebox101-v7/`，秘密檔另行保存，不納入 Git。檔案同步與 GitHub 推送是兩件事，新的修改仍須另行 commit／push。
+- 本節是此電腦的本機路徑安排；夥伴部署位置依部署手冊自行設定。
+
 ### 唯一部署入口
 
 **`docs/deploy/v7-postgresql-deployment.md`**：涵蓋外部 PostgreSQL 準備、TLS、角色與秘密、migration、Compose、邀請連結、指令同步、健康檢查、備份與還原，以及人工驗收。
