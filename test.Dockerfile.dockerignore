@@ -10,6 +10,7 @@
 **/*.py[cod]
 .pytest_cache
 .pytest_tmp
+ci-evidence
 discord_bot_token.txt
 db_password.txt
 *.pem

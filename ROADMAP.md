@@ -1,3 +1,5 @@
+> 2026-10-30 雲端 CI/CD 工作分支：已實作 PR/main CI、Gateway 程序健康訊號及隔離控制器演練；正式 CD 未啟用、未部署。結果與待辦以 [交接報告](docs/deploy/cloud-cicd-2026-10-30.md) 為準；本段不表示已合併或正式驗收。
+
 # JukeBox101 Roadmap
 
 Stage-B-only 目前狀態：**STAGE_B_ONLY_OFFLINE_READY_FOR_REVIEW**。已在既有 Harness 接入單次新 Session、受控四步 FK Window、原 23 項套件與逐 Commit／精確 Manifest 清理稽核；完整離線回歸 1228 Passed／0 Failed／55 Skipped，PowerShell Mock 119 斷言 Passed。未連線或執行真實 Stage B；舊 Session 仍 Blocked。下一次的三段授權與最短步驟見 [Stage-B-only／私人 Guild 實跑](docs/stage-b-only-run.md)。這取代下文「尚需離線補接 supervisor」的歷史待辦，不代表 Batch B 或 Beta 真實驗收已通過。

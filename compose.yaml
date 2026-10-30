@@ -36,9 +36,9 @@ services:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      # Read-only check with the Bot's own role: reachable over TLS, not a superuser, control row ready, settlement off.
-      test: ["CMD", "python", "-m", "bot.readiness"]
-      interval: 5m
+      # Main process identity, READY, fresh event-loop/Discord ACK evidence, plus read-only DB/control readiness.
+      test: ["CMD", "python", "-m", "bot.healthcheck"]
+      interval: 10s
       timeout: 30s
       retries: 3
       start_period: 1m
