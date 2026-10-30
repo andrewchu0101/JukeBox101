@@ -1,4 +1,4 @@
-> 2026-10-30 雲端 CI/CD 工作分支：使用者已授權正式部署；新增預設拒絕的 receipt／固定 Docker adapter／持久佇列審查實作，focused 145 passed、完整離線 1879 passed／2 UID 0 failure。GitHub App 寫入 403、無 Hostinger 管理連線與 Docker，正式 CD 仍未啟用、未部署。最新證據與 bootstrap 缺口見 [交接報告](docs/deploy/cloud-cicd-2026-10-30.md)；不表示已合併或正式驗收。
+> 最新狀態（2026-10-31，Asia/Taipei）：PR #2 已合併 main；hosted PR CI 1881 離線＋35 PostgreSQL 案例通過、零失敗／跳過，夥伴回報 main CI 也通過。Hostinger Bot 的首筆指定投稿已由 Codex 在 Supabase PG17.11 查到；使用者畫面確認補時長後歌曲核准、修訂 2，版本未確認、Nickel 0。CI 已完成，CD 未啟用，自動審核／發獎尚未完成。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。下一 MVP 已選「官方 API＋認可頻道，其餘待審」，見 [實作規格](docs/mvp-auto-review-nickel.md)。以下舊階段狀態與 [雲端交接報告](docs/deploy/cloud-cicd-2026-10-30.md) 的未推送／403 為歷史紀錄，不覆蓋本摘要；不將首筆驗證擴大成全部功能驗收。
 
 # JukeBox101 Roadmap
 
