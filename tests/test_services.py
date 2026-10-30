@@ -8,7 +8,8 @@ import threading
 from datetime import datetime
 from unittest.mock import MagicMock
 
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from bot.models import DeliveryHistoryEntry, HISTORY_LIMIT, MAX_REPLY_LENGTH, SubmissionResult
@@ -31,7 +32,7 @@ def test_share_never_fabricates_credit_or_verification(status, duplicate, expect
     repository.submit_pending.return_value = SubmissionResult(status, duplicate)
     reply = asyncio.run(MusicService(repository).share(123, "https://youtu.be/Abc_123-Xyz"))
     assert expected in reply
-    assert "不" in reply and "點數" in reply
+    assert "不" in reply and "Nickel" in reply
     repository.submit_pending.assert_called_once()
     assert repository.mock_calls[0].args[0] == 123
     assert len(repository.mock_calls) == 1
@@ -55,7 +56,7 @@ def test_exchange_gate_has_no_side_effects():
     """
     repository = MagicMock()
     reply = asyncio.run(MusicService(repository).exchange(123))
-    assert "未扣點" in reply
+    assert "未扣除 Nickel" in reply
     assert "資格驗證" in reply and "派送恢復" in reply
     assert repository.mock_calls == []
 
@@ -68,7 +69,7 @@ def test_balance_result(balance):
     """
     repository = MagicMock()
     repository.balance.return_value = balance
-    assert f"{balance} 點" in asyncio.run(MusicService(repository).balance(123))
+    assert f"目前可用 Nickel：{balance}。" in asyncio.run(MusicService(repository).balance(123))
     repository.balance.assert_called_once_with(123)
 
 
@@ -78,7 +79,7 @@ def test_database_failure_is_safe_and_not_zero(caplog):
     @return: None.
     """
     repository = MagicMock()
-    repository.balance.side_effect = pymysql.OperationalError(2003, "synthetic-password-secret")
+    repository.balance.side_effect = psycopg.OperationalError("synthetic-password-secret")
     with pytest.raises(ServiceUnavailable) as captured_error:
         asyncio.run(MusicService(repository).balance(123))
     assert captured_error.value.__context__ is None

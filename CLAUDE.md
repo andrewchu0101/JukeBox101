@@ -13,6 +13,15 @@
 - 保留本框架的通用規則。初始化後只更新「專案設定」及已核准的專案補充規則，不把整份文件改寫成一次性的工作紀錄。
 - 文件中的未設定欄位不代表可以任意選擇；依現有檔案、使用者需求與實際環境填寫，無法確認的項目標為「待確認」。
 
+### 1.1 Owner 決策的白話說明（已核准的協作偏好）
+
+- 當需要使用者做決定、裁決或授權時，先用白話說明「現在要決定什麼、為什麼需要決定，以及會影響使用者或管理者的哪些操作」，再列出技術細節。
+- PB、PD、Requirement ID 等代號須附中文名稱與意思，不只列代號、術語或檔案位置讓使用者自行理解。
+- 每個選項說明選擇後的實際效果、主要好處與代價，提供建議及理由；明確區分建議、已核准決策與尚未驗證的事實，不替使用者做決定。
+- 抽象概念可用貼近日常的比喻協助理解，但須保留重要限制，不用比喻取代精確說明。簡單問題不必硬加比喻。
+- 說明哪些事情現在必須決定、哪些可以延後，以及未決時究竟阻擋哪個階段；區分產品規則、技術方案與當次執行授權。
+- 多項決策可用簡短表格整理，最後提供可直接回覆的編號或文字範例；不得把建議選項當成使用者已核准，也不重問已裁決事項。
+
 ## 2. 初始化流程
 
 當使用者要求「初始化／init」時，依序執行以下步驟。既有專案只補齊必要內容，不覆寫現有成果或重建整個專案。
@@ -150,15 +159,15 @@
 | 目標使用者與核心流程 | Discord 伺服器成員；`/share` → 點數 → `/exchange` 或每日 DM 派送；`/history`、`/balance` 查詢（來源：§9 §2） |
 | MVP 範圍與不做事項 | 範圍見 §9 §2。目前私人 Beta 路徑：`/share`（僅 YouTube）、`/history`、`/balance` 已接線；`/exchange`、`/daily` 回覆未開放。Spotify 投稿目前被拒絕，與 §9 §2 不一致，見第 9.3 節 |
 | 驗收條件 | 各階段驗收見 ROADMAP.md 與 `docs/*-acceptance.md`；整體 MVP 驗收條件待確認 |
-| 目標平台與正式驗收環境 | Discord Bot；部署目標為低成本或免費 Linux 主機加 MySQL 8.0+（§9 §1）。正式驗收環境待確認；開發機為 Windows（D 槽）加 WSL2 |
+| 目標平台與正式驗收環境 | Discord Bot（同一 Application 服務多個 Guild，Gateway 單一實例）；部署目標為 Linux amd64 加外部 PostgreSQL 18（TLS verify-full）。正式驗收環境待確認；開發機為 Windows 加 WSL2 |
 | 語言、Runtime 與版本範圍 | Python 3.12（pyproject.toml：`>=3.12,<3.13`）。Windows `.venv` 為 3.12.10；WSL 預設 `python3` 為 3.14.4，不符合專案範圍 |
-| 框架與主要依賴 | discord.py（pyproject 範圍 `>=2.4,<3`，dependency-versions.txt 釘選 2.7.1）、PyMySQL 1.2.3、python-dotenv 1.2.4；測試用 pytest 8.4.2。不引入 ORM（§9 §1） |
-| 套件管理器與鎖定檔 | pip 加 pyproject.toml；版本清單為 dependency-versions.txt。未找到 pip lock 或 uv 鎖定檔；兩者的權威關係待確認 |
-| 原始碼、測試與資源目錄 | `bot/`（含 `bot/database/`、`schema.sql`、`migrations/002_submission_economy.sql`）、`tests/`、`scripts/`（PowerShell）、`docs/` |
+| 框架與主要依賴 | discord.py 2.7.1、psycopg 3.3.6（純 Python，搭配 Debian bookworm libpq5 15.x）、python-dotenv 1.2.4；測試用 pytest 8.4.2。不引入 ORM。v7 分支 `feature/postgresql-multi-guild`（2026-10-30，未 commit） |
+| 套件管理器與鎖定檔 | pip 加 pyproject.toml；執行期釘選 `requirements-docker.txt`，測試釘選 `requirements-test.txt`，開發版本清單 `dependency-versions.txt` |
+| 原始碼、測試與資源目錄 | `bot/`（含 `bot/database/postgres/0001-0003.sql` 版本化 schema）、`tests/`、`scripts/deploy`、`scripts/dev`、`docs/`；MySQL 歷史程式與測試在 `legacy/mysql/`（不收集、不進映像） |
 | 本機工作目錄與隔離環境 | `D:\Project\MusicBased\discordBot_JukeBox101`；隔離環境為專案內 `.venv`（Windows，2026-10-23 觀察） |
 | 開發工具實際位置與查核日期 | Python 3.12.10 位於 `C:\Users\Yume\AppData\Local\Programs\Python\Python312`（讀取自 `.venv/pyvenv.cfg`，2026-10-23）。WSL `/usr/bin/python3` 為 3.14.4（2026-10-23）。既有 C 槽工具依 CLAUDE.md §3.1 保留 |
 | 下載／快取設定與作用範圍 | pytest 暫存於專案內 `.pytest_tmp/`、`.pytest_cache/`（已 gitignore）；pip 快取位置待確認 |
-| 安裝、啟動、測試、檢查與建置命令 | 已確認：`python -m pytest`（pyproject.toml 已設定 testpaths 與 pythonpath；`mysql` 標記需手動開啟）。待確認：安裝命令（推定 `pip install -e ".[test]"`）、啟動命令（推定 `python -m bot`，入口為 `bot/__main__.py`）。2026-10-23 未執行任何命令 |
+| 安裝、啟動、測試、檢查與建置命令 | 測試：`docker build -f test.Dockerfile ...` 後 `-m "not postgres"`（離線）與 `compose.test.yaml`（PostgreSQL 18.6 拋棄式）；部署：`docker compose --profile migrate run --rm migrate plan/apply --apply`、`docker compose up -d --no-build`；就緒：`python -m bot.readiness`；邀請：`python -m bot.invite_link`；指令同步：`python -m bot.command_sync preview/apply`（需明確 opt-in）。見 `docs/deploy/v7-postgresql-deployment.md` |
 | 隱私、離線、資料與外部服務限制 | 不爬取平台、不下載音訊、不假設 API 配額或條款；YouTube 與 Spotify 元資料來源未核准（ROADMAP.md 標示 UNRESOLVED）；不加 AI 模型、付費服務或遙測（§9 §3、§10） |
 | 受保護目錄、公開契約與生命週期限制 | 點數帳本（`credit_ledger`、`users.credit_balance`）、`jb2_*` 結算表、Control 單例（`snapshot_ready`、`legacy_writers_quiesced`、`settlement_enabled`）、既有 schema 與 migration。未經授權不得做破壞性 DDL 或刪除資料（§9 §5；`docs/stage-b-only-run.md`）。指令契約見 `bot/development_command_contract.json` |
 | 格式、Lint、型別檢查與測試設定位置 | `pyproject.toml`（pytest）。未見 formatter、linter 或型別檢查設定檔。Rule One 與 docstring 的 AST 檢查由完整 pytest 涵蓋（檔案位置待確認） |
@@ -171,7 +180,7 @@
 2. **每日派送時區**：已更正。`bot/database/schema.sql` 第 4 行註明 `dispatch_date` 使用 Asia/Taipei 日曆日，符合 §9 §2 的時區定義要求；但派送邏輯尚未實作，實際執行時的日界判斷待確認。
 3. **點數一致性**：§9 §4 要求以帳本為準；`/balance` 讀取 `users.credit_balance` 快取，一致性依 `reward_settlement.py` 的 `LedgerBalanceMismatch` 檢查，本次未驗證。
 4. **Python 版本**：WSL 預設 `python3` 為 3.14.4，與 pyproject 的 3.12 範圍不符。
-5. **`.env` 憑證欄位**：`.env.example` 註解要求測試憑證不放入 `.env`（指 `TEST_DB_*`）。本機 `.env` 另含 `DB_TESTAPP_PASSWORD`、`DB_jukebox101_test_migrator_PASSWORD`、`DB_HARNESS_PASSWORD` 欄位名稱。查核結果：`bot/`、`tests/`、`scripts/` 與文件中無直接引用這三個名稱；應用程式只讀 `DB_USER`、`DB_HOST`、`DB_PASSWORD`、`DB_NAME`、`DB_PORT`。2026-10-23 嘗試移除這三個欄位時被權限限制阻擋，未執行；`.env` 維持原狀。是否移除仍待 Owner 決定，本次未讀取其值。
+5. **`.env` 憑證欄位**：`.env.example` 註解要求測試憑證不放入 `.env`（指 `TEST_DB_*`）。本機 `.env` 另含 `DB_TESTAPP_PASSWORD`、`DB_jukebox101_test_migrator_PASSWORD`、`DB_HARNESS_PASSWORD` 欄位名稱。查核結果：`bot/`、`tests/`、`scripts/` 與文件中無直接引用這三個名稱；應用程式只讀 `DB_USER`、`DB_HOST`、`DB_PASSWORD`、`DB_NAME`、`DB_PORT`。Owner 已決定保留（見 `docs/grilling-decisions.md` Q11），不列為 Beta 或 Recovery 的阻擋條件。本次未讀取其值。
 6. **Git remote**：`git remote -v` 無輸出，目前未設定遠端，待確認。
 7. **文件引用**：已於 README.md 結構列表更新為 `CLAUDE.md`。ROADMAP.md、README.md 批准紀錄與 `docs/` 中的歷史規格、驗收紀錄保留原檔名，理由見審計報告。
 

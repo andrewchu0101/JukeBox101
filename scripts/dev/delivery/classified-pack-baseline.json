@@ -1,0 +1,13 @@
+[
+  ["email_address", "licenses/", "*"],
+  ["email_address", "sources/debian/", "*"],
+  ["secret_like_assignment", "bot/config.py", 151],
+  ["secret_like_assignment", "bot/config.py", 180],
+  ["secret_like_assignment", "bot/database/connection.py", 39],
+  ["secret_like_assignment", "bot/http_interactions.py", 190],
+  ["secret_like_assignment", "bot/http_interactions.py", 202],
+  ["secret_like_assignment", "bot/http_interactions.py", 214],
+  ["secret_like_assignment", "bot/http_interactions.py", 226],
+  ["secret_like_assignment", "bot/http_interactions.py", 242],
+  ["secret_like_assignment", "bot/owner_cli.py", 287]
+]

@@ -1,0 +1,26 @@
+# Template only: replace every <PLACEHOLDER> on the target host. Do not install or enable until the deployment is approved.
+# One unit, one process: never run a second copy of this service beside it (see deploy/RUNBOOK.md).
+[Unit]
+Description=JukeBox101 HTTP Interactions endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<SERVICE_USER>
+Group=<SERVICE_GROUP>
+WorkingDirectory=<APP_DIR>
+# Secrets live only in this root-owned file (mode 0600); never in the repository or the unit file.
+EnvironmentFile=<ENV_FILE>
+ExecStart=<VENV_DIR>/bin/python -m bot.http_app
+Restart=on-failure
+RestartSec=5
+# Must exceed the bot's own shutdown bound (25 seconds) so tracked work can finish before SIGKILL.
+TimeoutStopSec=40
+KillMode=mixed
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

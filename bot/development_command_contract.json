@@ -1,10 +1,87 @@
 {
-  "source": "Local Phase 2A.2 registry baseline; not a fetched remote export",
+  "source": "Local reviewed baseline for the global guild-only command set (v7 multi-guild); not a fetched remote export",
   "commands": [
-    {"name": "balance", "type": 1, "options": []},
-    {"name": "daily", "type": 1, "options": [{"name": "mode", "type": 3, "required": true, "choices": [{"name": "on", "value": "on"}, {"name": "off", "value": "off"}]}]},
-    {"name": "exchange", "type": 1, "options": []},
-    {"name": "history", "type": 1, "options": []},
-    {"name": "share", "type": 1, "options": [{"name": "url", "type": 3, "required": true}]}
+    {
+      "name": "balance",
+      "type": 1,
+      "options": [],
+      "contexts": [
+        0
+      ],
+      "integration_types": [
+        0
+      ],
+      "default_member_permissions": null
+    },
+    {
+      "name": "daily",
+      "type": 1,
+      "options": [
+        {
+          "name": "mode",
+          "type": 3,
+          "required": true,
+          "choices": [
+            {
+              "name": "on",
+              "value": "on"
+            },
+            {
+              "name": "off",
+              "value": "off"
+            }
+          ]
+        }
+      ],
+      "contexts": [
+        0
+      ],
+      "integration_types": [
+        0
+      ],
+      "default_member_permissions": null
+    },
+    {
+      "name": "exchange",
+      "type": 1,
+      "options": [],
+      "contexts": [
+        0
+      ],
+      "integration_types": [
+        0
+      ],
+      "default_member_permissions": null
+    },
+    {
+      "name": "history",
+      "type": 1,
+      "options": [],
+      "contexts": [
+        0
+      ],
+      "integration_types": [
+        0
+      ],
+      "default_member_permissions": null
+    },
+    {
+      "name": "share",
+      "type": 1,
+      "options": [
+        {
+          "name": "url",
+          "type": 3,
+          "required": true
+        }
+      ],
+      "contexts": [
+        0
+      ],
+      "integration_types": [
+        0
+      ],
+      "default_member_permissions": null
+    }
   ]
 }

@@ -3,6 +3,7 @@
 Tests trap external boundaries and distinguish durable replay from an uncertain acknowledgement.
 """
 
+from tests.intake_fixture import seed_intake
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -10,7 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import discord
-import pymysql
+import psycopg
+from psycopg import errors as pg_errors
 import pytest
 
 from bot.database.submission_repository import SubmissionRepository
@@ -28,7 +30,7 @@ def beta_context(monkeypatch):
     @param monkeypatch: External boundary replacement facility.
     @return: Existing fake, injected submission repository, original reader and actual service.
     """
-    monkeypatch.setattr("pymysql.connect", MagicMock(side_effect=AssertionError("No real MySQL")))
+    monkeypatch.setattr("psycopg.connect", MagicMock(side_effect=AssertionError("No real MySQL")))
     database = FakeDatabase()  # [offline storage]: No driver connection is created.
     database.state["control"]["settlement_enabled"] = False
     submissions = SubmissionRepository(database.connect, 777)
@@ -137,7 +139,7 @@ def test_repeat_of_reviewed_video_preserves_evidence(beta_context):
     """
     database, submissions, reader, service = beta_context
     request = intake(1)
-    submissions.accept(request)
+    seed_intake(submissions, request)
     approve(submissions, request.operation_id)
     video_id = request.identity.video.video_id
     before = deepcopy(database.state["jb2_videos"][video_id])
@@ -176,8 +178,8 @@ def test_history_select_closes_on_success_and_failure(failed):
     cursor = connection.cursor.return_value.__enter__.return_value
     repository = SubmissionRepository(MagicMock(return_value=connection), 777)
     if failed:
-        cursor.execute.side_effect = pymysql.OperationalError(2013, "synthetic-secret")
-        with pytest.raises(pymysql.OperationalError):
+        cursor.execute.side_effect = psycopg.OperationalError("synthetic-secret")
+        with pytest.raises(psycopg.OperationalError):
             repository.history(123)
     else:
         repository.history(123)
@@ -207,14 +209,15 @@ def test_balance_reuses_reader_and_daily_does_not_write(beta_context):
     """
     database, submissions, reader, service = beta_context
     reader.balance.return_value = 7
-    assert "7 點" in asyncio.run(service.balance(123))
+    assert "目前可用 Nickel：7。" in asyncio.run(service.balance(123))
     reader.balance.assert_called_once_with(123)
     assert "未保存" in asyncio.run(service.daily(123, True))
     reader.set_daily.assert_not_called()
     assert not database.connections
 
 
-@pytest.mark.parametrize("missing", ["DISCORD_DEV_GUILD_ID", "DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"])
+# v7 multi-guild: DISCORD_DEV_GUILD_ID is no longer a production setting (see test_multi_guild_entry.py).
+@pytest.mark.parametrize("missing", ["DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"])
 def test_private_startup_missing_configuration_never_logs_in(database_settings, monkeypatch, missing):
     """@description: Keep production startup closed when the private target or Owner is unspecified.
     @param database_settings: Synthetic database configuration, never connected.
@@ -223,13 +226,13 @@ def test_private_startup_missing_configuration_never_logs_in(database_settings, 
     @return: None.
     """
     from bot import __main__ as entry
-    for name in ("DISCORD_DEV_GUILD_ID", "DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"):
+    for name in ("DISCORD_EXPECTED_APPLICATION_ID", "DISCORD_OWNER_USER_ID"):
         monkeypatch.setenv(name, "456")
     monkeypatch.setenv("DISCORD_BOT_TOKEN", "synthetic-token")
     monkeypatch.delenv(missing)
     login = MagicMock()
     monkeypatch.setattr(discord.Client, "run", login)
-    monkeypatch.setattr("pymysql.connect", MagicMock(side_effect=AssertionError("No network")))
+    monkeypatch.setattr("psycopg.connect", MagicMock(side_effect=AssertionError("No network")))
     with pytest.raises(SystemExit, match=missing):
         entry.main()
     login.assert_not_called()
@@ -242,7 +245,7 @@ def test_repository_history_excludes_other_users_and_tracks_review(beta_context)
     """
     database, submissions, reader, service = beta_context
     request = intake(1)
-    submissions.accept(request)
+    seed_intake(submissions, request)
     submissions.accept_pending(123, URL, "discord:456")
     submissions.accept_pending(999, URL, "discord:789")
     approve(submissions, request.operation_id)
@@ -256,7 +259,7 @@ def test_repository_history_excludes_other_users_and_tracks_review(beta_context)
 
 @pytest.mark.parametrize("command_name,options,expected", [
     ("share", [{"name": "url", "type": 3, "value": URL}], "已儲存"),
-    ("history", [], "沒有你的投稿"), ("balance", [], "5 點"),
+    ("history", [], "沒有你的投稿"), ("balance", [], "目前可用 Nickel：5。"),
 ])
 def test_private_sdk_dispatch_uses_real_service(beta_context, monkeypatch, command_name, options, expected):
     """@description: Route real registered slash callbacks into pending intake and scoped queries.
@@ -330,7 +333,7 @@ def test_database_failures_reply_privately_without_driver_details(beta_context, 
     database, submissions, reader, service = beta_context
     target = reader if operation == "balance" else submissions
     method = "accept_pending" if operation == "share" else operation
-    setattr(target, method, MagicMock(side_effect=pymysql.OperationalError(2003, "synthetic-secret")))
+    setattr(target, method, MagicMock(side_effect=psycopg.OperationalError("synthetic-secret")))
     interaction = _private_interaction(operation, [])
     client = JukeBoxClient(service)
     arguments = (URL,) if operation == "share" else ()

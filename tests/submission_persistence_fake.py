@@ -1,22 +1,24 @@
 """Simulate the new repository's SQL protocol with bounded Python transaction locks.
 
-This fake checks application write coordination and failure recovery, not MySQL isolation, collation or foreign-key semantics.
+This fake checks application write coordination and failure recovery, not PostgreSQL isolation, collation or foreign-key semantics.
 """
 
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
 from threading import RLock
 
+from bot.database.compensation_schema import SCHEMA_SPEC
+
 TABLES = ("users", "songs", "credit_ledger", "jb2_versions", "jb2_videos", "jb2_legacy", "jb2_events",
           "jb2_receipts", "jb2_claims", "jb2_settlements", "jb2_review_history", "jb2_evidence", "jb2_decisions",
-          "jb2_exclusions", "jb2_barriers", "jb2_exceptions", "jb2_reminders", "jb2_reminder_batches")
+          "jb2_exclusions", "jb2_barriers", "jb2_exceptions", "jb2_reminders", "jb2_reminder_batches", "recommendations")
 PRIMARY_KEYS = {"users": "discord_user_id", "songs": "platform_track_id", "credit_ledger": "ledger_id",
                 "jb2_versions": "version_id", "jb2_videos": "video_id", "jb2_legacy": "song_id",
                 "jb2_events": "operation_id", "jb2_receipts": "operation_id", "jb2_claims": "version_id",
                 "jb2_settlements": "operation_id", "jb2_evidence": "evidence_id", "jb2_decisions": "decision_id",
                 "jb2_exclusions": "evidence_reference", "jb2_barriers": "version_id", "jb2_exceptions": "exception_id",
-                "jb2_reminders": "video_id", "jb2_reminder_batches": "summary_date"}
+                "jb2_reminders": "video_id", "jb2_reminder_batches": "summary_date", "recommendations": "recommendation_id"}
 
 
 class FakeDatabase:
@@ -35,6 +37,10 @@ class FakeDatabase:
         self.commit_fault = None  # [failure injection]: 'before' or 'after' applying committed state.
         self.sql_fault = None  # [statement injection]: Prefix of the next statement to reject.
         self.statements = []  # [SQL audit]: Bound parameters remain inspectable synthetic values.
+        self.compensation_tables = set(SCHEMA_SPEC)  # [catalogue presence, test knob]: The reviewed three tables exist unless a test removes some.
+        self.compensation_hidden_columns = {}  # [schema knob, test only]: Table to columns the catalogue does not report.
+        self.compensation_probe_fault = False  # [probe knob, test only]: Makes the presence probe fail as a broken connection would.
+        self.grants = []  # [compensation grants, test knob]: Rows the grant queries read; empty by default.
         self.now = datetime(2026, 10, 15, 0, 0)  # [fake UTC clock]: No wall clock dependence.
 
     def connect(self) -> "FakeConnection":
@@ -137,6 +143,7 @@ class FakeCursor:
         self.rows = []  # [query result]: Explicit dictionaries matching DictCursor output.
         self.rowcount = 0  # [affected rows]: Checked by the production balance update.
         self.lastrowid = 0  # [generated identifier]: Never used as acceptance order.
+        self.description = None  # [column names]: Set only by the reviewed-schema probe that the compensation guard runs.
 
     def __enter__(self) -> "FakeCursor":
         """@description: Match the production connection's cursor lifetime protocol.
@@ -167,6 +174,8 @@ class FakeCursor:
         self.rows = []
         if statement.startswith("SET "):
             return
+        if _answer_schema_probe(self, statement, parameters):
+            return
         if statement.startswith("SELECT * FROM jb2_control"):
             self.connection.acquire()
             self.rows = [dict(self.connection.working["control"])]
@@ -176,9 +185,14 @@ class FakeCursor:
             return
         if statement.startswith("INSERT"):
             self.lastrowid = insert_row(self.connection, statement, parameters)
+            returning = re.search(r"RETURNING (\w+)$", statement)  # [generated key]: PostgreSQL returns it as a row, not lastrowid.
+            if returning:
+                self.rows = [{returning.group(1): self.lastrowid}]
             return
         if statement.startswith("UPDATE"):
-            update_rows(self.connection, statement, parameters)
+            count = update_rows(self.connection, statement, parameters)
+            if count is not None:
+                self.rowcount = count
             return
         raise AssertionError("Unimplemented fake SQL: " + statement)
 
@@ -195,6 +209,46 @@ class FakeCursor:
         @return: Current complete fake query result.
         """
         return self.rows
+
+
+def _answer_schema_probe(cursor: "FakeCursor", statement: str, parameters: tuple) -> bool:
+    """@description: Answer the compensation guard's catalogue probes from the reviewed specification, so a fake worker runs the real guard.
+    @param cursor: Fake cursor receiving the probe.
+    @param statement: Probe statement text.
+    @param parameters: Bound values; the table name for catalogue probes.
+    @return: True when the statement was a schema probe and has been answered.
+    """
+    if statement.startswith("SELECT * FROM exchange_") and statement.endswith("LIMIT 0"):
+        table = statement.split()[3]
+        hidden = cursor.connection.database.compensation_hidden_columns.get(table, set())
+        cursor.description = [(name,) for name in SCHEMA_SPEC[table]["columns"] if name not in hidden]
+        return True
+    if "information_schema.tables" in statement:
+        database = cursor.connection.database
+        if database.compensation_probe_fault:
+            raise RuntimeError("synthetic catalogue failure")
+        cursor.rows = [{"table_name": name} for name in parameters if name in database.compensation_tables]
+        return True
+    if "FROM pg_index" in statement:
+        cursor.rows = [{"index_name": "_".join(keys), "column_name": column} for keys in SCHEMA_SPEC[parameters[0]]["unique"] for column in keys]
+        return True
+    if "FROM pg_constraint" in statement:
+        cursor.rows = [{"name": name} for name in SCHEMA_SPEC[parameters[0]]["checks"]]
+        return True
+    return False
+
+
+def _claim_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[dict]:
+    """@description: Answer claim lookups by operation or by canonical version, since jb2_claims is keyed by version.
+    @param connection: Fake transaction owner.
+    @param sql: Production SELECT statement over the claims table.
+    @param parameters: Bound identifiers.
+    @return: Matching claim rows.
+    """
+    claims = connection.working["jb2_claims"].values()
+    if sql.startswith("SELECT operation_id FROM jb2_claims WHERE operation_id"):
+        return [row for row in claims if row["operation_id"] == parameters[0]]
+    return [row for row in claims if connection.working["jb2_versions"][row["version_id"]]["canonical_id"] in parameters]
 
 
 def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[dict]:
@@ -216,15 +270,144 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
         return _award_audit_rows(connection)
     if "FROM songs s LEFT JOIN jb2_legacy" in sql:
         return _legacy_rows(connection)
-    if "FROM jb2_claims c JOIN jb2_versions" in sql:
-        return [row for row in connection.working["jb2_claims"].values()
-                if connection.working["jb2_versions"][row["version_id"]]["canonical_id"] in parameters]
-    if "UTC_TIMESTAMP" in sql:
+    if "FROM jb2_claims c JOIN jb2_events e" in sql:
+        return _settled_claim_rows(connection)
+    if sql.startswith("SELECT recommendation_id FROM recommendations WHERE status='failed' AND released_at IS NULL"):
+        return [{"recommendation_id": row["recommendation_id"]} for row in sorted(connection.working["recommendations"].values(),
+                key=lambda row: row["recommendation_id"]) if row["status"] == "failed" and row["released_at"] is None][:parameters[0]]
+    if sql.startswith("SELECT ledger_id,discord_user_id,credit_delta,reason FROM credit_ledger WHERE recommendation_id=%s"):
+        return [row for row in connection.working["credit_ledger"].values() if row.get("recommendation_id") == parameters[0]]
+    if "FROM recommendations r JOIN songs s" in sql:
+        return _claim_reservation_rows(connection, parameters[0])
+    if sql.startswith("SELECT resolution_status,youtube_url FROM songs"):  # [publish state]: Read back by the approval link.
+        track, platform = parameters
+        return [{"resolution_status": row.get("resolution_status", "pending"), "youtube_url": row.get("youtube_url")} for row in connection.working["songs"].values()
+                if row["platform_track_id"] == track and row.get("platform", "youtube") == platform]
+    if sql.startswith("SELECT 1 FROM exchange_"):  # [claim guard]: The offline fake has no incident rows, so the guard sees none.
+        return []
+    if "exchange_redelivery_grants" in sql:  # [compensation grants]: Answered from the grants a test seeded for this requester.
+        grants = [row for row in connection.database.grants if row["discord_user_id"] == parameters[0]]
+        if "COUNT(*)" in sql:
+            return [{"total": sum(1 for row in grants if row["closed_at"] is None)}]
+        return [{"song_id": row["song_id"]} for row in grants if row["holds_song"] == 1]
+    if "AND status='reserved' AND claim_token IS NULL" in sql and "discord_user_id=%s" in sql:
+        threshold = parameters[1]  # [stranded check]: Same predicate as the production block, counted for one requester.
+        return [{"total": sum(1 for row in connection.working["recommendations"].values()
+                              if row["discord_user_id"] == parameters[0] and _unclaimed_before(row, threshold))}]
+    if sql.startswith("SELECT recommendation_id,discord_user_id,song_id,created_at FROM recommendations WHERE status='reserved'"):
+        threshold, limit = parameters  # [owner list]: Oldest stranded rows first, bounded like the production query.
+        rows = sorted((row for row in connection.working["recommendations"].values() if _unclaimed_before(row, threshold)),
+                      key=lambda row: row["recommendation_id"])
+        return [{key: row[key] for key in ("recommendation_id", "discord_user_id", "song_id", "created_at")} for row in rows[:limit]]
+    if "FROM recommendations WHERE discord_user_id=%s" in sql:
+        return [row for row in connection.working["recommendations"].values() if row["discord_user_id"] == parameters[0]]
+    if "FROM credit_ledger l JOIN recommendations" in sql:
+        return _ledger_reservation_rows(connection, parameters[0])
+    if "FROM jb2_claims" in sql:
+        return _claim_rows(connection, sql, parameters)
+    if "statement_timestamp()" in sql:  # [database clock]: The fake answers with its fixed synthetic UTC time.
         return [{"now_utc": connection.database.now, "summary_date": connection.database.now.date()}]
     if "COALESCE(SUM" in sql:
         return [{"total": sum(row["credit_delta"] for row in connection.working["credit_ledger"].values()
                               if row["discord_user_id"] == parameters[0])}]
+    if "FROM jb2_review_history WHERE video_id=%s ORDER BY revision" in sql:
+        return _video_rows(connection.working["jb2_review_history"], parameters[0], "revision")
+    if "FROM jb2_evidence WHERE video_id=%s ORDER BY evidence_id" in sql:
+        return _video_rows(connection.working["jb2_evidence"], parameters[0], "evidence_id")
     return _simple_rows(connection, sql, parameters)
+
+
+def _claim_reservation_rows(connection: FakeConnection, recommendation_id: int) -> list[dict]:
+    """@description: Pair one reservation with its song's delivery link, as the claim join does.
+    @param connection: Fake transaction owner.
+    @param recommendation_id: Reservation identifier bound by the production query.
+    @return: Matching reservation row with its link, or no row.
+    """
+    reservation = connection.working["recommendations"].get(recommendation_id)
+    if reservation is None:
+        return []
+    song = next(row for row in connection.working["songs"].values() if row["song_id"] == reservation["song_id"])
+    return [{"status": reservation["status"], "claim_token": reservation["claim_token"], "discord_message_id": reservation["discord_message_id"],
+             "discord_user_id": reservation["discord_user_id"], "youtube_url": song["youtube_url"]}]
+
+
+def _unclaimed_before(row: dict, threshold) -> bool:
+    """@description: Apply the production stranded predicate to one fake reservation row.
+    @param row: Fake reservation row.
+    @param threshold: Creation cutoff, strictly earlier than which a row is stranded.
+    @return: True when the row is reserved, never claimed, not released and created before the cutoff.
+    """
+    return row["status"] == "reserved" and row["claim_token"] is None and row["released_at"] is None and row["created_at"] < threshold
+
+
+def _update_recommendations(state: dict, sql: str, parameters: tuple) -> int:
+    """@description: Apply the reviewed delivery and release transitions, each guarded by its expected prior state and token.
+    @param state: Working transaction state.
+    @param sql: Production UPDATE statement over the recommendations table.
+    @param parameters: Bound values of that statement.
+    @return: Number of rows changed, as the driver would report.
+    """
+    rows = state["recommendations"]
+    if sql.startswith("UPDATE recommendations SET status='sending',claim_token=%s"):
+        row = rows.get(parameters[2])
+        if row is None or row["status"] != "reserved":
+            return 0
+        row.update(status="sending", claim_token=parameters[0], claimed_at=parameters[1])
+        return 1
+    if sql.startswith("UPDATE recommendations SET status=%s,discord_message_id=%s"):
+        row = rows.get(parameters[3])
+        replaceable = ("sending", "uncertain") if "status IN ('sending','uncertain')" in sql else ("sending",)  # [mirror of record_result]: Only not-sent may replace uncertain.
+        if row is None or row["status"] not in replaceable or row["claim_token"] != parameters[4]:
+            return 0
+        row.update(status=parameters[0], discord_message_id=parameters[1], delivered_at=parameters[2])
+        return 1
+    if sql.startswith("UPDATE recommendations SET released_at=%s"):
+        row = rows.get(parameters[1])
+        if row is None or row["status"] != "failed" or row["released_at"] is not None:
+            return 0
+        row["released_at"] = parameters[0]
+        return 1
+    changed = [row for row in rows.values() if row["status"] == "sending" and row["claimed_at"] < parameters[0]]  # [lease]: Only expired claims.
+    for row in changed:
+        row["status"] = "uncertain"
+    return len(changed)
+
+
+def _settled_claim_rows(connection: FakeConnection) -> list[dict]:
+    """@description: Pair each claimed version with the video of the event that earned it, as the exchange join does.
+    @param connection: Fake transaction owner.
+    @return: One row per claim with its version and video identifiers.
+    """
+    events = connection.working["jb2_events"]
+    return [{"version_id": claim["version_id"], "video_id": events[claim["operation_id"]]["video_id"]}
+            for claim in connection.working["jb2_claims"].values()]
+
+
+def _ledger_reservation_rows(connection: FakeConnection, idempotency_key: str) -> list[dict]:
+    """@description: Return the reservation and verified link for one exchange ledger key, as the replay join does.
+    @param connection: Fake transaction owner.
+    @param idempotency_key: Deterministic exchange key bound by the production query.
+    @return: Matching reservation rows with their delivery link.
+    """
+    rows = []
+    for ledger in connection.working["credit_ledger"].values():
+        if ledger["idempotency_key"] != idempotency_key or ledger["recommendation_id"] is None:
+            continue
+        reservation = connection.working["recommendations"][ledger["recommendation_id"]]
+        song = next(row for row in connection.working["songs"].values() if row["song_id"] == reservation["song_id"])
+        rows.append({"recommendation_id": reservation["recommendation_id"], "youtube_url": song["youtube_url"]})
+    return rows
+
+
+def _video_rows(table: dict, video_id: str, order_key: str) -> list[dict]:
+    """@description: Return one video's append-only audit rows in their stable database order.
+    @param table: Committed or working fake audit table.
+    @param video_id: Bound video identifier filter.
+    @param order_key: Column that orders revisions or evidence rows.
+    @return: Matching rows sorted by the requested key.
+    """
+    rows = [row for row in table.values() if row["video_id"] == video_id]
+    return sorted(rows, key=lambda row: row[order_key])
 
 
 def _award_audit_rows(connection: FakeConnection) -> list[dict]:
@@ -336,12 +519,12 @@ def insert_row(connection: FakeConnection, sql: str, parameters: tuple) -> int:
         return 0
     key = (row["video_id"], row["revision"]) if table == "jb2_review_history" else row[PRIMARY_KEYS[table]]
     if key in connection.working[table]:
-        if "ON DUPLICATE KEY" in sql:
+        if "ON CONFLICT" in sql:
             return row.get("ledger_id", 0)
         raise ValueError("synthetic duplicate primary key")
     _check_uniqueness(connection, table, row)
     connection.working[table][key] = row
-    return row.get("ledger_id", 0)
+    return row.get("ledger_id", row.get("recommendation_id", 0))
 
 
 def _insert_defaults(connection: FakeConnection, table: str, row: dict, parameters: tuple) -> None:
@@ -352,10 +535,16 @@ def _insert_defaults(connection: FakeConnection, table: str, row: dict, paramete
     @param parameters: Bound insert values.
     @return: None.
     """
-    if table in ("credit_ledger", "jb2_evidence", "jb2_exceptions"):
+    if table in ("credit_ledger", "jb2_evidence", "jb2_exceptions", "recommendations"):
         row[PRIMARY_KEYS[table]] = len(connection.working[table]) + 1
+    if table == "recommendations":
+        row.update(discord_message_id=None, delivered_at=None, claim_token=None, claimed_at=None, released_at=None,
+                   created_at=datetime.now(timezone.utc).replace(tzinfo=None))  # [creation time]: Real naive UTC, as the reservation insert would stamp it.
     if table == "songs":
         row["song_id"] = len(connection.working[table]) + 1
+        row.setdefault("resolution_status", "pending")  # [reviewed schema default]: Intake never sets a verified link.
+        row.setdefault("youtube_url", None)
+        row.setdefault("verification_provenance", None)
     if table == "users":
         row["credit_balance"] = 0
     if table == "jb2_legacy":
@@ -376,7 +565,7 @@ def _check_uniqueness(connection: FakeConnection, table: str, row: dict) -> None
     """
     keys = {"jb2_events": ("accepted_sequence",), "jb2_claims": ("operation_id", "ledger_id"),
             "credit_ledger": ("idempotency_key", "awarded_song_id")}.get(table, ())  # [unique guards]: InnoDB remains untested.
-    if any(existing[key] == row[key] for existing in connection.working[table].values() for key in keys):
+    if any(row.get(key) is not None and existing.get(key) == row[key] for existing in connection.working[table].values() for key in keys):
         raise ValueError("synthetic duplicate unique key")
 
 
@@ -388,13 +577,23 @@ def update_rows(connection: FakeConnection, sql: str, parameters: tuple) -> None
     @return: None.
     """
     state = connection.working  # [isolated transaction state]: Committed only by FakeConnection.commit.
+    if sql.startswith("UPDATE recommendations"):
+        return _update_recommendations(state, sql, parameters)
+    if sql.startswith("UPDATE songs"):
+        return _update_song(state, sql, parameters)
     if sql.startswith("UPDATE jb2_control"):
+        if "settlement_enabled" in sql:  # [settlement switch]: Written alone, without a revision bump, as the production statement does.
+            state["control"]["settlement_enabled"] = bool(parameters[0])
+            return
         state["control"]["revision"] += 1
         if "accepted_sequence" in sql:
             state["control"]["accepted_sequence"] = parameters[0]
         return
     if sql.startswith("UPDATE users SET credit_balance"):
-        state["users"][parameters[0]]["credit_balance"] += 1
+        if "credit_balance+%s" in sql:
+            state["users"][parameters[1]]["credit_balance"] += parameters[0]  # [refund credit]: Amount is the bound original debit size.
+        else:
+            state["users"][parameters[0]]["credit_balance"] += -1 if "credit_balance-1" in sql else 1
         return
     if sql.startswith("UPDATE jb2_videos"):
         state["jb2_videos"][parameters[-1]].update(dict(zip(("review_json", "review_revision", "review_status", "identity_json"), parameters)))
@@ -403,6 +602,22 @@ def update_rows(connection: FakeConnection, sql: str, parameters: tuple) -> None
         _update_events(state, sql, parameters)
         return
     _maintenance_update(state, sql, parameters)
+
+
+def _update_song(state: dict, sql: str, parameters: tuple) -> int:
+    """@description: Apply the approval-link update to one song row, honouring its pending-and-unlinked condition as the production statement does.
+    @param state: Isolated transaction dictionaries.
+    @param sql: Production song update statement.
+    @param parameters: Status, link, provenance, track identifier and platform, in statement order.
+    @return: Number of rows matched, as the database reports it.
+    """
+    status, link, provenance, track, platform = parameters
+    matches = [row for row in state["songs"].values() if row["platform_track_id"] == track and row.get("platform", "youtube") == platform]
+    if "AND resolution_status='pending' AND youtube_url IS NULL" in sql:
+        matches = [row for row in matches if row.get("resolution_status", "pending") == "pending" and row.get("youtube_url") is None]  # [schema defaults]: Seeded rows omit unset columns.
+    for row in matches:
+        row.update(resolution_status=status, youtube_url=link, verification_provenance=provenance)
+    return len(matches)
 
 
 def _update_events(state: dict, sql: str, parameters: tuple) -> None:

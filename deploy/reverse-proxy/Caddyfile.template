@@ -1,0 +1,5 @@
+# Template only: replace <DOMAIN> with the public hostname that Discord's Interactions Endpoint URL will use.
+# Caddy obtains and renews the TLS certificate; the application listens on loopback only.
+<DOMAIN> {
+	reverse_proxy 127.0.0.1:8080
+}

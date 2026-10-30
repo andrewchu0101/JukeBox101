@@ -1,6 +1,6 @@
 # Batch B 真實 MySQL Test Harness（已實作，真實驗收待執行）
 
-> 最新狀態（2026-10-16）：**RECOVERY_SUCCESS**；四條 FK DDL／DML Commit 全部 ACKNOWLEDGED，15 PK 零殘留、非 Manifest 異動 0、Control 0／0 與三開關 OFF，原 FK／Schema／Migration 已恢復驗證，Exit Code 0。依使用者已驗收結果記錄，詳見 [成功紀錄](recovery-success-checkpoint.md)。Session 仍 Blocked；Batch B 真實 MySQL 測試尚未完成。下文保留原事故與授權方案歷史，所有舊「最新／Pending／尚未成功／下一次授權」描述均不覆蓋本段，也不是重新執行許可。本輪未重跑或連線。
+> 最新狀態（2026-10-16）：**RECOVERY_SUCCESS**；四條 FK DDL／DML Commit 全部 ACKNOWLEDGED，15 PK 零殘留、非 Manifest 異動 0、Control 0／0 與三開關 OFF，原 FK／Schema／Migration 已恢復驗證，Exit Code 0。依使用者已驗收結果記錄，詳見 [成功紀錄](recovery-success-checkpoint.md)。Session 仍 Blocked；Batch B 真實 MySQL 測試尚未完成。下文保留原事故與授權方案歷史，所有舊「最新／Pending／尚未成功／下一次授權」描述均不覆蓋本段，也不是重新執行許可。本輪未重跑或連線。（使用者回報的歷史結果，未獨立複驗；事故 journal 已遺失，見 spec §15.9.9）
 
 ## 歷史紀錄（不代表當前執行授權）
 
@@ -101,7 +101,7 @@ Stage A 結束關閉 DBA 連線並移除其程式參照，再進 Stage B；DBA �
 - `tests/batch_b_mysql_cases.py`：合成的可信音樂輸入、Application Repository factory 與新連線帳務查詢。
 - `tests/batch_b_mysql_faults.py`：真正 PyMySQL 物件的客戶端 fault adapter，不提供任何虛構 SQL 結果。
 - `tests/batch_b_mysql_scenarios.py`：僅在明確 opt-in 的 spawned worker 執行真實交易。
-- `tests/test_batch_b_mysql.py`：23 個預設跳過的真實 MySQL 案例。
+- `tests/test_batch_b_mysql.py`：24 個預設跳過的真實 MySQL 案例（含 2026-10-23 新增的 `reexam_settlement`，只寫入、未執行；循序整合案例，非併發）。
 - `tests/test_batch_b_harness_safety.py`：133 個明確獨立的離線安全案例，使用合成 inventories／connection spies，不宣稱真實 MySQL 通過。
 - [一次性 DBA SQL](batch-b-test-harness-grants.sql)：只建立新 harness 帳號及其精確權限，不更動既有帳號或 Registry。
 

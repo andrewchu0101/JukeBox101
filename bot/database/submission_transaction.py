@@ -1,6 +1,6 @@
 """Own serialized submission transactions through an injected connection factory.
 
-Every writer locks the same InnoDB control row until commit; ambiguous commits require replay on a fresh connection.
+Every writer locks the same PostgreSQL control row until commit; ambiguous commits require replay on a fresh connection.
 """
 
 from collections.abc import Callable, Iterator
@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from typing import Any
 import sys
 
-LOCK_WAIT_SECONDS = 2  # [bounded lock wait]: Do not let blocked workers wait indefinitely at the intake gate.
+LOCK_WAIT = "2s"  # [bounded lock wait]: Transaction-local lock_timeout so blocked workers never wait indefinitely at the intake gate.
 
 
 class CommitOutcomeUnknown(RuntimeError):
@@ -49,11 +49,9 @@ def _begin_locked(connection: Any, cursor: Any) -> None:
     @param cursor: Cursor on that connection.
     @return: None.
     """
-    cursor.execute("SET SESSION time_zone = '+00:00'")
-    cursor.execute("SET SESSION sql_mode = 'STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'")
-    cursor.execute("SET SESSION innodb_lock_wait_timeout = %s", (LOCK_WAIT_SECONDS,))
+    # psycopg opens the transaction implicitly with the first statement, so the isolation level is set first.
     cursor.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-    connection.begin()
+    cursor.execute(f"SET LOCAL lock_timeout = '{LOCK_WAIT}'")  # [constant only]: LOCK_WAIT is a module constant, never input.
     cursor.execute("SELECT * FROM jb2_control WHERE singleton_id = 1 FOR UPDATE")
 
 

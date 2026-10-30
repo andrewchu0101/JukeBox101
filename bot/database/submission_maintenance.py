@@ -57,7 +57,7 @@ def _merge_roots(cursor: Any, control: dict, actor_id: int, reason: str, source:
     cursor.execute("UPDATE jb2_versions SET canonical_id=%s WHERE canonical_id=%s", (target, source))
     cursor.execute("SELECT version_id FROM jb2_barriers WHERE version_id IN (%s,%s)", (source, target))
     if claims or cursor.fetchall():
-        cursor.execute("INSERT INTO jb2_barriers (version_id,reason) VALUES (%s,%s) ON DUPLICATE KEY UPDATE version_id=version_id", (target, reason))
+        cursor.execute("INSERT INTO jb2_barriers (version_id,reason) VALUES (%s,%s) ON CONFLICT (version_id) DO NOTHING", (target, reason))
     audit_reward_history(cursor, actor_id, reason)
     _refresh(cursor, control)
 
@@ -102,7 +102,7 @@ def pending_summary(cursor: Any, owner_id: int) -> tuple[str, ...]:
     @param owner_id: Configured authenticated Owner target retained in the summary audit.
     @return: Stable operation IDs for the day's original summary, or an empty tuple when none are due.
     """
-    cursor.execute("SELECT UTC_TIMESTAMP(6) AS now_utc, UTC_DATE() AS summary_date")
+    cursor.execute("SELECT statement_timestamp() AS now_utc, (statement_timestamp() AT TIME ZONE 'UTC')::date AS summary_date")
     clock = cursor.fetchone()  # [database clock]: Never use a caller timestamp to advance or expire priority.
     cursor.execute("SELECT operation_ids,owner_discord_user_id FROM jb2_reminder_batches WHERE summary_date=%s", (clock["summary_date"],))
     existing = cursor.fetchone()  # [daily idempotency]: A repeated poll reuses the original summary.
@@ -132,6 +132,6 @@ def _reserve_summary(cursor: Any, clock: dict, operations: tuple[str, ...], owne
     cursor.execute("INSERT INTO jb2_reminder_batches (summary_date,operation_ids,owner_discord_user_id) VALUES (%s,%s,%s)",
                    (clock["summary_date"], encode_contract(operations), owner_id))
     for operation_id in operations:
-        cursor.execute("UPDATE jb2_reminders r JOIN jb2_events e ON e.video_id=r.video_id "
-                       "SET r.last_summary_date=%s, r.next_due_at=TIMESTAMP(%s) + INTERVAL 1 DAY WHERE e.operation_id=%s",
+        cursor.execute("UPDATE jb2_reminders r SET last_summary_date=%s, next_due_at=%s::date + INTERVAL '1 day' "
+                       "FROM jb2_events e WHERE e.video_id=r.video_id AND e.operation_id=%s",
                        (clock["summary_date"], clock["summary_date"], operation_id))

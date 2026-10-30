@@ -1,0 +1,8 @@
+# Allowlist: exclude everything, then re-include only what the runtime image needs.
+*
+!bot/
+!requirements-docker.txt
+# Never ship caches, secrets, local evidence, repository history or virtual environments.
+**/__pycache__
+**/*.py[cod]
+bot/database/**/*.pyc

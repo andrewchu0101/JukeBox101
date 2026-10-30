@@ -31,6 +31,7 @@ class RewardDecisionReason(Enum):
 
     IDENTITY_UNRESOLVED = "identity_unresolved"
     REVIEW_INCOMPLETE = "review_incomplete"
+    REEXAMINATION_PENDING = "reexamination_pending"
     REVIEW_REJECTED = "review_rejected"
     EARLIER_SUBMISSION = "earlier_submission"
     HISTORICAL_VERSION = "historical_version"
@@ -204,7 +205,9 @@ def _qualification_decision(candidate: RewardCandidate, ordered: tuple[RewardCan
     if any(item.awarded and item.identity.version == candidate.identity.version for item in ordered):
         return _decision(candidate, RewardCandidateStatus.INELIGIBLE, RewardDecisionReason.VERSION_ALREADY_AWARDED)
     if candidate.review.status is not ReviewStatus.APPROVED:
-        return _decision(candidate, RewardCandidateStatus.WAITING_VALIDATION, RewardDecisionReason.REVIEW_INCOMPLETE)
+        # [reexamination reason]: A reopened review waits for its ordering event, not for ordinary review.
+        reason = RewardDecisionReason.REEXAMINATION_PENDING if candidate.review.reexamination_pending else RewardDecisionReason.REVIEW_INCOMPLETE
+        return _decision(candidate, RewardCandidateStatus.WAITING_VALIDATION, reason)
     return None
 
 
@@ -220,12 +223,14 @@ def _excluded(candidate: RewardCandidate, version: RecordingVersionIdentity | No
 
 def _blocks_priority(earlier: RewardCandidate, candidate: RewardCandidate, context: RewardEvaluationInput) -> bool:
     """@description: Protect the earliest possibly eligible submission regardless of review speed or age.
-    @param earlier: Potential predecessor from accepted-order scope.
+    @param earlier: Potential predecessor from accepted-order scope; a released one stays released after reopening.
     @param candidate: Confirmed, approved candidate seeking readiness.
     @param context: Trusted exclusions for unresolved predecessors.
     @return: Whether this earlier operation retains priority over the candidate.
     """
-    if earlier.accepted_sequence >= candidate.accepted_sequence or earlier.review.status is ReviewStatus.REJECTED:
+    # [released priority]: A rejection, including one later reopened, never restores the predecessor's blocking power.
+    priority_released = earlier.review.status is ReviewStatus.REJECTED or earlier.review.priority_released
+    if earlier.accepted_sequence >= candidate.accepted_sequence or priority_released:
         return False
     if earlier.identity.version is not None:
         return earlier.identity.version == candidate.identity.version

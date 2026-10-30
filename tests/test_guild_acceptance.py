@@ -29,7 +29,7 @@ def no_external_boundaries(monkeypatch):
     @return: None.
     """
     blocked = MagicMock(side_effect=AssertionError("External boundary reached"))
-    monkeypatch.setattr("pymysql.connect", blocked)
+    monkeypatch.setattr("psycopg.connect", blocked)
     monkeypatch.setattr("discord.http.HTTPClient.request", AsyncMock(side_effect=AssertionError("Real HTTP reached")))
     monkeypatch.setattr(discord.Client, "login", AsyncMock(side_effect=AssertionError("Real login reached")))
     monkeypatch.setattr(discord.Client, "connect", AsyncMock(side_effect=AssertionError("Gateway reached")))
@@ -347,7 +347,7 @@ def test_acceptance_repository_cannot_reach_database(local_client):
         asyncio.run(service.history(123))
     with pytest.raises(ServiceUnavailable):
         asyncio.run(service.daily(123, True))
-    assert "未扣點" in asyncio.run(service.exchange(123))
+    assert "未扣除 Nickel" in asyncio.run(service.exchange(123))
 
 
 def test_cancelled_sync_entry_closes_client(local_client, development_settings, monkeypatch):

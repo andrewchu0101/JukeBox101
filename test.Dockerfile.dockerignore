@@ -1,0 +1,16 @@
+# Build context for the development test runner (test.Dockerfile) only: the repository tree without history,
+# local environments, caches or secrets, so file-reading tests see the same tree as a checkout.
+.git
+.venv
+.env
+.env.*
+!.env.example
+.local
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.pytest_tmp
+discord_bot_token.txt
+db_password.txt
+*.pem
+*.key

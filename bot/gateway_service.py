@@ -28,7 +28,7 @@ class GatewayAcceptanceService:
         @param discord_user_id: Requester identity, not stored or logged.
         @return: Honest disabled-exchange outcome without a debit.
         """
-        return f"{MODE_LABEL}：交換功能尚未啟用；未扣點，也未建立推薦紀錄。"
+        return f"{MODE_LABEL}：交換功能尚未啟用；未扣除 Nickel，也未建立推薦紀錄。"
 
     async def balance(self, discord_user_id: int) -> str:
         """@description: Avoid fabricating an account balance when persistence is disabled.

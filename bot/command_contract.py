@@ -1,6 +1,7 @@
 """Compare command parameter contracts without modifying any local or remote registry.
 
-A versioned local baseline covers command types, ordered options, requiredness, choices and bounds.
+A versioned local baseline covers command types, ordered options, requiredness, choices, bounds, usable contexts,
+install types and default member permissions.
 """
 
 import json
@@ -21,6 +22,9 @@ def normalize_command_payloads(payloads: list[dict]) -> list[dict]:
     """
     # [invocation contract]: Generated IDs and descriptions do not change accepted parameter shapes.
     contracts = [{"name": command["name"], "type": command.get("type", 1),
+                  "contexts": sorted(command.get("contexts") or []),  # [where usable]: [0] means guild channels only.
+                  "integration_types": sorted(command.get("integration_types") or []),  # [install type]: [0] guild install.
+                  "default_member_permissions": command.get("default_member_permissions"),  # [None]: every member may use it.
                   "options": [_option_contract(option) for option in command.get("options", [])]}
                  for command in payloads]
     return sorted(contracts, key=itemgetter("name", "type"))

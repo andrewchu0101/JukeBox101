@@ -33,6 +33,7 @@ class SubmissionRequest:
     approval_source: ApprovalSource | None = None  # [review action]: Does not authenticate an Owner.
     song_eligible: bool | None = None  # [song decision]: None means no decision yet.
     validation_error: ValidationError | None = None  # [retryable failure]: Never a content rejection.
+    ordering_sequence: int | None = None  # [ordering event]: Allocated under the writer gate for a reexamination approval only.
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,8 @@ def _review_request(request: SubmissionRequest) -> ReviewSnapshot:
     if request.duration is not None:
         review = record_validation(review, request.duration, review.version)
     if request.approval_source is not None:
-        review = approve_review(review, request.approval_source, review.version, song_eligible=request.song_eligible)
+        review = approve_review(review, request.approval_source, review.version, song_eligible=request.song_eligible,
+                                ordering_sequence=request.ordering_sequence)
     elif request.song_eligible is False and review.status is ReviewStatus.PENDING_REVIEW:
         review = reject_review(review, review.version)
     elif request.song_eligible is True:

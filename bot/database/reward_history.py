@@ -69,5 +69,5 @@ def _record_exception(cursor: Any, version: str, rewards: list[dict], actor_id: 
     # [exception idempotency]: Repeated audits of the same canonical ledger group do not create duplicate exceptions.
     audit_key = hashlib.sha256(json.dumps((version, sorted(row["ledger_id"] for row in rewards))).encode("utf-8")).hexdigest()
     cursor.execute("INSERT INTO jb2_exceptions (audit_key,version_id,actor_id,reason,original_claims) VALUES (%s,%s,%s,%s,%s) "
-                   "ON DUPLICATE KEY UPDATE audit_key=audit_key", (audit_key, version, actor_id, reason, json.dumps(rewards, sort_keys=True)))
-    cursor.execute("INSERT INTO jb2_barriers (version_id,reason) VALUES (%s,%s) ON DUPLICATE KEY UPDATE version_id=version_id", (version, reason))
+                   "ON CONFLICT (audit_key) DO NOTHING", (audit_key, version, actor_id, reason, json.dumps(rewards, sort_keys=True)))
+    cursor.execute("INSERT INTO jb2_barriers (version_id,reason) VALUES (%s,%s) ON CONFLICT (version_id) DO NOTHING", (version, reason))

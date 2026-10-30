@@ -1,0 +1,91 @@
+# Production deployment: one multi-guild Gateway Bot connecting out to Discord and to an EXTERNAL PostgreSQL 18 database.
+# No database runs here and no port is published. Secrets are never written here: the Owner places secret files in
+# JB_SECRET_DIR (see docs/deploy/v7-postgresql-deployment.md). Use the shipped image with `--no-build`.
+# The "migrate" service only starts when explicitly selected: docker compose --profile migrate run --rm migrate plan
+name: jukebox101
+
+x-database-target: &database-target
+  DB_HOST: ${DB_HOST:?set DB_HOST to the external PostgreSQL host name (must match its TLS certificate)}
+  DB_PORT: ${DB_PORT:-5432}
+  DB_NAME: ${DB_NAME:-jukebox101}
+  DB_SSLMODE: ${DB_SSLMODE:-verify-full}
+  DB_SSLROOTCERT: /run/secrets/db_ca.crt
+
+services:
+  bot:
+    build: .
+    image: jukebox101-bot:v7
+    user: "10001:10001"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      # Read-only check with the Bot's own role: reachable over TLS, not a superuser, control row ready, settlement off.
+      test: ["CMD", "python", "-m", "bot.readiness"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 1m
+    environment:
+      <<: *database-target
+      DB_USER: ${DB_USER:-jukebox101_app}
+      DB_PASSWORD_FILE: /run/secrets/db_password
+      DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
+      DISCORD_EXPECTED_APPLICATION_ID: ${DISCORD_EXPECTED_APPLICATION_ID:?set the application id}
+      DISCORD_OWNER_USER_ID: ${DISCORD_OWNER_USER_ID:?set the Owner user id}
+      DISCORD_OWNER_GUILD_ID: ${DISCORD_OWNER_GUILD_ID:-}
+      SECRET_EXPECTED_UID: "10001"
+      SECRET_EXPECTED_GID: "10001"
+      JUKEBOX_FORMAL_EXCHANGE: ${JUKEBOX_FORMAL_EXCHANGE:-off}
+      JUKEBOX_NICKEL_CLAIM: ${JUKEBOX_NICKEL_CLAIM:-off}
+    secrets:
+      - discord_bot_token
+      - db_password
+      - db_ca.crt
+
+  migrate:
+    # Schema migrations as the schema-owner role; never started by `docker compose up`.
+    profiles: ["migrate"]
+    image: jukebox101-bot:v7
+    user: "10001:10001"
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["python", "-m", "bot.migrate"]
+    command: ["plan"]
+    environment:
+      <<: *database-target
+      DB_USER: ${DB_MIGRATION_USER:-jukebox101_migrator}
+      DB_PASSWORD_FILE: /run/secrets/db_migrator_password
+    secrets:
+      - db_migrator_password
+      - db_ca.crt
+
+secrets:
+  discord_bot_token:
+    file: ${JB_SECRET_DIR:?set JB_SECRET_DIR to the host directory holding the secret files}/discord_bot_token.txt
+  db_password:
+    file: ${JB_SECRET_DIR:?set JB_SECRET_DIR to the host directory holding the secret files}/db_password.txt
+  db_migrator_password:
+    file: ${JB_SECRET_DIR:?set JB_SECRET_DIR to the host directory holding the secret files}/db_migrator_password.txt
+  db_ca.crt:
+    file: ${JB_DB_CA_FILE:?set JB_DB_CA_FILE to the PostgreSQL server CA certificate (PEM, not secret, world-readable)}

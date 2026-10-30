@@ -1,4 +1,4 @@
-"""Persist pending submissions and user preferences using the accepted MySQL schema.
+"""Persist pending submissions and user preferences using the reviewed PostgreSQL schema.
 
 Each synchronous operation owns a complete short transaction in its calling worker context.
 """
@@ -91,7 +91,7 @@ def _ensure_user(cursor, discord_user_id: int) -> None:
     """
     cursor.execute(
         "INSERT INTO users (discord_user_id) VALUES (%s) "
-        "ON DUPLICATE KEY UPDATE discord_user_id = discord_user_id",
+        "ON CONFLICT (discord_user_id) DO NOTHING",
         (discord_user_id,),
     )
 
@@ -104,7 +104,7 @@ def _upsert_pending_song(cursor, video: YouTubeVideo) -> None:
     """
     cursor.execute(
         "INSERT INTO songs (platform, platform_track_id, source_url) VALUES (%s, %s, %s) "
-        "ON DUPLICATE KEY UPDATE song_id = song_id",
+        "ON CONFLICT (platform, platform_track_id) DO NOTHING",
         ("youtube", video.video_id, video.source_url),
     )
 

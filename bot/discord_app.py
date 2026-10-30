@@ -4,11 +4,16 @@ Construction needs no credentials or network; remote synchronization requires an
 """
 
 import logging
+from dataclasses import dataclass
+from datetime import datetime
 from collections.abc import Awaitable, Callable
 
 import discord
 from discord import app_commands
 
+from bot.discord_owner_review import build_owner_group
+from bot.owner_review import OwnerReviewService
+from bot.discord_exchange import DiscordDirectMessageSender, DiscordEphemeralReplier
 from bot.services import MusicService, ServiceUnavailable
 from bot.urls import InvalidVideoUrl
 
@@ -58,17 +63,32 @@ class SafeCommandTree(app_commands.CommandTree):
 class JukeBoxClient(discord.Client):
     """Own a local command tree with no automatic remote sync or background delivery."""
 
-    def __init__(self, service: MusicService, *, interaction_guard: Callable[[discord.Interaction], Awaitable[bool]] | None = None) -> None:
+    def __init__(self, service: MusicService, *, interaction_guard: Callable[[discord.Interaction], Awaitable[bool]] | None = None,
+                 owner_review: "OwnerReviewWiring | None" = None) -> None:
         """@description: Build a minimal-intent client independently of login and credentials.
         @param self: Discord application instance.
         @param service: Discord-independent application operations.
         @param interaction_guard: Optional listener-specific command admission policy.
+        @param owner_review: Optional Owner review wiring; when given, the guild-scoped owner group is registered locally.
         @return: None.
         """
         super().__init__(intents=discord.Intents.none(), allowed_mentions=discord.AllowedMentions.none())
         self.tree = SafeCommandTree(self, interaction_guard=interaction_guard)  # [command registry]: Local registration only.
         self.handlers = CommandHandlers(service)
-        register_commands(self.tree, self.handlers)
+        register_commands(self.tree, self.handlers, include_claim=getattr(service, "nickel_claim_enabled", False) is True)
+        if owner_review is not None:
+            self.tree.add_command(build_owner_group(owner_review.service_provider, owner_review.owner_id,
+                                                    owner_review.guild_id, owner_review.now))
+
+
+@dataclass(frozen=True)
+class OwnerReviewWiring:
+    """Carry the Owner review collaborators the client needs; the group itself is built by discord_owner_review."""
+
+    service_provider: Callable[[], OwnerReviewService]  # [review service]: Returns the synchronous review service.
+    owner_id: int  # [Owner identity]: Configured Discord user id checked on every Owner command.
+    guild_id: int  # [Owner management guild]: The only guild where the owner group is registered and admitted.
+    now: Callable[[], datetime]  # [clock]: Supplies timestamps for evidence and judgements.
 
 
 class CommandHandlers:
@@ -92,12 +112,32 @@ class CommandHandlers:
         await _respond(interaction, self.service.share, interaction.user.id, url, f"discord:{interaction.id}")
 
     async def exchange(self, interaction: discord.Interaction) -> None:
-        """@description: Explain the pending exchange gate without spending credits.
+        """@description: Route /exchange: the explicit synthetic flow first, then the formal flow when its switch is on, otherwise the existing fixed reply.
         @param self: Handler routing this command.
         @param interaction: Discord request carrying the recipient identity.
         @return: None.
         """
-        await _respond(interaction, self.service.exchange, interaction.user.id)
+        if getattr(self.service, "synthetic_exchange_enabled", False) is True:  # [strict route]: Only an explicit boolean True selects the synthetic flow first.
+            await interaction.response.defer(ephemeral=True)  # [bounded acknowledgement]: DM work may exceed the initial response window.
+            await self.service.synthetic_exchange(interaction.user.id, f"discord:{interaction.id}",
+                                                  DiscordDirectMessageSender(interaction.client),
+                                                  DiscordEphemeralReplier(interaction))
+            return
+        if getattr(self.service, "formal_exchange_enabled", False) is True:  # [strict route]: Only an explicit boolean True opens the formal flow.
+            await interaction.response.defer(ephemeral=True)  # [bounded acknowledgement]: Same private deferral as the synthetic route.
+            await self.service.formal_exchange(interaction.user.id, f"discord:{interaction.id}",
+                                               DiscordDirectMessageSender(interaction.client),
+                                               DiscordEphemeralReplier(interaction))
+            return
+        await _respond(interaction, self.service.exchange, interaction.user.id)  # [production gate]: Unchanged fixed reply; no debit.
+
+    async def claim(self, interaction: discord.Interaction) -> None:
+        """@description: Route /claim to the service, which grants every missing approved Nickel in one transaction.
+        @param self: Handler routing this command.
+        @param interaction: Discord request carrying the requesting account.
+        @return: None.
+        """
+        await _respond(interaction, self.service.claim, interaction.user.id, f"discord:{interaction.id}")
 
     async def balance(self, interaction: discord.Interaction) -> None:
         """@description: Reply privately with the requesting recipient's credit balance.
@@ -129,17 +169,35 @@ class CommandHandlers:
         await _respond(interaction, self.service.daily, interaction.user.id, mode.value == "on")
 
 
-def register_commands(tree: app_commands.CommandTree, handlers: CommandHandlers) -> None:
-    """@description: Register five local commands without contacting Discord's API.
+GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False)  # [where usable]: Guild channels only.
+GUILD_INSTALL_ONLY = app_commands.AppInstallationType(guild=True, user=False)  # [how installed]: Server install via invite link only.
+
+
+def guild_command(name: str, description: str, callback: Callable) -> app_commands.Command:
+    """@description: Define one global command usable by every member in any installed guild, never in DMs.
+    @param name: Slash command name.
+    @param description: User-facing description.
+    @param callback: Handler coroutine.
+    @return: Command with guild-only contexts and no default member permission restriction.
+    """
+    return app_commands.Command(name=name, description=description, callback=callback,
+                                allowed_contexts=GUILD_ONLY_CONTEXTS, allowed_installs=GUILD_INSTALL_ONLY)
+
+
+def register_commands(tree: app_commands.CommandTree, handlers: CommandHandlers, include_claim: bool = False) -> None:
+    """@description: Register the global command set locally without contacting Discord's API.
     @param tree: Empty client-owned command registry.
     @param handlers: Callback owner with an injected application service.
+    @param include_claim: True only when the /claim switch is open; the command set stays unchanged while it is closed.
     @return: None.
     """
-    tree.add_command(app_commands.Command(name="share", description="投稿 YouTube 影片供資格驗證", callback=handlers.share))
-    tree.add_command(app_commands.Command(name="exchange", description="查詢交換功能開放狀態", callback=handlers.exchange))
-    tree.add_command(app_commands.Command(name="balance", description="查詢可用交換點數", callback=handlers.balance))
-    tree.add_command(app_commands.Command(name="history", description="查詢本人投稿及目前審核狀態", callback=handlers.history))
-    tree.add_command(app_commands.Command(name="daily", description="設定每日推薦偏好（排程尚未啟用）", callback=handlers.daily))
+    tree.add_command(guild_command(name="share", description="投稿 YouTube 影片供資格驗證", callback=handlers.share))
+    tree.add_command(guild_command(name="exchange", description="查詢交換功能開放狀態", callback=handlers.exchange))
+    tree.add_command(guild_command(name="balance", description="查詢可用 Nickel", callback=handlers.balance))
+    tree.add_command(guild_command(name="history", description="查詢本人投稿及目前審核狀態", callback=handlers.history))
+    tree.add_command(guild_command(name="daily", description="每日推薦尚未開放", callback=handlers.daily))
+    if include_claim:
+        tree.add_command(guild_command(name="claim", description="領取本週與入門 Nickel", callback=handlers.claim))
 
 
 async def synchronize_commands(client: JukeBoxClient, *, guild_id: int | None = None, global_sync: bool = False) -> list:

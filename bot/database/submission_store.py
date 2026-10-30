@@ -1,6 +1,6 @@
 """Persist new submission events and immutable receipts under the shared transaction gate.
 
-Acceptance sequence is allocated transactionally and never inferred from AUTO_INCREMENT or Discord timestamps.
+Acceptance sequence is allocated transactionally and never inferred from identity columns or Discord timestamps.
 """
 
 from dataclasses import replace
@@ -24,7 +24,7 @@ def ensure_version(cursor: Any, identity: VersionAssignment) -> None:
     if identity.version is None:
         return
     cursor.execute("INSERT INTO jb2_versions (version_id, canonical_id, evidence_reference) VALUES (%s,%s,%s) "
-                   "ON DUPLICATE KEY UPDATE version_id = version_id",
+                   "ON CONFLICT (version_id) DO NOTHING",
                    (identity.version.value, identity.version.value, identity.evidence_reference))
 
 
@@ -91,7 +91,7 @@ def _prepare_video(cursor: Any, request: SubmissionRequest) -> SubmissionRequest
     if current is not None:
         return _existing_video_request(cursor, request, current)
     if existing is not None:
-        cursor.execute("INSERT INTO jb2_legacy (song_id) VALUES (%s) ON DUPLICATE KEY UPDATE song_id = song_id", (song_id,))
+        cursor.execute("INSERT INTO jb2_legacy (song_id) VALUES (%s) ON CONFLICT (song_id) DO NOTHING", (song_id,))
     return _insert_video(cursor, request, song_id)
 
 
@@ -143,8 +143,8 @@ def _persist_event(cursor: Any, result: SubmissionResult) -> None:
                    candidate.submitter_id, candidate.identity.video.video_id, result.video.source_url, result.reward.status.value))
     cursor.execute("INSERT INTO jb2_receipts (operation_id,receipt_json) VALUES (%s,%s)",
                    (candidate.operation_id, encode_contract(result)))
-    cursor.execute("INSERT INTO jb2_reminders (video_id,next_due_at) SELECT video_id,accepted_at + INTERVAL 24 HOUR "
-                   "FROM jb2_events WHERE operation_id=%s ON DUPLICATE KEY UPDATE next_due_at=jb2_reminders.next_due_at", (candidate.operation_id,))
+    cursor.execute("INSERT INTO jb2_reminders (video_id,next_due_at) SELECT video_id,accepted_at + INTERVAL '24 hours' "
+                   "FROM jb2_events WHERE operation_id=%s ON CONFLICT (video_id) DO NOTHING", (candidate.operation_id,))
     persist_review(cursor, candidate.review, candidate.submitter_id, "initial accepted submission", candidate.identity)
 
 

@@ -232,7 +232,7 @@ def test_explicit_entry_passes_token_only_to_login(database_settings, monkeypatc
     connect_mock = MagicMock(side_effect=AssertionError("Unexpected connection"))
     monkeypatch.setattr(discord.Client, "run", login_mock)
     monkeypatch.setattr(app_commands.CommandTree, "sync", sync_mock)
-    monkeypatch.setattr("pymysql.connect", connect_mock)
+    monkeypatch.setattr("psycopg.connect", connect_mock)
     entry.main()
     login_mock.assert_called_once_with("synthetic-token-secret", log_handler=None)
     sync_mock.assert_not_awaited()
@@ -247,12 +247,12 @@ def test_imports_do_not_load_credentials_or_connect():
     script = """
 import importlib
 from unittest.mock import MagicMock
-import bot.config, pymysql, discord
+import bot.config, psycopg, discord
 from discord import app_commands
 blocked = MagicMock(side_effect=AssertionError('External boundary reached'))
 bot.config.load_database_settings = blocked
 bot.config.load_discord_settings = blocked
-pymysql.connect = blocked
+psycopg.connect = blocked
 discord.Client.run = blocked
 app_commands.CommandTree.sync = blocked
 for module_name in ('bot.urls', 'bot.models', 'bot.database.repository', 'bot.services', 'bot.discord_app', 'bot.__main__', 'bot.acceptance_config', 'bot.guild_acceptance', 'bot.discord_acceptance', 'bot.acceptance_runtime', 'bot.command_contract', 'bot.gateway_service', 'bot.gateway_listener', 'bot.gateway_acceptance'):
