@@ -2,14 +2,18 @@
 
 `preview` is offline. `fetch` reads remote commands over HTTP (no Gateway). `apply` overwrites the remote set for the
 chosen target (Discord bulk-overwrite semantics) only when the previewed digest matches and both confirmation flags
-are given. Production uses the global target; a single development guild target is kept for testing.
+are given. Production uses the global target and the owner-guild target, which publishes the guild-scoped Owner group
+(global sync never includes it); a single development guild target is kept for testing.
 """
 
 import argparse
 import asyncio
 import hashlib
 import json
+import os
 import sys
+from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,11 +22,14 @@ import discord
 from bot.acceptance_config import environment_snowflake, validate_snowflake
 from bot.command_contract import normalize_command_payloads
 from bot.config import ConfigurationError, load_discord_settings, load_nickel_claim_enabled
+from bot.discord_app import OwnerReviewWiring
+from bot.production_config import OWNER_GUILD_ENV
 from bot.discord_app import JukeBoxClient
 
 REST_TIMEOUT_SECONDS = 20  # [bounded remote call]: Each read or sync call fails instead of waiting indefinitely.
 FETCH_FLAG = "--i-understand-this-calls-discord"
 APPLY_FLAG = "--confirm-overwrite-remote-commands"
+OWNER_GUILD_TARGET = "owner-guild"  # [owner guild target]: Publishes only the guild-scoped Owner group into DISCORD_OWNER_GUILD_ID.
 
 
 class _CommandsOnlyService:
@@ -47,6 +54,41 @@ def local_payloads(nickel_claim_enabled: bool | None = None) -> list[dict]:
     return [command.to_dict(client.tree) for command in client.tree.get_commands()]
 
 
+def _unavailable_owner_service():
+    """@description: Refuse any Owner service call made while only the command shape is being built offline.
+    @param: none
+    @return: Never returns.
+    """
+    raise ConfigurationError("Owner review service is not available while building command payloads")
+
+
+def owner_guild_configured() -> bool:
+    """@description: Tell whether an Owner guild is configured, without validating its value (validation happens on use).
+    @param: none
+    @return: True when DISCORD_OWNER_GUILD_ID is set to a non-blank value.
+    """
+    return bool(os.environ.get(OWNER_GUILD_ENV, "").strip())
+
+
+def _owner_wiring(owner_guild_id: int) -> OwnerReviewWiring:
+    """@description: Wire the Owner group the same way production does, with a service that is never called for registration.
+    @param owner_guild_id: Owner management guild snowflake.
+    @return: Owner review wiring for building the command tree.
+    """
+    return OwnerReviewWiring(_unavailable_owner_service, environment_snowflake("DISCORD_OWNER_USER_ID"), owner_guild_id,
+                             lambda: datetime.now(timezone.utc))
+
+
+def owner_guild_payloads() -> list[dict]:
+    """@description: Build the guild-scoped Owner group exactly as the production Bot registers it, offline.
+    @param: none
+    @return: Command payloads registered only in DISCORD_OWNER_GUILD_ID.
+    """
+    owner_guild_id = environment_snowflake(OWNER_GUILD_ENV)
+    client = JukeBoxClient(_CommandsOnlyService(False), owner_review=_owner_wiring(owner_guild_id))
+    return [command.to_dict(client.tree) for command in client.tree.get_commands(guild=discord.Object(id=owner_guild_id))]
+
+
 def contract_digest(payloads: list[dict]) -> str:
     """@description: Identify a command set by its invocation contract so apply can prove it publishes what was previewed.
     @param payloads: Local or remote command payloads.
@@ -69,6 +111,17 @@ def contract_diff(local: list[dict], remote: list[dict]) -> dict:
             "changed": sorted(name for name in set(local_by_name) & set(remote_by_name) if local_by_name[name] != remote_by_name[name])}
 
 
+def _owner_guild_summary() -> dict | None:
+    """@description: Give the Owner guild set its own digest so it is reviewed before the owner-guild apply.
+    @param: none
+    @return: Digest and command names, or None when no Owner guild is configured.
+    """
+    if not owner_guild_configured():
+        return None
+    payloads = owner_guild_payloads()
+    return {"digest": contract_digest(payloads), "commands": sorted(item["name"] for item in payloads)}
+
+
 def preview(remote_file: Path | None) -> dict:
     """@description: Produce the offline preview an operator reviews before any remote change.
     @param remote_file: Optional saved remote export to diff against.
@@ -76,7 +129,7 @@ def preview(remote_file: Path | None) -> dict:
     """
     local = local_payloads()
     summary = {"mode": "preview", "local_digest": contract_digest(local), "commands": sorted(item["name"] for item in local),
-               "remote_compared": remote_file is not None}
+               "owner_guild": _owner_guild_summary(), "remote_compared": remote_file is not None}
     if remote_file is not None:
         summary["diff"] = contract_diff(local, json.loads(remote_file.read_text(encoding="utf-8")))
     return summary
@@ -112,13 +165,14 @@ async def fetch_remote(client: JukeBoxClient, guild: discord.Object | None) -> l
     return [command.to_dict() for command in await client.tree.fetch_commands(guild=guild)]
 
 
-async def apply_sync(client: JukeBoxClient, guild: discord.Object | None) -> list[str]:
+async def apply_sync(client: JukeBoxClient, guild: discord.Object | None, copy_global: bool) -> list[str]:
     """@description: Overwrite the target's remote command set with the local one (Discord bulk overwrite).
     @param client: Logged-in client built from the same production registration.
-    @param guild: Development guild (global set copied into it), or None for global.
+    @param guild: Target guild, or None for global commands.
+    @param copy_global: True only for the development guild, which receives copies of the global commands.
     @return: Names of the commands Discord reports as published.
     """
-    if guild is not None:
+    if copy_global and guild is not None:
         client.tree.copy_global_to(guild=guild)
     return sorted(command.name for command in await client.tree.sync(guild=guild))
 
@@ -130,7 +184,7 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     """
     parser = argparse.ArgumentParser(prog="python -m bot.command_sync", description="Preview or explicitly publish slash commands")
     parser.add_argument("mode", choices=("preview", "fetch", "apply"))
-    parser.add_argument("--target", choices=("global", "dev-guild"), default="global")
+    parser.add_argument("--target", choices=("global", "dev-guild", OWNER_GUILD_TARGET), default="global")
     parser.add_argument("--guild-id", type=int, help="development guild for --target dev-guild")
     parser.add_argument("--remote-file", type=Path, help="saved remote export to diff against (preview) or to write (fetch)")
     parser.add_argument("--expected-digest", help="local_digest from the reviewed preview (apply)")
@@ -148,19 +202,34 @@ def parse_arguments(argv: list[str]) -> argparse.Namespace:
     return arguments
 
 
+def _client_factory_for(is_owner: bool, owner_guild_id: int | None) -> Callable:
+    """@description: Build the client with the same registration production uses for the chosen target.
+    @param is_owner: True for the owner-guild target, which must also carry the Owner group.
+    @param owner_guild_id: Owner guild snowflake, used only when is_owner is True.
+    @return: Zero-argument client builder.
+    """
+    if is_owner:
+        return lambda: JukeBoxClient(_CommandsOnlyService(False), owner_review=_owner_wiring(owner_guild_id))
+    return lambda: JukeBoxClient(_CommandsOnlyService(load_nickel_claim_enabled()))
+
+
 def run_remote(arguments: argparse.Namespace, client_factory: Callable | None = None) -> dict:
     """@description: Execute an explicitly authorized fetch or apply, refusing apply when the local set differs from the preview.
     @param arguments: Parsed and confirmed arguments.
     @param client_factory: Optional client builder for tests.
     @return: Summary of what was read or published.
     """
-    local = local_payloads()
+    is_owner = arguments.target == OWNER_GUILD_TARGET
+    if is_owner and not owner_guild_configured():
+        raise ConfigurationError(f"{OWNER_GUILD_ENV} is required for the owner-guild target; nothing was changed")
+    guild_id = environment_snowflake(OWNER_GUILD_ENV) if is_owner else arguments.guild_id
+    local = owner_guild_payloads() if is_owner else local_payloads()
     if arguments.mode == "apply" and contract_digest(local) != arguments.expected_digest:
         raise ConfigurationError("Local command set differs from the reviewed preview digest; nothing was changed")
-    factory = client_factory or (lambda: JukeBoxClient(_CommandsOnlyService(load_nickel_claim_enabled())))
-    action = fetch_remote if arguments.mode == "fetch" else apply_sync
+    factory = client_factory or _client_factory_for(is_owner, guild_id)
+    action = fetch_remote if arguments.mode == "fetch" else partial(apply_sync, copy_global=arguments.target == "dev-guild")
     result = asyncio.run(_remote_session(load_discord_settings().token, environment_snowflake("DISCORD_EXPECTED_APPLICATION_ID"),
-                                         arguments.guild_id, action, factory))
+                                         guild_id, action, factory))
     if arguments.mode == "fetch":
         arguments.remote_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"mode": "fetch", "target": arguments.target, "remote_digest": contract_digest(result), "diff": contract_diff(local, result)}

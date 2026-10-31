@@ -304,3 +304,56 @@ def test_confirmed_apply_syncs_globally_and_a_foreign_token_is_refused(productio
         command_sync.run_remote(_apply_arguments(digest), client_factory=lambda: foreign)
     foreign.tree.sync.assert_not_called()
     assert foreign.close.await_count == 1
+
+
+def test_owner_guild_preview_reports_the_owner_group_separately_from_the_global_set(production_environment, monkeypatch):
+    """@description: The Owner group is guild-scoped, so the preview reports it under its own digest and keeps the global digest unchanged.
+    @param production_environment: Synthetic settings with network blocked.
+    @param monkeypatch: Environment isolation for the Owner guild setting.
+    @return: None.
+    """
+    global_digest = command_sync.contract_digest(command_sync.local_payloads())
+    monkeypatch.setenv("DISCORD_OWNER_GUILD_ID", str(GUILD_A))
+    summary = command_sync.preview(None)
+    assert summary["local_digest"] == global_digest
+    assert "owner" not in summary["commands"]
+    assert summary["owner_guild"]["commands"] == ["owner"]
+    assert summary["owner_guild"]["digest"] == command_sync.contract_digest(command_sync.owner_guild_payloads())
+
+
+def test_owner_guild_preview_is_none_when_no_owner_guild_is_configured(production_environment):
+    """@description: Without DISCORD_OWNER_GUILD_ID there is no Owner set to preview and nothing is invented.
+    @param production_environment: Synthetic settings with the Owner guild removed.
+    @return: None.
+    """
+    assert command_sync.preview(None)["owner_guild"] is None
+
+
+def test_confirmed_owner_guild_apply_publishes_only_the_owner_group(production_environment, monkeypatch):
+    """@description: The owner-guild target syncs the guild set without copying the global commands into the Owner guild.
+    @param production_environment: Synthetic settings.
+    @param monkeypatch: Environment isolation for the Owner guild setting.
+    @return: None.
+    """
+    monkeypatch.setenv("DISCORD_OWNER_GUILD_ID", str(GUILD_A))
+    digest = command_sync.contract_digest(command_sync.owner_guild_payloads())
+    client = _fake_client()
+    arguments = command_sync.parse_arguments(["apply", "--target", "owner-guild", "--i-understand-this-calls-discord",
+                                              "--confirm-overwrite-remote-commands", "--expected-digest", digest])
+    command_sync.run_remote(arguments, client_factory=lambda: client)
+    client.tree.copy_global_to.assert_not_called()
+    client.tree.sync.assert_awaited_once()
+    assert client.tree.sync.await_args.kwargs["guild"].id == GUILD_A
+
+
+def test_owner_guild_apply_without_an_owner_guild_changes_nothing(production_environment):
+    """@description: The owner-guild target refuses before any client is created when no Owner guild is configured.
+    @param production_environment: Synthetic settings with the Owner guild removed.
+    @return: None.
+    """
+    arguments = command_sync.parse_arguments(["apply", "--target", "owner-guild", "--i-understand-this-calls-discord",
+                                              "--confirm-overwrite-remote-commands", "--expected-digest", "0" * 64])
+    factory = MagicMock()
+    with pytest.raises(command_sync.ConfigurationError, match="DISCORD_OWNER_GUILD_ID"):
+        command_sync.run_remote(arguments, client_factory=factory)
+    factory.assert_not_called()

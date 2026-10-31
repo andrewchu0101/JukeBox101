@@ -1,9 +1,11 @@
-"""Verify PostgreSQL 18.6/TLS and the exact runtime image on disposable Docker resources.
+"""Verify PostgreSQL 18.6 (default) or 17.11 with TLS and the exact runtime image on disposable Docker resources.
 
 Each invocation owns random names and an internal-only network. JUnit evidence
 requires at least the reviewed baseline and zero unexpected skips or errors.
+Use --postgres-major 17 to reproduce the production PostgreSQL 17 line; CI runs the default.
 """
 
+import argparse
 import json
 import os
 import secrets
@@ -15,15 +17,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.ci.check_junit import summarize
 
-POSTGRES_IMAGE = 'postgres:18.6-bookworm'
+POSTGRES_BUILDS = {'18': ('postgres:18.6-bookworm', '180006'), '17': ('postgres:17.11-bookworm', '170011')}  # major: (image, server_version_num)
 
 
 class DockerLab:
     """Track only resources created successfully by this isolated invocation."""
 
-    def __init__(self):
-        """@description: Allocate random test-only names and an in-memory password.
+    def __init__(self, postgres_major):
+        """@description: Allocate random test-only names and an in-memory password for one PostgreSQL major.
         @param self: Disposable lab.
+        @param postgres_major: '18' (CI default) or '17' (production line), as keys of POSTGRES_BUILDS.
         @return: None.
         """
         self.docker = os.environ.get('DOCKER', 'docker')
@@ -31,6 +34,8 @@ class DockerLab:
         self.network = self.name + '-net'
         self.volume = self.name + '-data'
         self.password = secrets.token_urlsafe(32)
+        self.postgres_image, self.expected_version_num = POSTGRES_BUILDS[postgres_major]
+        self.postgres_major = postgres_major
         self.cleanup = []
 
     def run(self, arguments, *, check=True, source=None):
@@ -58,7 +63,7 @@ class DockerLab:
         self.cleanup.append(['volume', 'rm', self.volume])
         self.run(['run', '-d', '--name', self.name, '--network', self.network, '--network-alias', 'postgres',
                   '--mount', f'type=volume,source={self.volume},target=/var/lib/postgresql',
-                  '-e', 'POSTGRES_PASSWORD=' + self.password, POSTGRES_IMAGE,
+                  '-e', 'POSTGRES_PASSWORD=' + self.password, self.postgres_image,
                   '-c', 'cluster_name=jukebox101-disposable-test'])
         self.cleanup.append(['rm', '-f', self.name])
         for _ in range(60):
@@ -68,8 +73,8 @@ class DockerLab:
         else:
             raise RuntimeError('disposable server not ready')
         version = self.run(['exec', '-u', 'postgres', self.name, 'psql', '-U', 'postgres', '-tAc', 'SHOW server_version_num'])
-        if version.stdout.strip() != '180006':
-            raise RuntimeError('require PostgreSQL 18.6 exactly')
+        if version.stdout.strip() != self.expected_version_num:
+            raise RuntimeError(f'require PostgreSQL {self.postgres_major} build {self.expected_version_num} exactly')
         environment = dict(os.environ, DOCKER=self.docker, PG_CONTAINER=self.name)
         subprocess.run(['bash', 'scripts/dev/enable-test-tls.sh'], env=environment, check=True, timeout=120)
 
@@ -156,13 +161,15 @@ for name in ('token','db_password'):
 
 
 def main():
-    """@description: Require both real PG/TLS tests and exact-runtime verification.
+    """@description: Require both real PG/TLS tests and exact-runtime verification for the chosen PostgreSQL major.
     @param: none
     @return: None; all created resources are cleaned in finally.
     """
+    parser = argparse.ArgumentParser(description='Disposable PostgreSQL/TLS and exact-runtime verification')
+    parser.add_argument('--postgres-major', choices=sorted(POSTGRES_BUILDS), default='18')
     output = Path('ci-evidence')
     output.mkdir(exist_ok=True)
-    lab = DockerLab()
+    lab = DockerLab(parser.parse_args().postgres_major)
     try:
         lab.create()
         evidence = {'postgres': lab.postgres_tests(output), 'runtime': lab.runtime_tests()}

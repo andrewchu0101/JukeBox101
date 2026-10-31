@@ -69,15 +69,28 @@ def client_for(transport, now=lambda: NOW, sleeps=None) -> YouTubeMetadataClient
 
 @pytest.mark.parametrize("text,seconds", [("PT3M9S", 189), ("PT1M", 60), ("PT12M", 720), ("PT1H", 3600), ("P1DT1S", 86401), ("PT59S", 59)])
 def test_iso8601_durations_become_exact_seconds(text, seconds) -> None:
+    """@description: Lock the conversion so each official ISO 8601 duration maps to the exact seconds the 60–720 rule uses.
+    @param text: Official contentDetails.duration value.
+    @param seconds: Expected whole seconds.
+    @return: None.
+    """
     assert parse_iso8601_duration(text) == seconds
 
 
 @pytest.mark.parametrize("text", ["", "P", "PT", "3M9S", "PT1.5S", "PT-1S", "P1W", None, 189, "P0D", "PT0S"])
 def test_unusable_durations_are_not_guessed(text) -> None:
+    """@description: Refuse malformed, zero or non-string durations so no eligibility is ever guessed from them.
+    @param text: Malformed, zero or non-string duration value.
+    @return: None.
+    """
     assert parse_iso8601_duration(text) is None
 
 
 def test_a_found_video_keeps_only_the_fields_the_policy_needs() -> None:
+    """@description: Confirm a matching official item yields the duration, channel and fetch time that the policy records.
+    @param: none
+    @return: None.
+    """
     lookup = client_for(ScriptedTransport({"items": [api_item()]})).lookup(VIDEO_ID)
     assert lookup.status is LookupStatus.FOUND
     assert lookup.metadata.duration_seconds == 189
@@ -86,17 +99,29 @@ def test_a_found_video_keeps_only_the_fields_the_policy_needs() -> None:
 
 
 def test_an_empty_result_is_not_found_without_retrying() -> None:
+    """@description: An empty official result means the video is absent, so the lookup stops after a single call.
+    @param: none
+    @return: None.
+    """
     transport = ScriptedTransport({"items": []})
     assert client_for(transport).lookup(VIDEO_ID).status is LookupStatus.NOT_FOUND
     assert len(transport.calls) == 1
 
 
 def test_a_response_for_another_video_is_not_trusted() -> None:
+    """@description: An item whose id differs from the requested video is untrusted and reported as a temporary failure.
+    @param: none
+    @return: None.
+    """
     lookup = client_for(ScriptedTransport({"items": [api_item(id="AAAAAAAAAAA")]})).lookup(VIDEO_ID)
     assert lookup.status is LookupStatus.TEMPORARY_FAILURE
 
 
 def test_a_temporary_failure_retries_a_bounded_number_of_times_with_backoff() -> None:
+    """@description: Transient errors retry a fixed number of times with backoff, so an outage cannot loop against the API.
+    @param: none
+    @return: None.
+    """
     sleeps = []
     transport = ScriptedTransport(TransportFailure(503, ""), TransportFailure(429, ""), TransportFailure(None, ""))
     assert client_for(transport, sleeps=sleeps).lookup(VIDEO_ID).status is LookupStatus.TEMPORARY_FAILURE
@@ -105,11 +130,19 @@ def test_a_temporary_failure_retries_a_bounded_number_of_times_with_backoff() ->
 
 
 def test_a_retry_that_succeeds_returns_the_metadata() -> None:
+    """@description: A transient failure followed by a valid response still returns the metadata instead of a failure.
+    @param: none
+    @return: None.
+    """
     transport = ScriptedTransport(TransportFailure(500, ""), {"items": [api_item()]})
     assert client_for(transport).lookup(VIDEO_ID).status is LookupStatus.FOUND
 
 
 def test_quota_exhaustion_stops_retrying_and_cools_down_without_calling_the_network() -> None:
+    """@description: Quota exhaustion cools down without further network calls and resumes only after the cooldown has passed.
+    @param: none
+    @return: None.
+    """
     moments = [NOW]
     transport = ScriptedTransport(TransportFailure(403, "quotaExceeded"), {"items": [api_item()]})
     client = client_for(transport, now=lambda: moments[0])
@@ -121,12 +154,20 @@ def test_quota_exhaustion_stops_retrying_and_cools_down_without_calling_the_netw
 
 
 def test_a_refused_credential_is_a_temporary_failure_and_never_retried() -> None:
+    """@description: A refused API key is reported as a temporary failure and is not retried in a loop.
+    @param: none
+    @return: None.
+    """
     transport = ScriptedTransport(TransportFailure(400, "keyInvalid"))
     assert client_for(transport).lookup(VIDEO_ID).status is LookupStatus.TEMPORARY_FAILURE
     assert len(transport.calls) == 1
 
 
 def test_consecutive_lookups_are_spaced_by_the_rate_limit() -> None:
+    """@description: Back-to-back lookups are spaced by the rate limit so the client never bursts the API.
+    @param: none
+    @return: None.
+    """
     sleeps = []
     client = client_for(ScriptedTransport({"items": [api_item()]}, {"items": [api_item()]}), sleeps=sleeps)
     client.lookup(VIDEO_ID)
@@ -147,6 +188,10 @@ def found(**fields) -> MetadataLookup:
 
 @pytest.mark.parametrize("seconds", [60, 189, 720])
 def test_a_trusted_channel_music_video_within_limits_is_auto_approved(seconds) -> None:
+    """@description: A trusted-channel music video inside the duration limits is auto-approved with a recorded reason.
+    @param seconds: Official duration inside the 60–720 second range.
+    @return: None.
+    """
     verdict = decide_auto_review(found(duration_seconds=seconds), frozenset({TRUSTED}))
     assert verdict.kind is AutoReviewKind.AUTO_APPROVE
     assert assess_duration(verdict.duration) is DurationEligibility.PASS
@@ -156,6 +201,10 @@ def test_a_trusted_channel_music_video_within_limits_is_auto_approved(seconds) -
 
 @pytest.mark.parametrize("seconds", [59, 721])
 def test_an_official_out_of_range_duration_rejects_even_on_a_trusted_channel(seconds) -> None:
+    """@description: An out-of-range official duration rejects even from a trusted channel, so trust can never override length.
+    @param seconds: Official duration outside the 60–720 second range.
+    @return: None.
+    """
     verdict = decide_auto_review(found(duration_seconds=seconds), frozenset({TRUSTED}))
     assert verdict.kind is AutoReviewKind.DURATION_REJECT
     assert assess_duration(verdict.duration) is DurationEligibility.REJECT
@@ -164,18 +213,30 @@ def test_an_official_out_of_range_duration_rejects_even_on_a_trusted_channel(sec
 @pytest.mark.parametrize("fields", [{"channel_id": UNTRUSTED}, {"category_id": "24"}, {"title": "New Song Official Trailer"},
                                     {"title": "新歌預告"}, {"title": "副歌片段 Clip"}, {"privacy_status": "unlisted"}, {"has_live_details": True}])
 def test_anything_short_of_every_trust_condition_records_duration_and_waits_for_the_owner(fields) -> None:
+    """@description: Any broken trust condition records the duration and leaves the decision to the Owner instead of approving.
+    @param fields: One trust field broken by the test.
+    @return: None.
+    """
     verdict = decide_auto_review(found(**fields), frozenset({TRUSTED}))
     assert verdict.kind is AutoReviewKind.DURATION_ONLY
     assert verdict.duration.seconds == 189
 
 
 def test_an_empty_allowlist_never_auto_approves() -> None:
+    """@description: With no trusted channels configured nothing is auto-approved, which is the safe default.
+    @param: none
+    @return: None.
+    """
     assert decide_auto_review(found(), frozenset()).kind is AutoReviewKind.DURATION_ONLY
 
 
 @pytest.mark.parametrize("fields", [{"live_broadcast_content": "live"}, {"live_broadcast_content": "upcoming"}, {"duration_seconds": None},
                                     {"upload_status": "uploaded"}])
 def test_live_upcoming_or_undetermined_videos_are_held_without_any_evidence(fields) -> None:
+    """@description: Live, upcoming or undetermined videos are held with no evidence written, so a later retry can decide.
+    @param fields: One undetermined field set by the test.
+    @return: None.
+    """
     verdict = decide_auto_review(found(**fields), frozenset({TRUSTED}))
     assert verdict.kind is AutoReviewKind.HOLD
     assert verdict.duration is None
@@ -184,9 +245,17 @@ def test_live_upcoming_or_undetermined_videos_are_held_without_any_evidence(fiel
 @pytest.mark.parametrize("lookup", [MetadataLookup(LookupStatus.NOT_FOUND, None), found(privacy_status="private"),
                                     found(upload_status="deleted"), found(upload_status="rejected")])
 def test_a_missing_or_private_video_is_a_retryable_validation_failure_not_a_rejection(lookup) -> None:
+    """@description: Missing, private, deleted or rejected videos are retryable validation failures, never permanent rejections.
+    @param lookup: Lookup outcome that is not usable as evidence.
+    @return: None.
+    """
     assert decide_auto_review(lookup, frozenset({TRUSTED})).kind is AutoReviewKind.UNAVAILABLE
 
 
 @pytest.mark.parametrize("status", [LookupStatus.TEMPORARY_FAILURE, LookupStatus.QUOTA_EXHAUSTED])
 def test_api_failures_write_nothing_and_stay_retryable(status) -> None:
+    """@description: API failures write nothing and stay retryable, so a transient outage can never reject a submission.
+    @param status: Temporary or quota failure status.
+    @return: None.
+    """
     assert decide_auto_review(MetadataLookup(status, None), frozenset({TRUSTED})).kind is AutoReviewKind.RETRY

@@ -52,7 +52,11 @@
 2. 只開自動審核：放置秘密檔、填名單，`JUKEBOX_AUTO_REVIEW=on`，以 `compose.yaml` 加 `compose.auto-review.yaml` 啟動；驗收真實 API 回應。
 3. 處理所有版本未確認的既有案件（包含首筆），否則後面的發獎會等待。**開啟前先決定首筆案件的處理**：開啟後若確認其版本，它會走一般流程領 +1。
 4. 開發獎：停 Bot → `python -m bot.owner_cli settlement-switch preview --enabled on` → 用印出的 digest 執行 `write` → 設 `JUKEBOX_AUTO_SETTLEMENT=on` → 啟動 → `python -m bot.healthcheck`。
-5. 同步 Owner 指令（`/owner duration` 是新指令；全域指令未變）：由 Owner 走既有 `command_sync` 預覽與確認。
+5. 同步 Owner 指令（`/owner duration` 是新指令）：Owner 指令只註冊在 `DISCORD_OWNER_GUILD_ID` 伺服器，**全域 `apply` 不會同步它**。由 Owner 依序執行：
+   - `python -m bot.command_sync preview`：確認輸出的 `owner_guild.commands` 含 `owner`，並記下 `owner_guild.digest`。全域 `local_digest` 若與上次相同，表示一般指令未變。
+   - 只在需要更新 Owner 指令時，`apply --target owner-guild --i-understand-this-calls-discord --confirm-overwrite-remote-commands --expected-digest <owner_guild.digest>`。此指令會覆寫 Owner 伺服器的指令集，請先確認該伺服器沒有其他手動建立的指令。
+   - 一般指令未變時不需要 `--target global`。
+   - 預覽與發佈都需要 `DISCORD_OWNER_GUILD_ID`、`DISCORD_OWNER_USER_ID` 與 `DISCORD_EXPECTED_APPLICATION_ID`；本文件不含真實值。
 
 **關閉**：停 Bot → 模式改 off → `settlement-switch` 設 off → 啟動。
 

@@ -16,7 +16,7 @@ Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord �
 伺服器管理員使用 Owner 提供的**邀請連結**，把 Bot 加入自己的伺服器即可。
 
 - 不需要 Owner 為每個伺服器另外設定 ID，也不需要重新部署。
-- 指令是全域指令。Bot 剛加入、或指令剛更新時，Discord 可能要一段時間才會在用戶端顯示，這不是故障。
+- 一般使用者指令是全域指令；Owner 指令只註冊在 `DISCORD_OWNER_GUILD_ID` 指定的伺服器（見下方）。Bot 剛加入、或指令剛更新時，Discord 可能要一段時間才會在用戶端顯示，這不是故障。
 - Bot 不需要任何頻道權限。只要成員在該頻道擁有「使用應用程式指令」權限，就能使用下列指令。
 
 ### 版本狀態：先看這裡
@@ -92,8 +92,8 @@ Nickel 只因投稿的歌曲資格而發放，與觀看、按讚、訂閱或留�
 | `/owner show operation:<案件>` | 查看案件證據與歷程 | 已上線 |
 | `/owner approve operation:<案件> citation:<引用> reason:<理由>` | 核准為歌曲 | 已上線 |
 | `/owner reject operation:<案件> citation:<引用> reason:<理由>` | 拒絕 | 已上線 |
-| `/owner confirm_version operation:<案件> reason:<理由> version_name:<版本> source:<來源>` | 確認錄音版本 | 已上線 |
-| `/owner reexamine operation:<案件> reason:<理由> ...` | 正式重審 | 已上線 |
+| `/owner confirm_version operation:<案件> reason:<理由> [version_name:<版本>] [source:<來源>] [evidence_id:<證據>]` | 確認錄音版本（新證據時需填版本參考與來源，依指令說明） | 已上線 |
+| `/owner reexamine operation:<案件> reason:<理由> [version_name:<版本>] [source:<來源>] [evidence_id:<證據>]` | 正式重審 | 已上線 |
 | `/owner duration operation:<案件> seconds:<秒> source:<來源> reason:<理由>` | 在 Discord 補完整影片時長 | **待部署** |
 
 待部署且開啟發獎模式後，確認會在回覆中說明結算結果或尚待條件；Owner 不需操作 ledger 或輸入內部狀態。
@@ -136,7 +136,7 @@ git status
 | Schema migration | `docker compose --profile migrate run --rm migrate plan`，確認後再執行 `... migrate apply --apply` |
 | 就緒檢查（唯讀） | `python -m bot.readiness`（DB-only）；新版 Compose 用 `python -m bot.healthcheck` 同時檢查主 Gateway |
 | 邀請連結 | `python -m bot.invite_link --application-id <id>` |
-| 指令同步 | `python -m bot.command_sync preview`；確認後才執行 `apply`（需要明確旗標與 digest） |
+| 指令同步 | `python -m bot.command_sync preview` 會分別列出全域指令與 Owner 指令（`owner_guild`，未設定 `DISCORD_OWNER_GUILD_ID` 時為 `null`）及各自的 digest；確認後才執行 `apply`（需要明確旗標與對應 digest）。一般指令用 `--target global`；Owner 指令用 `--target owner-guild`，只覆寫 Owner 伺服器的指令集，不會同步到全域 |
 | 舊 MySQL 資料 | `docs/deploy/mysql-to-postgresql-migration-plan.md`（**未執行**的方案） |
 
 ### 架構重點
