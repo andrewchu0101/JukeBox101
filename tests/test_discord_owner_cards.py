@@ -54,6 +54,8 @@ class CardService:
         self.calls: list[tuple] = []
         self.tokens: dict[str, tuple] = {}
         self.confirm_failures: list[Exception] = []  # [scripted failures]: Raised by successive confirms, oldest first.
+        self.versions: list = []  # [known versions]: Rows shaped like the service's KnownVersion, oldest first.
+        self.evidence: list = []  # [recorded evidence]: Evidence records handed to version confirmation previews.
 
     def called(self, name: str) -> list[tuple]:
         """@description: Select recorded calls by method name.
@@ -143,6 +145,33 @@ class CardService:
         item = next(i for i in self.items.values() if i.operation_id == operation_id)
         return self._issue("preview_duration", operation_id, ReviewAction.DURATION, item.revision if expected_revision is None else expected_revision, source)
 
+    def list_known_versions(self, actor_id: int, *, after_sequence=None, limit: int = 5):
+        """@description: Return known versions after the keyset position, oldest first, with the next cursor when more follow.
+        @param self: Fake service.
+        @param actor_id: Caller.
+        @param after_sequence: Position already seen.
+        @param limit: Maximum rows.
+        @return: Page object.
+        """
+        self.calls.append(("list_known_versions", actor_id, after_sequence, limit))
+        rows = [row for row in sorted(self.versions, key=lambda row: row.first_sequence) if after_sequence is None or row.first_sequence > after_sequence]
+        page = tuple(rows[:limit])
+        return SimpleNamespace(items=page, next_after_sequence=page[-1].first_sequence if len(rows) > limit else None)
+
+    def preview_version_confirmation(self, actor_id, operation_id, evidence, reason, expected_revision):
+        """@description: Issue a version-confirmation token bound to the examined revision, like the real service.
+        @param self: Fake service.
+        @param actor_id: Caller.
+        @param operation_id: Case.
+        @param evidence: Evidence record built by the card.
+        @param reason: Audit reason.
+        @param expected_revision: Revision examined.
+        @return: Preview.
+        """
+        self.calls.append(("preview_version_confirmation", actor_id, operation_id, reason, expected_revision, evidence))
+        self.evidence.append(evidence)
+        return self._issue("preview_version_confirmation", operation_id, ReviewAction.CONFIRM_VERSION, expected_revision, evidence.source_reference)
+
     def confirm(self, actor_id: int, token_id: str):
         """@description: Apply the previewed decision once, or raise the scripted failure.
         @param self: Fake service.
@@ -156,6 +185,8 @@ class CardService:
         item, action = self.tokens[token_id]
         if action is ReviewAction.DURATION:
             item.duration_seconds, item.review_status = 120, ReviewStatus.PENDING_REVIEW
+        elif action is ReviewAction.CONFIRM_VERSION:
+            item.identity_status = VersionIdentityStatus.CONFIRMED
         else:
             item.review_status = ReviewStatus.APPROVED if action is ReviewAction.APPROVE else ReviewStatus.REJECTED
         item.revision += 1
@@ -250,17 +281,18 @@ def cards_for(service: CardService) -> OwnerCards:
     return OwnerCards(lambda: service, OWNER_ID, GUILD_ID, lambda: NOW)
 
 
-def press(cards: OwnerCards, action: str, sequence: int, revision: int, interaction: Press | None = None) -> Press:
+def press(cards: OwnerCards, action: str, sequence: int, revision: int, interaction: Press | None = None, extra: int = 0) -> Press:
     """@description: Run one button callback to completion.
     @param cards: Card handler.
     @param action: Button action.
     @param sequence: Acceptance order in the button's custom_id.
     @param revision: Revision in the button's custom_id.
     @param interaction: Press to use, or a default Owner press.
+    @param extra: Opaque choice carried by version buttons: a known version's first acceptance order, or a page cursor.
     @return: The press, for inspecting its replies.
     """
     interaction = interaction or Press()
-    asyncio.run(cards.button_class(action, sequence, revision).callback(interaction))
+    asyncio.run(cards.button_class(action, sequence, revision, extra=extra).callback(interaction))
     return interaction
 
 
@@ -300,11 +332,11 @@ def test_only_the_applicable_buttons_are_enabled_for_each_state():
     @return: None.
     """
     reviewable = asyncio.run(cards_for(CardService(case())).first_replies(OWNER_ID))[0].view
-    assert labels(reviewable) == {"確認通過": True, "拒絕": True, "下一筆": True}
+    assert labels(reviewable) == {"確認通過": True, "拒絕": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
     missing = asyncio.run(cards_for(CardService(case(review=ReviewStatus.PENDING_VALIDATION, duration=None))).first_replies(OWNER_ID))[0].view
-    assert labels(missing) == {"確認通過": False, "拒絕": True, "補時長": True, "下一筆": True}
+    assert labels(missing) == {"確認通過": False, "拒絕": True, "補時長": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
     waiting = asyncio.run(cards_for(CardService(case(review=ReviewStatus.APPROVED))).first_replies(OWNER_ID))[0].view
-    assert labels(waiting) == {"確認通過": False, "拒絕": False, "下一筆": True}
+    assert labels(waiting) == {"確認通過": False, "拒絕": False, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
 
 
 def test_a_press_from_a_non_owner_or_another_guild_reads_and_writes_nothing():
@@ -555,3 +587,174 @@ def test_a_missing_version_mapping_is_never_described_as_a_new_recording():
     assert "沒有這支影片的版本對應" in unresolved and "不代表它是新錄音" in unresolved
     known = asyncio.run(cards_for(CardService(case(identity=VersionIdentityStatus.CONFIRMED))).first_replies(OWNER_ID))[0].text
     assert "沒有這支影片的版本對應" not in known and "版本狀態：已確認" in known
+
+
+def known(sequence: int, video_id: str, version: str = "rv-existing"):
+    """@description: Build a known-version row shaped like the service's KnownVersion, with an internal id the Owner must never see.
+    @param sequence: Acceptance order of the version's first video, which is the card's opaque choice.
+    @param video_id: First video of the version.
+    @param version: Internal version id.
+    @return: Known version row.
+    """
+    return SimpleNamespace(version_id=version, first_sequence=sequence, first_video_id=video_id, created_at=datetime(2026, 10, 20, tzinfo=timezone.utc))
+
+
+def version_service(*versions, **case_fields) -> CardService:
+    """@description: Build a service with one approved case whose version the system does not know, and the given known versions.
+    @param versions: Known version rows.
+    @param case_fields: Overrides for the case row.
+    @return: Fake service.
+    """
+    service = CardService(case(**{"review": ReviewStatus.APPROVED, **case_fields}))
+    service.versions = list(versions)
+    return service
+
+
+MV_ID, OTHER_ID = "MMMMMMMMMMM", "OOOOOOOOOOO"
+
+
+def test_an_unknown_version_lists_known_versions_by_link_and_never_by_internal_id():
+    """@description: The card shows each known version as its first video link with a one-press button, without any internal version id.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(5, MV_ID, "rv-secret-a"), known(9, OTHER_ID, "rv-secret-b"))
+    reply = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0]
+    assert f"watch?v={MV_ID}" in reply.text and f"watch?v={OTHER_ID}" in reply.text and "rv-secret" not in reply.text
+    assert "不代表它是新錄音" in reply.text and "不宣稱特定類別" in reply.text
+    ids = [child.custom_id for child in reply.view.children]
+    assert "ocard:same:1:3:5" in ids and "ocard:same:1:3:9" in ids and all("rv-secret" not in item for item in ids)
+    assert labels(reply.view)["確認為同一錄音 1"] and labels(reply.view)["確認為同一錄音 2"]
+
+
+def test_version_actions_are_offered_only_while_the_version_is_unresolved():
+    """@description: A known or conflicting version offers no version button, because the system already knows or must not be overridden here.
+    @param: none
+    @return: None.
+    """
+    for identity in (VersionIdentityStatus.CONFIRMED, VersionIdentityStatus.CONFLICT):
+        view = asyncio.run(cards_for(version_service(known(5, MV_ID), identity=identity, review=ReviewStatus.PENDING_REVIEW)).first_replies(OWNER_ID))[0].view
+        assert not any(name.startswith(("確認為", "其他情況", "更多")) for name in labels(view))
+
+
+def test_a_new_version_is_created_only_when_the_owner_presses_and_gets_an_opaque_id():
+    """@description: Opening the card creates nothing; the press creates one version whose id is random, not derived from the video, with no category claimed.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    cards = cards_for(service)
+    asyncio.run(cards.first_replies(OWNER_ID))
+    assert not service.called("preview_version_confirmation")
+    shown = press(cards, "new", 1, 3)
+    evidence = service.evidence[0]
+    assert evidence.version.value.startswith("rv-") and "dQw4w9WgXcQ" not in evidence.version.value and evidence.version_kind is None
+    assert "watch?v=dQw4w9WgXcQ" in evidence.source_reference and service.called("preview_version_confirmation")[0][4] == 3
+    assert len(service.called("confirm")) == 1 and "已確認" in shown.shown() and "未發放 Nickel" in shown.shown()
+    assert labels(shown.edits[-1]["view"]) == {"下一筆": True}
+
+
+def test_choosing_a_known_version_records_the_same_recording_without_naming_a_category():
+    """@description: The selected known version becomes this video's version, the source names both videos, and no MV or audio category is claimed.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(5, MV_ID, "rv-a"), known(9, OTHER_ID, "rv-b"))
+    shown = press(cards_for(service), "same", 1, 3, extra=9)
+    evidence = service.evidence[0]
+    assert evidence.version.value == "rv-b" and evidence.version_kind is None
+    assert f"watch?v={OTHER_ID}" in evidence.source_reference and "watch?v=dQw4w9WgXcQ" in evidence.source_reference
+    assert "MV" not in evidence.source_reference and "已確認" in shown.shown()
+
+
+def test_a_choice_that_no_longer_exists_is_refused_without_a_write():
+    """@description: A version button whose version disappeared or never existed writes nothing and offers a reload.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(5, MV_ID))
+    shown = press(cards_for(service), "same", 1, 3, extra=99)
+    assert not service.called("preview_version_confirmation") and not service.called("confirm")
+    assert "重新載入" in shown.shown()
+
+
+def test_version_buttons_on_an_old_or_resolved_card_write_nothing():
+    """@description: A newer revision or an already resolved version makes the old version buttons stale.
+    @param: none
+    @return: None.
+    """
+    for fields in ({"revision": 4}, {"identity": VersionIdentityStatus.CONFIRMED, "review": ReviewStatus.PENDING_REVIEW}):  # [still queued]: The case stays pending, so only the version guard can refuse.
+        service = version_service(known(5, MV_ID), **fields)
+        shown = press(cards_for(service), "new", 1, 3)
+        assert not service.called("preview_version_confirmation") and "重新載入" in shown.shown()
+
+
+def test_two_simultaneous_new_version_presses_create_one_version():
+    """@description: A double click on the new-version button previews and confirms once.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    cards = cards_for(service)
+    first, second = Press(), Press()
+
+    async def both():
+        """@description: Press the same button twice at the same moment.
+        @param: none
+        @return: None.
+        """
+        button = cards.button_class("new", 1, 3)
+        await asyncio.gather(button.callback(first), button.callback(second))
+
+    asyncio.run(both())
+    assert len(service.called("preview_version_confirmation")) == 1 and len(service.called("confirm")) == 1
+    assert sorted("已確認" in p.shown() for p in (first, second)) == [False, True]
+
+
+def test_an_unknown_version_outcome_is_retried_with_the_same_token_and_version():
+    """@description: After a lost acknowledgement the retry confirms the same token, so the same version id is used and no second version appears.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    service.confirm_failures = [ReviewOutcomeUnknown("lost")]
+    cards = cards_for(service)
+    assert "未知" in press(cards, "new", 1, 3).shown()
+    assert "已確認" in press(cards, "new", 1, 3).shown()
+    assert len(service.evidence) == 1 and len(service.called("confirm")) == 2
+
+
+def test_other_cases_point_to_the_existing_command_and_write_nothing():
+    """@description: Special categories keep their existing evidence rules through /owner confirm_version; the button only explains that.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(5, MV_ID))
+    shown = press(cards_for(service), "other", 1, 3)
+    assert "/owner confirm_version" in shown.shown() and "version_kind" in shown.shown()
+    assert not (service.called("preview_version_confirmation") or service.called("confirm"))
+
+
+def test_more_known_versions_are_paged_without_any_write():
+    """@description: Seven known versions show five at a time; the next page shows the rest and changes nothing.
+    @param: none
+    @return: None.
+    """
+    service = version_service(*[known(10 + number, f"V{number:010d}", f"rv-{number}") for number in range(7)])
+    cards = cards_for(service)
+    first = asyncio.run(cards.first_replies(OWNER_ID))[0]
+    assert sum(1 for name in labels(first.view) if name.startswith("確認為同一錄音")) == 5 and labels(first.view)["更多已知版本"]
+    cursor = int(next(c.custom_id for c in first.view.children if c.custom_id.startswith("ocard:vpage")).rsplit(":", 1)[1])
+    second = press(cards, "vpage", 1, 3, extra=cursor)
+    assert sum(1 for name in labels(second.edits[-1]["view"]) if name.startswith("確認為同一錄音")) == 2
+    assert not (service.called("preview_version_confirmation") or service.called("confirm"))
+
+
+def test_a_foreign_press_on_a_version_button_reads_and_writes_nothing():
+    """@description: The gate runs before any version read or write.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(5, MV_ID))
+    foreign = press(cards_for(service), "new", 1, 3, Press(OTHER_USER_ID))
+    assert service.calls == [] and foreign.edits == [] and foreign.response.messages

@@ -6,6 +6,7 @@ Existing Hybrid Review transitions enforce duration gates; operation-keyed audit
 import hashlib
 import json
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
 from bot.database.reward_settlement import current_decisions, persist_decisions
@@ -860,6 +861,49 @@ def _pending_item(cursor: Any, row: dict, review: ReviewSnapshot, identity: Vers
     return PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status, review.version,
                        len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity), row["discord_user_id"],
                        _known_duration_seconds(review))
+
+
+MAX_KNOWN_VERSIONS_PAGE = 10  # [page size cap]: Keeps the known-version list inside one Discord card.
+_VERSION_VALUE_PATH = "'{value,fields,version,fields,value}'"  # [stored version]: JSON path of the asserted version inside identity_json.
+_IDENTITY_STATUS_PATH = "'{value,fields,status,value}'"  # [stored status]: JSON path of the identity status inside identity_json.
+
+
+@dataclass(frozen=True)
+class KnownVersion:
+    """Describe one recording version the Owner has already confirmed, by its first video, never by a title."""
+
+    version_id: str  # [internal identity]: Canonical root of the version; the card keeps it internal and never shows it.
+    first_sequence: int  # [opaque choice]: Acceptance order of the version's first video; also the paging cursor.
+    first_video_id: str  # [recognizable name]: Video that first carried the version, shown as a link.
+    created_at: datetime  # [creation time]: When the version was first recorded.
+
+
+@dataclass(frozen=True)
+class KnownVersionPage:
+    """Carry one bounded slice of the known versions plus the cursor for the next slice."""
+
+    items: tuple[KnownVersion, ...]  # [page rows]: At most the capped page size, oldest first.
+    next_after_sequence: int | None  # [keyset cursor]: Pass back as after_sequence; None when no later version exists.
+
+
+def known_versions_page(cursor: Any, after_sequence: int | None, limit: int) -> KnownVersionPage:
+    """@description: Read one keyset page of confirmed recording versions, one per canonical root, transferring at most one row more than the page.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param after_sequence: First-video acceptance order already shown, or None for the first page.
+    @param limit: Page size already capped by the service.
+    @return: Page of known versions, oldest first, with the next cursor only when a further version exists.
+    """
+    rows = fetch_all(cursor, "SELECT ver.canonical_id AS version_id, MIN(e.accepted_sequence) AS first_sequence, MIN(root.created_at) AS created_at "
+                             "FROM jb2_videos v JOIN jb2_events e ON e.video_id = v.video_id "
+                             f"JOIN jb2_versions ver ON ver.version_id = (v.identity_json::jsonb #>> {_VERSION_VALUE_PATH}) "
+                             "JOIN jb2_versions root ON root.version_id = ver.canonical_id "
+                             f"WHERE (v.identity_json::jsonb #>> {_IDENTITY_STATUS_PATH}) = '{VersionIdentityStatus.CONFIRMED.value}' "
+                             "GROUP BY ver.canonical_id HAVING MIN(e.accepted_sequence) > %s ORDER BY first_sequence LIMIT %s",
+                     (0 if after_sequence is None else after_sequence, limit + 1))
+    first_videos = {row["accepted_sequence"]: row["video_id"] for row in fetch_all(
+        cursor, "SELECT accepted_sequence, video_id FROM jb2_events WHERE accepted_sequence = ANY(%s)", ([row["first_sequence"] for row in rows[:limit]],))}
+    page = tuple(KnownVersion(row["version_id"], row["first_sequence"], first_videos[row["first_sequence"]], row["created_at"]) for row in rows[:limit])
+    return KnownVersionPage(page, page[-1].first_sequence if len(rows) > limit else None)
 
 
 def _known_duration_seconds(review: ReviewSnapshot) -> int | None:

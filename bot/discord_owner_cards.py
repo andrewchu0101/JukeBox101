@@ -15,22 +15,31 @@ from bot.discord_owner_review import (
     IDENTITY_LABELS, MAX_REASON_LENGTH, MAX_DURATION_OPTION_SECONDS, NO_MENTIONS, REVIEW_LABELS, SETTLEMENT_UNCONFIRMED_TEXT,
     OwnerGate, _call_service, _confirmed_text, _guarded, _Reply,
 )
+from bot.owner_card_versions import (
+    KNOWN_VERSIONS_PER_CARD, NEW_HEADLINE, NEW_REASON, OTHER_HINT, PROMISE_LINES, SAME_HEADLINE, SAME_REASON, manual_check_source,
+    new_version_identity, render_known_versions, version_evidence,
+)
 from bot.owner_review import OwnerReviewService, ReviewAction, ReviewOutcomeUnknown
 from bot.review import ReviewStatus, StaleReviewVersion
 from bot.song_judgement import ContentJudgement
-from bot.version_identity import VersionIdentityStatus
+from bot.version_identity import RecordingVersionIdentity, VersionIdentityStatus
 
 _LOGGER = logging.getLogger(__name__)
-CARD_PATTERN = r"ocard:(?P<action>approve|reject|duration|next|reload):(?P<sequence>\d+):(?P<revision>\d+)"  # [button id]: Action, acceptance order and displayed revision.
+CARD_PATTERN = (r"ocard:(?P<action>approve|reject|duration|next|reload|new|same|other|vpage):(?P<sequence>\d+):(?P<revision>\d+)"
+                r"(?::(?P<extra>\d+))?")  # [button id]: Action, acceptance order, displayed revision and, for version buttons, an opaque choice.
+EXTRA_ACTIONS = {"same", "vpage"}  # [choice carriers]: Actions whose id also carries a known version or a page cursor.
+VERSION_ACTIONS = {"new", "same", "other", "vpage"}  # [version buttons]: Offered only while the version is unresolved.
 APPROVE_REASON = "Owner 於案件卡片核准歌曲資格"  # [audit reason]: Stored with an approval made from a card.
 DURATION_REASON = "Owner 於案件卡片補完整影片時長"  # [audit reason]: Stored with a duration entered from a card.
 CITATION_PREFIX = "owner-card:"  # [audit citation]: Followed by the video id the Owner just viewed on the card.
 DECIDABLE_STATES = {ReviewStatus.PENDING_VALIDATION, ReviewStatus.PENDING_REVIEW, ReviewStatus.VALIDATION_FAILED}  # [open reviews]: States a card may reject.
 DURATION_STATES = {ReviewStatus.PENDING_VALIDATION, ReviewStatus.VALIDATION_FAILED}  # [missing duration]: States where a duration entry makes sense.
 MAX_TRACKED_LOCKS = 1000  # [memory bound]: Unlocked per-case locks are dropped beyond this many.
-BUTTON_LABELS = {"approve": "確認通過", "reject": "拒絕", "duration": "補時長", "next": "下一筆", "reload": "重新載入"}  # [button text]: One label per action.
+BUTTON_LABELS = {"approve": "確認通過", "reject": "拒絕", "duration": "補時長", "next": "下一筆", "reload": "重新載入",
+                 "new": "確認為新的錄音版本", "same": "確認為同一錄音", "other": "其他情況…", "vpage": "更多已知版本"}  # [button text]: One label per action.
 BUTTON_STYLES = {"approve": discord.ButtonStyle.success, "reject": discord.ButtonStyle.danger, "duration": discord.ButtonStyle.secondary,
-                 "next": discord.ButtonStyle.secondary, "reload": discord.ButtonStyle.primary}  # [button look]: One style per action.
+                 "next": discord.ButtonStyle.secondary, "reload": discord.ButtonStyle.primary, "new": discord.ButtonStyle.success,
+                 "same": discord.ButtonStyle.success, "other": discord.ButtonStyle.secondary, "vpage": discord.ButtonStyle.secondary}  # [button look]: One style per action.
 EMPTY_QUEUE_TEXT = "目前沒有待處理案件。"
 NO_MORE_TEXT = "目前沒有更多待處理案件。"
 STALE_CARD_TEXT = "此案件已變更或已處理，這張卡片已失效，沒有執行任何操作。請按「重新載入」。"  # [stale card]: Never claims a decision.
@@ -58,7 +67,7 @@ def waiting_reason(item) -> str:
     reasons = {ReviewStatus.PENDING_VALIDATION: "尚無官方時長，等待自動取得或由 Owner 補時長",
                ReviewStatus.VALIDATION_FAILED: "無法取得影片資料（可能已刪除或未公開），待 Owner 處理",
                ReviewStatus.PENDING_REVIEW: "待 Owner 審核歌曲資格",
-               ReviewStatus.APPROVED: "歌曲已核准，待確認錄音版本（請用 /owner confirm_version）"}
+               ReviewStatus.APPROVED: "歌曲已核准，版本待 Owner 判斷"}
     return reasons.get(item.review_status, "待處理")
 
 
@@ -73,15 +82,19 @@ def _version_line(item) -> str:
     return f"版本狀態：{label}"
 
 
-def render_card(item) -> str:
+def render_card(item, versions=None, has_more_versions: bool = False) -> str:
     """@description: Show one pending case with everything needed to decide it, and never its internal operation id.
     @param item: Pending row with submitter, link, duration and states.
-    @return: Card text.
+    @param versions: Known versions of this page when the version is unresolved, otherwise None.
+    @param has_more_versions: Whether a further page of known versions exists.
+    @return: Card text; an unresolved version also lists the known versions and states what each version button promises.
     """
-    return "\n".join([
-        "待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{item.source_url}", f"已知時長：{_duration_text(item.duration_seconds)}",
-        f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item),
-        f"待處理：{waiting_reason(item)}", "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"])
+    lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{item.source_url}", f"已知時長：{_duration_text(item.duration_seconds)}",
+             f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item), f"待處理：{waiting_reason(item)}",
+             "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"]
+    if versions is not None:
+        lines += ["", render_known_versions(versions, has_more_versions), "", *PROMISE_LINES]
+    return "\n".join(lines)
 
 
 def render_result(item, confirmed_text: str, reward_note: str) -> str:
@@ -100,18 +113,23 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
 
     cards: "OwnerCards"  # [bound handler]: Set on the subclass the client registers; the base class is never registered.
 
-    def __init__(self, action: str, sequence: int, revision: int, *, disabled: bool = False) -> None:
+    def __init__(self, action: str, sequence: int, revision: int, *, disabled: bool = False, extra: int = 0, row: int | None = None,
+                 label: str | None = None) -> None:
         """@description: Bind the action to the case position and revision that the card displayed.
         @param self: Button.
         @param action: One of the card actions.
         @param sequence: Acceptance order of the displayed case.
         @param revision: Review revision the card displayed.
         @param disabled: Whether the action does not apply to the displayed state.
+        @param extra: Opaque choice of a version button: a known version's first acceptance order, or a page cursor.
+        @param row: Button row, so the groups of actions stay in their own rows.
+        @param label: Text overriding the action's default label.
         @return: None.
         """
-        self.action, self.sequence, self.revision = action, sequence, revision
-        super().__init__(discord.ui.Button(label=BUTTON_LABELS[action], style=BUTTON_STYLES[action], disabled=disabled,
-                                           custom_id=f"ocard:{action}:{sequence}:{revision}"))
+        self.action, self.sequence, self.revision, self.extra = action, sequence, revision, extra
+        tail = f":{extra}" if action in EXTRA_ACTIONS else ""
+        super().__init__(discord.ui.Button(label=label or BUTTON_LABELS[action], style=BUTTON_STYLES[action], disabled=disabled,
+                                           custom_id=f"ocard:{action}:{sequence}:{revision}{tail}"), row=row)
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Button, match):
@@ -122,7 +140,7 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
         @param match: Template match carrying action, order and revision.
         @return: Button ready to run its callback.
         """
-        return cls(match["action"], int(match["sequence"]), int(match["revision"]))
+        return cls(match["action"], int(match["sequence"]), int(match["revision"]), extra=int(match["extra"] or 0))
 
     async def callback(self, interaction: discord.Interaction) -> None:
         """@description: Run the pressed action through the handler.
@@ -130,7 +148,7 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
         @param interaction: Press.
         @return: None.
         """
-        await self.cards.press(interaction, self.action, self.sequence, self.revision)
+        await self.cards.press(interaction, self.action, self.sequence, self.revision, self.extra)
 
 
 def _make_button_class(cards: "OwnerCards"):
@@ -201,13 +219,14 @@ class OwnerCards:
         """
         return [await self._card_after(actor_id, None)]
 
-    async def press(self, interaction: discord.Interaction, action: str, sequence: int, revision: int) -> None:
+    async def press(self, interaction: discord.Interaction, action: str, sequence: int, revision: int, extra: int = 0) -> None:
         """@description: Admit the Owner, then open a form or run the pressed action and update the card with what really happened.
         @param self: Card handler.
         @param interaction: Button press.
         @param action: Pressed action.
         @param sequence: Acceptance order in the button id.
         @param revision: Displayed revision in the button id.
+        @param extra: Opaque choice of a version button.
         @return: None.
         """
         if not await self._gate.admit(interaction):
@@ -216,7 +235,7 @@ class OwnerCards:
             await interaction.response.send_modal(_CardModal(self, action, sequence, revision))
             return
         await interaction.response.defer()
-        reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, ())))[0]
+        reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, (), extra)))[0]
         await self._show(interaction, reply)
 
     async def submit(self, interaction: discord.Interaction, action: str, sequence: int, revision: int, values: tuple[str, ...]) -> None:
@@ -254,7 +273,7 @@ class OwnerCards:
             self._locks = {key: lock for key, lock in self._locks.items() if lock.locked()}
         return self._locks.setdefault(sequence, asyncio.Lock())
 
-    async def _run(self, actor_id: int, action: str, sequence: int, revision: int, values: tuple[str, ...]) -> _Reply:
+    async def _run(self, actor_id: int, action: str, sequence: int, revision: int, values: tuple[str, ...], extra: int = 0) -> _Reply:
         """@description: Serialize presses of one case and route the action.
         @param self: Card handler.
         @param actor_id: Admitted Owner identifier.
@@ -262,6 +281,7 @@ class OwnerCards:
         @param sequence: Acceptance order of the displayed case.
         @param revision: Displayed revision.
         @param values: Typed form values, empty for plain buttons.
+        @param extra: Opaque choice of a version button.
         @return: The reply that replaces the card.
         """
         async with self._lock_for(sequence):
@@ -272,6 +292,8 @@ class OwnerCards:
             item = await self._item_at(actor_id, sequence)
             if item is None or item.revision != revision:
                 return self._stale_reply(sequence)
+            if action in VERSION_ACTIONS:
+                return await self._version_action(actor_id, item, action, extra)
             return await self._decide_action(actor_id, item, action, values)
 
     async def _decide_action(self, actor_id: int, item, action: str, values: tuple[str, ...]) -> _Reply:
@@ -292,6 +314,65 @@ class OwnerCards:
             return await self._judgement(actor_id, item, action, values)
         except StaleReviewVersion:
             return self._stale_reply(item.accepted_sequence)
+
+    async def _version_action(self, actor_id: int, item, action: str, extra: int) -> _Reply:
+        """@description: Run a version button only while the system still lacks the version; every other state is a stale card.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param item: Current pending row, already matched to the displayed revision.
+        @param action: new, same, other or vpage.
+        @param extra: Opaque choice: a known version's first acceptance order, or a page cursor.
+        @return: Result reply, the card again, or the stale reply.
+        """
+        if item.identity_status is not VersionIdentityStatus.UNRESOLVED:
+            return self._stale_reply(item.accepted_sequence)
+        if action == "other":
+            return await self._card_reply(actor_id, item, note=OTHER_HINT)
+        if action == "vpage":
+            return await self._card_reply(actor_id, item, versions_after=extra)
+        try:
+            return await self._confirm_version(actor_id, item, action, extra)
+        except StaleReviewVersion:
+            return self._stale_reply(item.accepted_sequence)
+
+    async def _confirm_version(self, actor_id: int, item, action: str, extra: int) -> _Reply:
+        """@description: Record the Owner's version judgement against the displayed revision: a new version, or the selected known one.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param item: Pending row at the displayed revision.
+        @param action: new or same.
+        @param extra: First acceptance order of the selected known version; unused for a new version.
+        @return: Result reply, or the stale reply when the selected version no longer exists.
+        """
+        known = None if action == "new" else await self._known_version(actor_id, extra)
+        if action == "same" and known is None:
+            return self._stale_reply(item.accepted_sequence)
+        retrieved_at, reason = self._now(), NEW_REASON if known is None else SAME_REASON
+
+        def preview(service: OwnerReviewService):
+            """@description: Build the evidence on the worker thread and preview the version confirmation at the displayed revision.
+            @param service: Review service.
+            @return: Version-confirmation preview.
+            """
+            video = service.view(actor_id, item.operation_id).review.video
+            identity = new_version_identity() if known is None else RecordingVersionIdentity(known.version_id)
+            source = manual_check_source(video.video_id, None if known is None else known.first_video_id)
+            evidence = version_evidence(video, identity, source, retrieved_at, reason, actor_id)
+            return service.preview_version_confirmation(actor_id, item.operation_id, evidence, reason, item.revision)
+
+        key_action = "new" if known is None else f"same:{extra}"
+        return await self._confirm(actor_id, item, key_action, preview, NEW_HEADLINE if known is None else SAME_HEADLINE)
+
+    async def _known_version(self, actor_id: int, first_sequence: int):
+        """@description: Find the known version a button refers to, or nothing when it no longer exists.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param first_sequence: First acceptance order carried by the button.
+        @return: Known version, or None.
+        """
+        page = await _call_service(self._service_provider, lambda service: service.list_known_versions(
+            actor_id, after_sequence=None if first_sequence <= 1 else first_sequence - 1, limit=1))
+        return page.items[0] if page.items and page.items[0].first_sequence == first_sequence else None
 
     async def _judgement(self, actor_id: int, item, action: str, values: tuple[str, ...]) -> _Reply:
         """@description: Approve or reject against the displayed revision, citing the video the Owner just viewed.
@@ -326,13 +407,14 @@ class OwnerCards:
         return await self._confirm(actor_id, item, "duration", lambda service: service.preview_duration(
             actor_id, item.operation_id, int(seconds_text), source, DURATION_REASON, expected_revision=item.revision))
 
-    async def _confirm(self, actor_id: int, item, action: str, preview_call: Callable[[OwnerReviewService], object]) -> _Reply:
+    async def _confirm(self, actor_id: int, item, action: str, preview_call: Callable[[OwnerReviewService], object], headline: str = "") -> _Reply:
         """@description: Preview once, confirm immediately, and keep the token if the outcome is unknown so a retry replays the same decision.
         @param self: Card handler.
         @param actor_id: Admitted Owner identifier.
         @param item: Pending row at the displayed revision.
         @param action: Action name, part of the token key.
         @param preview_call: Service preview for this action.
+        @param headline: Sentence stating what the Owner's judgement recorded, shown above the committed revision.
         @return: Result reply, or the unknown-outcome reply with the original buttons.
         """
         key = (item.accepted_sequence, item.revision, action)
@@ -343,10 +425,11 @@ class OwnerCards:
         try:
             snapshot = await _call_service(self._service_provider, lambda service: service.confirm(actor_id, token_id))
         except ReviewOutcomeUnknown:
-            return _Reply(f"{render_card(item)}\n{UNKNOWN_OUTCOME_TEXT}", self._card_view(item))
+            return await self._card_reply(actor_id, item, note=UNKNOWN_OUTCOME_TEXT)
         self._open_tokens.pop(key, None)
         note = await self._reward_note(actor_id, item.operation_id)
-        return _Reply(render_result(item, _confirmed_text(snapshot), note), self._view([self._button("next", item.accepted_sequence, 0)]))
+        confirmed = f"{headline}\n{_confirmed_text(snapshot)}" if headline else _confirmed_text(snapshot)
+        return _Reply(render_result(item, confirmed, note), self._view([self._button("next", item.accepted_sequence, 0)]))
 
     async def _reward_note(self, actor_id: int, operation_id: str) -> str:
         """@description: Report the reward and version state after a committed decision; a follow-up failure never rewrites the decision.
@@ -384,7 +467,24 @@ class OwnerCards:
         if not page.items:
             view = None if empty_text == EMPTY_QUEUE_TEXT else self._view([self._button("reload", 0, 0)])
             return _Reply(empty_text, view)
-        return _Reply(render_card(page.items[0]), self._card_view(page.items[0]))
+        return await self._card_reply(actor_id, page.items[0])
+
+    async def _card_reply(self, actor_id: int, item, *, versions_after: int | None = None, note: str = "") -> _Reply:
+        """@description: Build a case card; while the version is unresolved it also lists one page of known versions with a one-press button each.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param item: Pending row to show.
+        @param versions_after: Page cursor of the known versions, or None for the first page.
+        @param note: Sentence appended below the card, such as guidance or an unknown outcome.
+        @return: Card text and view.
+        """
+        versions, next_after = None, None
+        if item.identity_status is VersionIdentityStatus.UNRESOLVED:
+            page = await _call_service(self._service_provider, lambda service: service.list_known_versions(
+                actor_id, after_sequence=versions_after, limit=KNOWN_VERSIONS_PER_CARD))
+            versions, next_after = page.items, page.next_after_sequence
+        text = render_card(item, versions, next_after is not None)
+        return _Reply(f"{text}\n\n{note}" if note else text, self._card_view(item, versions or (), next_after))
 
     def _stale_reply(self, sequence: int) -> _Reply:
         """@description: Refuse an out-of-date card, saying nothing was done and offering a reload.
@@ -394,16 +494,20 @@ class OwnerCards:
         """
         return _Reply(STALE_CARD_TEXT, self._view([self._button("reload", sequence, 0)]))
 
-    def _button(self, action: str, sequence: int, revision: int, disabled: bool = False):
+    def _button(self, action: str, sequence: int, revision: int, disabled: bool = False, *, extra: int = 0, row: int | None = None,
+                label: str | None = None):
         """@description: Build one card button.
         @param self: Card handler.
         @param action: Card action.
         @param sequence: Acceptance order.
         @param revision: Displayed revision.
         @param disabled: Whether the action does not apply.
+        @param extra: Opaque choice of a version button.
+        @param row: Button row.
+        @param label: Text overriding the default label.
         @return: Dynamic button.
         """
-        return self.button_class(action, sequence, revision, disabled=disabled)
+        return self.button_class(action, sequence, revision, disabled=disabled, extra=extra, row=row, label=label)
 
     def _view(self, buttons: list) -> discord.ui.View:
         """@description: Put buttons on a view that does not time out, because their ids rebuild them after any delay or restart.
@@ -416,15 +520,24 @@ class OwnerCards:
             view.add_item(button)
         return view
 
-    def _card_view(self, item) -> discord.ui.View:
-        """@description: Offer only the actions that apply to the displayed state; the duration entry appears only when the duration is missing.
+    def _card_view(self, item, versions=(), next_after: int | None = None) -> discord.ui.View:
+        """@description: Offer only the actions that apply to the displayed state; version actions appear only while the system lacks the version.
         @param self: Card handler.
         @param item: Pending row.
+        @param versions: Known versions of this page, each with its own one-press button.
+        @param next_after: Cursor of the next page of known versions, or None.
         @return: Card view.
         """
         sequence, revision, status = item.accepted_sequence, item.revision, item.review_status
-        buttons = [self._button("approve", sequence, revision, status is not ReviewStatus.PENDING_REVIEW),
-                   self._button("reject", sequence, revision, status not in DECIDABLE_STATES)]
+        buttons = [self._button("approve", sequence, revision, status is not ReviewStatus.PENDING_REVIEW, row=0),
+                   self._button("reject", sequence, revision, status not in DECIDABLE_STATES, row=0)]
         if item.duration_seconds is None and status in DURATION_STATES:
-            buttons.append(self._button("duration", sequence, revision))
-        return self._view([*buttons, self._button("next", sequence, 0)])
+            buttons.append(self._button("duration", sequence, revision, row=0))
+        buttons.append(self._button("next", sequence, 0, row=0))
+        if item.identity_status is VersionIdentityStatus.UNRESOLVED:
+            buttons += [self._button("new", sequence, revision, row=1), self._button("other", sequence, revision, row=1)]
+            buttons += [self._button("same", sequence, revision, extra=version.first_sequence, row=2, label=f"確認為同一錄音 {number}")
+                        for number, version in enumerate(versions, 1)]
+            if next_after is not None:
+                buttons.append(self._button("vpage", sequence, revision, extra=next_after, row=3))
+        return self._view(buttons)

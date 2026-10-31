@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 from bot.database.review_persistence import (
-    MAX_PENDING_PAGE, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
+    MAX_KNOWN_VERSIONS_PAGE, MAX_PENDING_PAGE, KnownVersionPage, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
     decision_digest, require_owner,
 )
 from bot.database.review_projection import ReviewProjection
@@ -276,6 +276,21 @@ class OwnerReviewService:
         if type(limit) is not int or limit < 1:
             raise ValueError("A positive page size is required")
         return self._repository.pending_items(actor_id, after_sequence, min(limit, MAX_PENDING_PAGE))
+
+    def list_known_versions(self, actor_id: int, *, after_sequence: int | None = None, limit: int = MAX_KNOWN_VERSIONS_PAGE) -> KnownVersionPage:
+        """@description: Show one keyset page of the recording versions already confirmed, so the Owner can recognize one without typing an id, read-only.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @param after_sequence: First-video acceptance order already seen, from the previous page's next cursor, or None for the first page.
+        @param limit: Requested page size, capped at the maximum page size.
+        @return: One page of known versions, oldest first, with the cursor for the next page.
+        """
+        require_owner(actor_id, self._owner_id, "owner known versions")
+        if after_sequence is not None and (type(after_sequence) is not int or after_sequence < 0):
+            raise ValueError("A paging cursor must be a non-negative accepted sequence")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("A positive page size is required")
+        return self._repository.known_versions(actor_id, after_sequence, min(limit, MAX_KNOWN_VERSIONS_PAGE))
 
     def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
         """@description: Return a stored Owner evidence record for the operation's video so the Owner can cite it again.

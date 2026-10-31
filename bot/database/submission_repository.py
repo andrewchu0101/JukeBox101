@@ -33,8 +33,8 @@ from bot.database.compensation_store import (
 from bot.database.pending_review import owner_stranded_rows
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import (
-    PendingPage, ReexaminationCommand, ReexaminationPlan, ReviewCommand, VersionConfirmationCommand, VersionConfirmationPlan,
-    apply_reexamination, apply_review, apply_version_confirmation, pending_review_page, plan_reexamination,
+    KnownVersionPage, PendingPage, ReexaminationCommand, ReexaminationPlan, ReviewCommand, VersionConfirmationCommand, VersionConfirmationPlan,
+    apply_reexamination, apply_review, apply_version_confirmation, known_versions_page, pending_review_page, plan_reexamination,
     plan_version_confirmation, require_owner, stored_evidence_record,
 )
 from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
@@ -554,6 +554,18 @@ class SubmissionRepository:
         require_owner(actor_id, self._owner_id, "owner pending list")
         with submission_transaction(self._factory) as (cursor, _control):
             return pending_review_page(cursor, after_sequence, limit)
+
+    def known_versions(self, actor_id: int, after_sequence: int | None, limit: int) -> KnownVersionPage:
+        """@description: Read one keyset page of the recording versions the Owner has already confirmed, without writing.
+        @param self: Repository retaining deployment Owner identity.
+        @param actor_id: Authenticated caller that must be the configured Owner.
+        @param after_sequence: First-video acceptance order already shown, or None for the first page.
+        @param limit: Page size already capped by the service.
+        @return: One page of known versions, oldest first.
+        """
+        require_owner(actor_id, self._owner_id, "owner known versions")
+        with submission_transaction(self._factory) as (cursor, _control):
+            return known_versions_page(cursor, after_sequence, limit)
 
     def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
         """@description: Return a stored Owner evidence record of the operation's video so the Owner can cite it again without retyping.
