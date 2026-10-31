@@ -163,7 +163,7 @@ CREATE TABLE jb2_api_observations (
 | 角色 | 新增權限 | 理由 |
 | --- | --- | --- |
 | 應用程式角色 | `jb2_api_observations`：SELECT、INSERT、UPDATE（不給 DELETE） | 取得與刷新；就地更新即可，無需刪除 |
-| 清除專用角色（新，建議） | `jb2_api_observations`：UPDATE；對其他表無權限 | 到期清除不需要應用程式帳號，保持應用程式角色最小權限 |
+| ~~清除專用角色~~（已簡化，不需要） | — | 清除是把數值設為 NULL 的 `UPDATE`，應用程式角色本來就有；在可丟棄 PG17／18 驗證過：應用程式角色可 `UPDATE`、不能 `DELETE`、不能改歷史表。可核准的草稿見 [api-retention-migration-draft.md](api-retention-migration-draft.md) |
 | 遷移專用角色（暫時） | 第三節 #2–#5 的 UPDATE | 只在一次性遷移期間存在 |
 
 原有「應用程式從不 DELETE、不改 DDL」的原則維持不變。
