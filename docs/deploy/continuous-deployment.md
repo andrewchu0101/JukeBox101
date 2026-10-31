@@ -1,6 +1,16 @@
-# JukeBox101 持續部署
+# JukeBox101 持續部署（歷史設計，現已停用）
 
-## 執行後會發生什麼
+## 目前生效的規則（PR #9 分支）
+
+PR #9 將測試與正式發布分離：PR／main 只執行安全的假資料 CI。Release、Deploy 已改成 `workflow_dispatch` 的未啟用佔位 job，沒有任何 GHCR 發布、SSH 或 production secret 使用。Notify 只追蹤 CI。設定 `CD_ENABLED=true` 不會恢復已移除的發布／部署流程。
+
+下面保留原本的架構與安裝方案供未來另案審閱，**不是目前可執行的上線步驟**。不要依此安裝主機服務、改開關或假設合併 main 會發布。未來正式發布須另開變更，重新安排 runtime／DB 相容性、來源驗證與 VPS 驗收；本次沒有修改主機、外部設定或 production secrets。
+
+現行操作與證據見 [CI/CD 快速隔離演練](cicd-smoke.md)。
+
+## 以下為原設計的歷史參考
+
+## 原設計執行後會發生什麼
 
 PR 只測試，不取用部署秘密。合併 main 後，`Release` 呼叫同一個 CI，建立一次 runtime，對同一 image ID 執行離線、Compose、PostgreSQL 18.6／17.11 與 TLS 驗證。成功後才把這個映像推送 GHCR，產生 GitHub OIDC 來源證明與 `release.json`。不在測試後重建部署映像。
 

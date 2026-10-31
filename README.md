@@ -154,11 +154,11 @@ git status
 
 想先安全驗證協作流程，可執行 [CI/CD 快速隔離演練](docs/deploy/cicd-smoke.md)：一個短指令測試假 receipt、workflow gate、通知分類與隔離 Compose 切換／回滾，無須正式服務或秘密；這是 deployment E2E simulation，不是 production E2E。DB 參數傳遞以既有 mock 契約測試驗證，真實連線／接收／寫入另標為未執行或未驗證。
 
-PR 自動測試；合併 main 後，Release 對同一份 runtime 執行離線、PostgreSQL 18／17 與 TLS 驗證，再發布 GHCR 與來源證明。正式驗收與啟用後，Deploy 在 Release 完成後自動進行受限主機部署，不需逐次人工核准；主機獨立驗證、先停舊版再啟動唯一新版，失敗時嘗試一次回滾。
+PR 與合併 main 只建置開發測試映像、執行無網路假資料 smoke／隔離 Compose 演練並保存報告。自動 CI 不啟動資料庫、不執行 migration、不建置或匯出正式 runtime、不登入或推送 GHCR，也不連線 VPS。
 
-**正式自動部署預設關閉。** 安裝檔、設定位置、首次 baseline、必要權限與驗收步驟見 [持續部署手冊](docs/deploy/continuous-deployment.md)。合併 workflow 不等於主機已安裝或正式 CD 已驗收。CD 不會套用 migration、還原 DB、同步 Discord 指令或開啟交換／領點。
+**正式發布與部署留待後續獨立變更。** `Release`、`Deploy` 現在只有未啟用的手動佔位 job；沒有 main push／Release 完成的自動串接，也沒有發布、SSH、production secrets 或可由 `CD_ENABLED` 開啟的功能。原設計保留在 Git 歷史與 [歷史部署手冊](docs/deploy/continuous-deployment.md)，不能直接照舊手冊啟用。
 
-兩位維護者各自訂閱 [CI/CD 通知 Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7)，再開啟個人 GitHub／Email 通知，即可收到 CI、Release 與 Deploy 的結果。通知 workflow 合併到 main 後才生效。
+既有 [CI 通知 Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7) 保留，但 Notify 只追蹤 CI 結果；測試通過不表示已發布、已部署或 DB 寫入成功。兩位維護者各自訂閱並設定個人 GitHub／Email 通知，實際送達仍須另行確認。
 
 ### 開發與測試
 

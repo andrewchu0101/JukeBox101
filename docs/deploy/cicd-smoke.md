@@ -1,58 +1,45 @@
-# CI/CD 快速隔離演練
+# CI/CD 安全測試與正式發布分離
 
-這是 **isolated deployment E2E simulation / CI/CD smoke test**。Smoke test 快速檢查關鍵規則與失敗路徑；此處的隔離 E2E 串起真實 receipt 解碼、持久佇列、控制器、假 Gateway 程序及通知分類，另以真實 Docker Compose 驗證容器切換與回滾。GitHub API、commit、digest、Discord／DB health 全是合成資料，不能視為真正 production E2E。
+PR #9 合併後，PR 與 main push 只執行 **isolated deployment E2E simulation / CI/CD smoke test**。測試用假 commit／digest、假 GitHub API、合成 Discord／DB health，並使用真實且隔離的 Docker Compose 容器。這不是 production E2E，測試綠燈不代表 DB 寫入、正式發布或 VPS 上線。
 
-## 執行
+## 現行流程
 
-需要本地 Linux Docker daemon、Compose 外掛（`docker compose`）、主機 Python 3（標準庫即可）。支援 Linux 本地 Unix socket 與 macOS Docker Desktop；拒絕 SSH／TCP 遠端 Docker context。測試本體固定在既有 `test.Dockerfile` 的 Python 3.12、非 root 容器中執行。
+| 事件 | 會做什麼 | 不會做什麼 |
+| --- | --- | --- |
+| PR／main push | 建開發測試映像 → 同一個短入口 → 保存 JUnit／JSON 證據 | 不啟動 DB、不執行 migration、不建置／匯出正式 runtime、不登入／推送 GHCR、不連 VPS |
+| CI 完成 | 既有 Notify 向 Issue #7 發送真實 CI 結果 | 不啟動 Release／Deploy，不宣稱已上線；通知送達仍需每人確認 |
+| 手動選擇 Release／Deploy | 唯一的 deferred job 固定 skipped，沒有實際發布／部署動作 | 沒有 registry、SSH、production secrets、Environment 或可由 variable 開啟的後門 |
 
-從 repository 根目錄先建立測試映像（首次建置需要下載公開 base image、系統與測試套件；不登入 registry、不 push）：
+Release／Deploy 沒有 push、workflow_run、workflow_call 或排程觸發。即使設定 CD_ENABLED=true，也不會恢復已移除的正式流程。舊發布程式保留在 Git 歷史；[原部署手冊](continuous-deployment.md) 只供歷史參考，未來正式發布要另開變更重新設計與驗收。這次不修改 VPS、帳號權限、repository variable、Environment 或 secrets。
+
+## 本地執行
+
+需要本地 Linux Docker daemon、Compose 外掛（docker compose）及主機 Python 3 標準庫。支援 Linux Unix socket、macOS Docker Desktop，拒絕 SSH／TCP 遠端 Docker context。測試本體在 Python 3.12、非 root 容器中執行。
+
+從 repository 根目錄建置：
 
 ```sh
 docker build -f test.Dockerfile -t jukebox101-test:cd-smoke-local .
 ```
 
-之後一個指令完成短測試及 Compose 演練；每次更新程式後先重建測試映像：
+然後執行與 CI 相同的短入口：
 
 ```sh
 TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke
 ```
 
-映像必須已存在；執行器固定其本地 image ID，禁止隱式 pull／build。兩個假 digest 只是 journal 的 release identity，並非 GHCR digest；舊／新 release 都使用同一個本地測試映像，靠合成 health 區分。
-
-既有 PR CI 已在離線回歸收集新增測試，並呼叫同一個 `verify-cd-docker.py`；無須增加另一套 workflow 或重複跑完整 smoke 入口。PR 的原有 CI 另有 runtime 與拋棄式 PostgreSQL 測試；這個短入口不執行它們，也不執行任何 migration。Release／Deploy／Notify workflow、正式 gate 與外部設定均不因本變更而修改。
+更新程式後先重建測試映像。首次建置需要下載公開 base image、系統與釘選測試套件；不登入 registry 或 push。短入口固定本地 image ID，測試時禁止隱式 pull／build。假 digest 是 journal 的 release identity；新舊 release 均使用同一個本地測試映像，以合成 health 區分。
 
 ## 驗證範圍
 
-| 檢查 | 實際證據與限制 |
-| --- | --- |
-| PR CI、Release 邊界 | 讀取已提交 workflow 的 trigger／權限／checkout 契約；Release 僅 main push、publish 依賴 verify。不是 GitHub scheduler 的完整模擬 |
-| Deploy gate | 使用 workflow 裡真正的 `resolve.if`，以假 context 驗證 CD=false／未設定、fork、失敗／取消的 Release、PR 來源都跳過。只支援目前使用的字串相等與 AND 語法；新語法會使測試失敗，需人工更新 reader |
-| skipped 通知 | 用合成 skipped jobs 經真正 publisher，確認顯示「未執行部署」，不宣稱上線；沒有讀寫 GitHub issue |
-| Release request | 真實 ZIP／JSON 解碼，加上假的 API endpoint；既有案例拒絕過期 source、錯誤 attempt、模糊／過期 artifact、路徑與輸出注入 |
-| DB 參數傳遞契約 | 沿用 `test_foundation.py` 與 `test_repository.py`，在驅動／cursor 邊界攔截呼叫，核對連線參數、TLS、SQL placeholders 與投稿／歷史／偏好資料值；模擬連線、查詢、commit 錯誤須傳回失敗。沒有送出真實 DB 請求，不證明 DB 收到或寫入 |
-| 通知分類 | CI／Release 各種 conclusion、Deploy 成功／skipped／失敗／取消／逾時、缺少／重複／不完整 jobs；既有測試確認通知失敗與去重。不能證明 Email 送達 |
-| 成功切換 | 真實持久 journal、假程序與真實 Compose service，確認 stop-before-start、唯一容器及合成 healthy |
-| 失敗回滾 | candidate unhealthy → rolled_back；舊版也 unhealthy → rollback_failed，後續新請求被鎖住；回滾不等於部署成功 |
-| 重複與重試 | 同一 request 回傳既有結果，容器 ID／lifecycle events 不變；同 key 換內容、過期 run、同 run 加 attempt 都拒絕。回滾後改用較新 run 可重試成功；這保留現有 highwater 規則 |
-| 單一 Gateway | 真程序 lease、控制器鎖、Compose 啟動前確認停止；主動嘗試重疊啟動並確認被拒絕。只證明隔離 lab 內的單例，不盤點正式 Discord Application |
-| 清理與失敗 | 每次隨機 container／project／temporary directory；finally 只移除該資源，Compose down 後確認該 project 無剩餘容器。失敗／逾時／缺報告／skip／清理失敗皆非成功 |
+- 檢查真正的 workflow：PR／main 只選 safe CI job，沒有正式流程依賴；Release／Deploy 只保留固定 skipped 的手動佔位，沒有 live capability。CI 執行指令採 allowlist，migration／runtime export／publishing／SSH 回歸會讓測試失敗。
+- 用既有 resolver 解碼真正 ZIP／JSON receipt，但 GitHub API、commit、digest 都是假的；舊 receipt／通知分類案例只測隔離或歷史契約，不會呼叫保留的正式 workflow。
+- 將 receipt、持久佇列、控制器、假 Gateway 程序及假通知串起來，確認成功、失敗與錯誤分類。
+- 真實 Compose 演練 succeeded、rolled_back、rollback_failed，驗證 stop-before-start、重疊啟動被拒絕、回滾失敗鎖住後續請求及狹義清理。
+- 同 request 重送回傳既有結果，容器 ID／lifecycle events 不變；衝突內容、過期 run、同 run 加 attempt 均拒絕。回滾後可用較新 run 重試。這保留既有 controller 規則，不是新的正式部署協定。
+- 沿用 test_foundation.py、test_repository.py，在 mock 驅動／cursor 邊界核對連線參數、TLS、參數化 SQL、資料值及連線／查詢／commit 失敗；沒有送出真實 DB 請求。
 
-字串比較遵循 [GitHub 官方 expression 規則](https://docs.github.com/en/actions/reference/workflows-and-actions/expressions#operators)，不分大小寫：合成的 `true`、`TRUE`、`True` 都通過 gate；`false` 與未設定均跳過。本 reader 不支援數值／布林型別的寬鬆轉型，遇到它們會明確失敗。
-
-## 安全與報告
-
-離線測試容器 `--network none`，沒有 host mount、Docker socket、憑證或主機環境注入。Compose service 同樣無網路、read-only、非 root、drop ALL capabilities，僅收到 `LAB_HEALTH`。Docker client 只允許本地 socket，使用暫存且不含 registry 登入設定的 client configuration；需要時只連結已安裝的 Compose 外掛，不複製原本的 `config.json`，不繼承任意 Compose／Bot／DB 設定。
-
-沒有 Hostinger／SSH／systemd／真實 Discord／Supabase／GHCR publication／production secrets／migration。沒有啟用 CD、修改主機權限或外部設定。既有 GitHub `Notify` 對真實 PR CI 的自動通知仍由原 workflow 處理，與測試裡的假通知不同。
-
-每次執行先移除這三份舊報告，避免失敗時沿用上次成功：
-
-- `ci-evidence/cd-smoke.xml`：實際 pytest JUnit；全數須 pass、零 skip／failure／error。
-- `ci-evidence/cd-docker.json`：三個 Compose 情境、replay／retry／overlap 與 cleanup 證據；任一情境失敗不產生成功報告。
-- `ci-evidence/cd-smoke.json`：整體結果與耗時；即使未完成也記為 failed，程序非零退出。
-
-資料庫驗證另列 `database` 欄位，即使整體模擬為 passed，也不能視為真實 Database 測試通過：
+資料庫另列驗證範圍，整體模擬 passed 也不代表真實 DB 成功：
 
 ```json
 {
@@ -62,29 +49,34 @@ TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke
 }
 ```
 
-`driver_contract` 只在選定的離線契約測試及演練完成後標為 mock 邊界通過；未完成則維持 `not_run`。它驗證程式送往驅動介面的參數，沒有證明網路傳輸、Database 接收、SQL 在真實 schema 可執行或資料落盤。沒有 Database log／接收端證據的部分，明確保留未驗證；不以「程式呼叫成功」或模擬 commit 冒充實際寫入。
+這沒有證明真實網路傳輸、DB 接收、SQL 在實際 schema 可執行或資料落盤。沒有接收端證據的部分保留未驗證，不以呼叫成功或 mock commit 冒充實際寫入。正式 Discord、GHCR push／簽章、SSH／systemd、VPS 新舊版相容性也不在本輪驗證範圍。
 
-報告不入版控。CI 既有 artifact 步驟保存離線 JUnit 與 Compose JSON。這些結果不能證明實際 GitHub 權限／環境保護、GHCR 簽章、SSH 或 production adapter 可運作，也不代表正式部署已驗收。
+## 安全、報告與合併
 
-同一 checkout 共用報告路徑，請依序執行；不同 checkout 可獨立演練。Compose 情境共用 90 秒 active-work 期限，逾時以取消方式進入清理，不把取消當作 candidate failure 重試。清理暫停這個期限，另以 30 秒 down＋10 秒殘留查核的上限執行，再恢復未用完的期限。SIGKILL、主機斷電或 daemon 無回應仍可能阻斷清理；此時不會宣稱通過，應依日誌中的隨機 project 名稱核對殘留，不執行廣泛 prune。
+測試容器 network none，沒有 host mount、Docker socket、真實憑證或主機環境注入。Compose 同樣無網路、read-only、非 root、drop ALL capabilities，只收到 LAB_HEALTH。暫存 Docker client config 不複製登入設定，只在需要時連結已安裝的 Compose 外掛。
 
-## 本次 PR 的執行邊界
+每次先移除三份舊報告，避免沿用舊成功：
 
-本次要求禁止 DB migration；既有完整 PR CI 會套用拋棄式 PostgreSQL schema，因此本次交付使用 draft PR，HEAD commit 加上 `[skip ci]`，只執行本地無網路測試與無 DB 的 Compose 演練。這是 [GitHub 支援的單次跳過指令](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/skip-workflow-runs)，不修改 workflow、repository variable 或 Environment。Hosted CI 是 Not Run／可能 Pending，不是 Passed；必要 checks 未通過時不能合併。
+- ci-evidence/cd-smoke.xml：選定 pytest 案例必須全數 pass，零 failure／error／skip。
+- ci-evidence/cd-docker.json：三種情境、replay／retry／overlap 與 cleanup 證據。
+- ci-evidence/cd-smoke.json：整體結果、耗時、DB 驗證範圍；失敗或未完成非零退出。
 
-未來若另有授權允許完整 CI 的拋棄式 DB 測試，可用不含 skip 指令的新 commit 走原有 PR CI。不要直接把本 PR merge main：現行 Release 會在 main push 發布 GHCR，這次未授權該動作。
+本地報告不入版控，GitHub CI 以 artifact 保存 14 天。同 checkout 請依序執行，避免共用報告互相覆蓋。演練有 90 秒 active-work 期限；cleanup 暫停該期限，另以 30 秒 down＋10 秒殘留查核上限執行。SIGKILL、斷電或 daemon 故障仍可能阻斷 cleanup，此時不得宣稱通過，也不要做廣泛 prune。
 
-## 本地實測紀錄（2026-10-31，Asia/Taipei）
+本次新提交不再使用略過 CI 標記，讓 PR 真的驗證安全流程。PR 早期提交曾含略過標記；合併時建議 Squash，並使用不含任何略過 CI 指令的提交標題與內容，確保 main CI 會執行。是否略過 CI 不影響已移除的發布／部署能力，不能靠提交訊息重新開啟它們。
 
-環境：macOS Docker Desktop、本地 Unix socket、Python 3.12 非 root 測試容器。建置使用公開 Python base image 與既有釘選測試依賴；沒有 DB service。
+必要的 CI 與 reviewer 檢查通過後再由維護者決定合併；本次不代為合併。舊自動發布流程只在 PR 合併後被替換，不能把分支上的改動當成已在 main 生效。
 
-- 初版短入口：153 Passed、零 failure／error／skip，69.04 秒，不含映像建置。
-- 補上 DB 契約與驗證範圍後，`TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke`：**195 Passed、零 failure／error／skip，70.90 秒**，不含映像建置。報告為 `driver_contract=passed_mock_boundary`、`real_connection=not_run`、`real_persistence=not_verified`；不是 DB 收到或寫入成功。
-- 前輪 `TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.offline`：**2,142 Passed、108 個 postgres 案例 deselected、零 failure／error／skip，59.65 秒**；沒有執行 DB migration。本次報告分類調整後只重跑受影響的短入口，未重跑完整離線回歸。
-- 真實 Compose：`succeeded`、`rolled_back`、`rollback_failed` 全部符合預期；三個 project 的 `cleanup=verified`，額外掃描 lab 標籤也沒有殘留。
-- 回滾後的新 run 重試成功；回滾失敗後的新 run 被拒絕；重複／衝突／過期／同 run 新 attempt 不改變容器 ID 與 lifecycle events；重疊啟動被拒絕。
-- `git diff --check`、新增／修改函式長度與 docstring 檢查、codebase safety config strict validation 通過。四份 workflow、`deploy/`、Bot、schema／migration、依賴檔均無差異。
+## 歷史證據
 
-本輪發現並保留的失敗：隔離 Docker 設定曾讓 macOS Compose 外掛無法被發現，已改為只連結外掛；90 秒期限曾打斷 cleanup，留下本輪一個已停止的容器，已按精確名稱移除，並修正為 cleanup 暫停 active-work 期限。兩者皆有新增回歸測試；失敗沒有改寫成成功，期限失敗 JSON 保存在本地 `ci-evidence/cd-smoke-deadline-failure.json`。
+分離前：短入口 195 項＋三種 Compose 情境通過，70.90 秒；前一輪完整離線 2,142 項通過。這些不是分離後 hosted CI 的結果。原有工作流 gate 已被移除，因此對舊 gate 的條件測試改成驗證目前更嚴格的觸發與能力限制，不為維持歷史項目數而保留失效測試。
 
-較早並行執行完整回歸時，既有 `test_lifecycle_sigterm.py` 一項關機計時為 7.28 秒，超過 7 秒上限。該失敗 JUnit 保存在 `ci-evidence/offline-concurrent-failure.xml`；沒有修改 Bot、該測試或其時間門檻，最終單獨執行的 2,142 項包含此案例且全數通過。這仍不能推定正式關機行為已驗收。
+歷史失敗與修正：Docker Desktop 的 Compose 外掛發現已改成只連結外掛；deadline 打斷 cleanup 已改成清理期間暫停期限，並加回歸測試。完整回歸曾在並行負載下出現既有關機計時 7.28 秒超過 7 秒上限，保留失敗報告，未修改該測試或門檻，前輪單獨完整回歸通過。這些均不是正式環境驗收。
+
+## 分離後驗證紀錄（2026-10-31）
+
+四份 YAML 均已通過本地解析：CI 為 pull_request／push，Release／Deploy 僅 workflow_dispatch，Notify 僅追蹤 CI。受影響函式長度、codebase safety strict validation 與 diff 檢查通過。
+
+本地 186 項選定測試通過，零失敗／跳過；整個 Compose 演練在第三種情境碰到既有 active-work 期限，整體正確標為 failed（168.43 秒）。期限未調高，cleanup 後掃描沒有 lab 容器殘留。失敗摘要保存在本地 ci-evidence/cd-smoke-separation-local-timeout.json；不能把這次本地整體結果當成成功。
+
+GitHub hosted CI 將以相同安全入口另行驗證，結果以 PR #9 的 check／artifact 為準。沒有跑完整離線回歸、真實 PostgreSQL／migration、GHCR 發布或 VPS 部署。

@@ -1,93 +1,17 @@
 name: Deploy
 
+# Reserved for future implementation; there is no automatic trigger or live action.
 'on':
-  workflow_run:
-    workflows: [Release]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  resolve:
-    if: >-
-      github.repository == 'andrewchu0101/JukeBox101' && vars.CD_ENABLED == 'true' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+  deferred:
+    name: Not enabled - separate release work required
+    if: ${{ false }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      actions: read
-    outputs:
-      commit: ${{ steps.request.outputs.commit }}
-      digest: ${{ steps.request.outputs.digest }}
-      run: ${{ steps.request.outputs.run }}
-      attempt: ${{ steps.request.outputs.attempt }}
+    timeout-minutes: 1
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Resolve a successful current-main release, never PR artifacts
-        id: request
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 -m deploy.release_request
-
-  deploy:
-    needs: resolve
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    permissions: {}
-    environment: production
-    concurrency:
-      group: jukebox101-production
-      cancel-in-progress: false
-    env:
-      COMMIT: ${{ needs.resolve.outputs.commit }}
-      DIGEST: ${{ needs.resolve.outputs.digest }}
-      RELEASE_RUN: ${{ needs.resolve.outputs.run }}
-      RELEASE_ATTEMPT: ${{ needs.resolve.outputs.attempt }}
-      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
-    steps:
-      - name: Submit a fixed request and wait for the independent host worker
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$COMMIT" =~ ^[a-f0-9]{40}$ ]]
-          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
-          [[ "$RELEASE_RUN" =~ ^[1-9][0-9]{0,19}$ ]]
-          [[ "$RELEASE_ATTEMPT" =~ ^[1-9][0-9]{0,5}$ ]]
-          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$ ]]
-          test -n "$DEPLOY_SSH_KEY"
-          test -n "$DEPLOY_KNOWN_HOSTS"
-          ssh_dir="$(mktemp -d "$RUNNER_TEMP/jukebox-ssh.XXXXXX")"
-          trap 'rm -rf -- "$ssh_dir"' EXIT
-          chmod 700 "$ssh_dir"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
-          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
-          unset DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS
-          remote=(ssh -T -p 22 -i "$ssh_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes
-            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts"
-            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2
-            "jukebox-deploy@$DEPLOY_HOST" deploy-request)
-          # Lost submission responses are reconciled by querying the same durable request.
-          printf 'deploy-v1 %s %s %s %s\n' "$COMMIT" "$DIGEST" "$RELEASE_RUN" "$RELEASE_ATTEMPT" |
-            "${remote[@]}" || true
-          for poll in {1..120}; do
-            status="$(printf 'status-v1 %s %s\n' "$RELEASE_RUN" "$RELEASE_ATTEMPT" |
-              "${remote[@]}")" || status=unreachable
-            case "$status" in
-              succeeded) printf 'Deployment succeeded\n'; exit 0 ;;
-              pending|running|unreachable) sleep 5 ;;
-              rolled_back|rollback_failed|rejected) printf 'Deployment %s\n' "$status"; exit 1 ;;
-              *) printf 'Invalid host response\n'; exit 1 ;;
-            esac
-          done
-          printf 'No confirmed success; query the durable host receipt before retrying.\n'
-          exit 1
+      - name: Reserved notice
+        run: echo "VPS deployment is deferred to a separate reviewed change."

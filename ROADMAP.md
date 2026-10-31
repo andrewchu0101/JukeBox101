@@ -1,6 +1,6 @@
 > 最新狀態（2026-10-31，Asia/Taipei）：PR #2 已合併 main；hosted PR CI 1881 離線＋35 PostgreSQL 案例通過、零失敗／跳過，夥伴回報 main CI 也通過。Hostinger Bot 的首筆指定投稿已由 Codex 在 Supabase PG17.11 查到；使用者畫面確認補時長後歌曲核准、修訂 2，版本未確認、Nickel 0。CI 已完成，CD 未啟用，自動審核／發獎尚未完成。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。下一 MVP 已選「官方 API＋認可頻道，其餘待審」，見 [實作規格](docs/mvp-auto-review-nickel.md)。以下舊階段狀態與 [雲端交接報告](docs/deploy/cloud-cicd-2026-10-30.md) 的未推送／403 為歷史紀錄，不覆蓋本摘要；不將首筆驗證擴大成全部功能驗收。
 
-> CI/CD 隔離演練（2026-10-31，分支 `work/isolated-cicd-smoke-20261031`，未合併）：新增可單獨執行的短入口，沿用既有控制器、測試與 Compose lab。最新短入口納入既有 DB 驅動／cursor 參數契約，195 項＋三種 Compose 情境在 70.90 秒通過，零失敗／跳過，演練資源已清理；真實 DB 連線與接收／寫入仍為未執行或未驗證。前輪完整離線回歸 2,142 項通過，本次只重跑受影響的短入口。CD=false skipped 為合成 context 的測試結果，不代表已查核或更動正式 variable。遵守本次禁止 migration／GHCR push 的範圍，以 `[skip ci]` draft PR 交付，Hosted CI 未執行，不當作通過。執行步驟、失敗與修正證據、重試限制及 production E2E 邊界見 [快速隔離演練](docs/deploy/cicd-smoke.md)。
+> CI/CD 測試與正式發布分離（2026-10-31，PR #9 分支，未合併）：PR／main 改成只跑無 DB、無 migration 的隔離 smoke；Release／Deploy 移除自動觸發與實際發布／SSH 能力，僅保留固定 skipped 的手動佔位；Notify 只追蹤 CI。真實 DB 接收／寫入仍未驗證，VPS、外部開關與權限未改。本地新契約 186 項通過，但整體 Compose 演練觸及期限而失敗，查核無殘留；保留失敗，不調高期限。新提交允許 hosted 安全 CI 執行，實際結果見 PR checks。合併請 Squash 並使用不含略過 CI 指令的提交訊息；尚未代為合併。現行步驟、歷史證據與限制見 [安全測試說明](docs/deploy/cicd-smoke.md)。
 
 # JukeBox101 Roadmap
 

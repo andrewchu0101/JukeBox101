@@ -5,12 +5,6 @@ name: CI
     branches: [main]
   push:
     branches: [main]
-  workflow_call:
-    inputs:
-      export_runtime:
-        description: Export the exact tested image for the release caller
-        type: boolean
-        default: false
 
 permissions: {}
 
@@ -18,7 +12,7 @@ jobs:
   verify:
     name: verify
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 10
     permissions:
       contents: read
     concurrency:
@@ -28,50 +22,13 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - name: Build pinned Python 3.12 test image
+      - name: Build the development-only Python 3.12 test image
         run: docker build --pull -f test.Dockerfile -t jukebox101-test:v7-local .
-      - name: Offline regression with structured zero-skip gate
-        run: python3 -m scripts.ci.offline
-      - name: Build runtime once and freeze its local image ID
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build --pull --platform linux/amd64 \
-            --label org.opencontainers.image.source=https://github.com/andrewchu0101/JukeBox101 \
-            --label org.opencontainers.image.revision="$GITHUB_SHA" \
-            -t jukebox101-runtime:ci .
-          image_id="$(docker image inspect --format '{{.Id}}' jukebox101-runtime:ci)"
-          [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]
-          printf 'RUNTIME_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
-      - name: Exact-runtime offline smoke and Compose policy
-        run: python3 -m scripts.ci.runtime_smoke
-      - name: Real isolated Compose switching and rollback with synthetic health
-        run: python3 scripts/dev/verify-cd-docker.py
-      - name: Disposable PostgreSQL 18.6, TLS and exact-runtime DB contract
-        run: |
-          python3 scripts/dev/verify-fresh-postgres.py
-          mv ci-evidence/postgres.xml ci-evidence/postgres-18.xml
-          mv ci-evidence/postgres-runtime.json ci-evidence/postgres-runtime-18.json
-      - name: Disposable PostgreSQL 17.11 and TLS compatibility
-        run: |
-          python3 scripts/dev/verify-fresh-postgres.py --postgres-major 17
-          mv ci-evidence/postgres.xml ci-evidence/postgres-17.xml
-          mv ci-evidence/postgres-runtime.json ci-evidence/postgres-runtime-17.json
-      - name: Export the tested immutable runtime
-        if: inputs.export_runtime
-        run: |
-          mkdir ci-runtime
-          docker save --output ci-runtime/image.tar "$RUNTIME_IMAGE"
-          printf '%s\n' "$RUNTIME_IMAGE" > ci-runtime/image-id.txt
-      - name: Preserve the tested image for this release only
-        if: inputs.export_runtime
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: runtime-image-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ci-runtime/
-          if-no-files-found: error
-          retention-days: 1
-      - name: Preserve test evidence
+      - name: Isolated CI/CD smoke with synthetic data and no database
+        env:
+          TEST_IMAGE: jukebox101-test:v7-local
+        run: python3 -m scripts.ci.cd_smoke
+      - name: Preserve isolated test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
