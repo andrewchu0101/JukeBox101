@@ -1,5 +1,7 @@
 > 最新狀態（2026-10-31，Asia/Taipei）：PR #2 已合併 main；hosted PR CI 1881 離線＋35 PostgreSQL 案例通過、零失敗／跳過，夥伴回報 main CI 也通過。Hostinger Bot 的首筆指定投稿已由 Codex 在 Supabase PG17.11 查到；使用者畫面確認補時長後歌曲核准、修訂 2，版本未確認、Nickel 0。CI 已完成，CD 未啟用，自動審核／發獎尚未完成。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。下一 MVP 已選「官方 API＋認可頻道，其餘待審」，見 [實作規格](docs/mvp-auto-review-nickel.md)。以下舊階段狀態與 [雲端交接報告](docs/deploy/cloud-cicd-2026-10-30.md) 的未推送／403 為歷史紀錄，不覆蓋本摘要；不將首筆驗證擴大成全部功能驗收。
 
+> CI/CD 隔離演練（2026-10-31，分支 `work/isolated-cicd-smoke-20261031`，未合併）：新增可單獨執行的短入口，沿用既有控制器、測試與 Compose lab。本地 153 項＋三種 Compose 情境在 69.04 秒通過，最終完整離線回歸 2,142 項通過，零失敗／跳過；演練資源已清理。CD=false skipped 為合成 context 的測試結果，不代表已查核或更動正式 variable。遵守本次禁止 migration／GHCR push 的範圍，以 `[skip ci]` draft PR 交付，Hosted CI 未執行，不當作通過。執行步驟、失敗與修正證據、重試限制及 production E2E 邊界見 [快速隔離演練](docs/deploy/cicd-smoke.md)。
+
 # JukeBox101 Roadmap
 
 Stage-B-only 目前狀態：**STAGE_B_ONLY_OFFLINE_READY_FOR_REVIEW**。已在既有 Harness 接入單次新 Session、受控四步 FK Window、原 23 項套件與逐 Commit／精確 Manifest 清理稽核；完整離線回歸 1228 Passed／0 Failed／55 Skipped，PowerShell Mock 119 斷言 Passed。未連線或執行真實 Stage B；舊 Session 仍 Blocked。下一次的三段授權與最短步驟見 [Stage-B-only／私人 Guild 實跑](docs/stage-b-only-run.md)。這取代下文「尚需離線補接 supervisor」的歷史待辦，不代表 Batch B 或 Beta 真實驗收已通過。

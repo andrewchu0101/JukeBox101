@@ -39,7 +39,8 @@
       "docker build -f test.Dockerfile -t jukebox101-test:v7-local .",
       "python3 -m scripts.ci.offline",
       "python3 -m scripts.ci.runtime_smoke",
-      "python3 scripts/dev/verify-fresh-postgres.py"
+      "python3 scripts/dev/verify-fresh-postgres.py",
+      "TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke"
     ],
     "lint": [],
     "typecheck": [],
@@ -86,7 +87,8 @@
       "Stop old Gateway and confirm exit before starting candidate or rollback",
       "Atomic fsync journal and numeric run/attempt idempotency",
       "Fixed root-owned configuration with default-deny deployment gates",
-      "Notification job uses trusted default-branch code only; validates completed runs and appends one fixed-issue comment per run/attempt"
+      "Notification job uses trusted default-branch code only; validates completed runs and appends one fixed-issue comment per run/attempt",
+      "Quick CD smoke reuses offline tests and the existing Compose lab; only a local Unix Docker endpoint and synthetic health are admitted"
     ],
     "naming": [
       "snake_case functions, UPPER_SNAKE_CASE constants"
@@ -167,6 +169,10 @@
     {
       "fact": "Shared notifications validate actual deploy job and never gate the CD workflow",
       "source": "deploy/github_notifications.py#publish"
+    },
+    {
+      "fact": "Short isolated deployment simulation with truthful failure evidence, no database or remote Docker",
+      "source": "scripts/ci/cd_smoke.py#main"
     }
   ]
 }
