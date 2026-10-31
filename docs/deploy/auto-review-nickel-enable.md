@@ -39,6 +39,7 @@
 |---|---|
 | `JUKEBOX_AUTO_REVIEW` | `on`／`off`；on 時必須有 API 金鑰 |
 | `JUKEBOX_AUTO_SETTLEMENT` | `on`／`off`；必須與資料庫開關一致 |
+| `JUKEBOX_API_RETENTION` | `on`／`off`；on 才把官方 API 數值只存短期表並執行清除（需先套用 migration 0004，見 [API 資料保存發行說明](../api-retention-release.md)） |
 | `YOUTUBE_TRUSTED_CHANNEL_IDS` | 逗號分隔的 `UC...` 頻道 ID，不接受名稱或 handle |
 | `${JB_SECRET_DIR}/youtube_api_key.txt` | API 金鑰秘密檔（uid/gid 10001、0400），由 `YOUTUBE_API_KEY_FILE` 指向；不進 Git 或聊天 |
 

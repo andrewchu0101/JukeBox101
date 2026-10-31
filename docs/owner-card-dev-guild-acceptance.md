@@ -123,3 +123,16 @@ Owner 的操作只有第 1、2 步（一次性）與第 4 到 7 步的點擊；�
 驗收建議 `JUKEBOX_NICKEL_CLAIM` 保持關閉（用左欄 digest）。實際同步時 `apply` 的 `--expected-digest` 必須取自**當時**重新執行的 `preview`；這些 digest 只用來事先審查指令集合。`apply` 還需要 `--i-understand-this-calls-discord` 與 `--confirm-overwrite-remote-commands`。
 
 **尚未驗證：** 實際同步後 Discord 的呈現、全域指令出現的延遲、`/share` 在開發應用程式下能否使用。
+
+### 4.5 Owner 一次性操作清單：指令預覽與同步（**尚未執行；未建立開發 Application、未呼叫 apply**）
+
+前提：已有開發 Application（Developer Portal 由 Owner 建立）。以下都在本機終端機、使用**開發**環境變數；token 放在本機未提交的秘密檔，不貼進對話。
+
+| 步驟 | 指令（設定名稱，不含值） | 作用 |
+| --- | --- | --- |
+| 1 | `python -m bot.command_sync preview`（需要 `DISCORD_OWNER_GUILD_ID`、`DISCORD_OWNER_USER_ID`、`DISCORD_EXPECTED_APPLICATION_ID`） | 離線，不連線。輸出全域指令與 Owner Guild 指令各自的 digest；與 4.4 的數值比對 |
+| 2 | `python -m bot.command_sync fetch --target global --remote-file <檔案> --i-understand-this-calls-discord` | 唯讀取得開發 Application 目前的全域指令，用來看差異；不改任何東西 |
+| 3 | `python -m bot.command_sync apply --target global --expected-digest <步驟 1 的 local_digest> --i-understand-this-calls-discord --confirm-overwrite-remote-commands` | **覆寫開發 Application 的全域指令**（整批覆寫） |
+| 4 | `python -m bot.command_sync apply --target owner-guild --expected-digest <步驟 1 的 owner_guild.digest> --i-understand-this-calls-discord --confirm-overwrite-remote-commands` | 覆寫開發 Guild 的指令集（只含 `/owner`）；先確認該 Guild 沒有手動建立的指令 |
+
+四步都不會連到正式 Application：`DISCORD_EXPECTED_APPLICATION_ID` 與 token 不屬於同一個 Application 時，工具會在讀取或修改之前拒絕。我不會執行步驟 2 到 4。

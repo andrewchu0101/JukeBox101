@@ -147,7 +147,7 @@ git status
   - 每次互動都檢查 Application 是否相符、是否來自伺服器（拒絕 DM），以及 ID 是否在可儲存範圍內，沒有伺服器白名單。
   - Owner 審核指令只會註冊在選用設定 `DISCORD_OWNER_GUILD_ID` 指定的伺服器，並驗證 Owner 身分。
 - **跨伺服器資料**：資料表沒有任何伺服器欄位。使用者、投稿、歌曲身分、首次發獎優先權與受理順序都是全系統共用。
-- **功能旗標**：`JUKEBOX_FORMAL_EXCHANGE`、`JUKEBOX_NICKEL_CLAIM`、`JUKEBOX_AUTO_REVIEW`、`JUKEBOX_AUTO_SETTLEMENT` 預設 off。
+- **功能旗標**：`JUKEBOX_FORMAL_EXCHANGE`、`JUKEBOX_NICKEL_CLAIM`、`JUKEBOX_AUTO_REVIEW`、`JUKEBOX_AUTO_SETTLEMENT`、`JUKEBOX_API_RETENTION` 預設 off。
 - **部署限制**：只能執行單一 Gateway 實例。
 
 ### 開發與測試
