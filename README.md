@@ -152,9 +152,11 @@ git status
 
 ### CI／CD
 
-PR 自動測試；合併 main 後，Release 對同一份 runtime 執行離線、PostgreSQL 18／17 與 TLS 驗證，再發布 GHCR 與來源證明。Deploy 在 Release 完成後才進入 production 審查及受限主機部署；主機獨立驗證、先停舊版再啟動唯一新版，失敗時嘗試一次回滾。
+PR 自動測試；合併 main 後，Release 對同一份 runtime 執行離線、PostgreSQL 18／17 與 TLS 驗證，再發布 GHCR 與來源證明。正式驗收與啟用後，Deploy 在 Release 完成後自動進行受限主機部署，不需逐次人工核准；主機獨立驗證、先停舊版再啟動唯一新版，失敗時嘗試一次回滾。
 
 **正式自動部署預設關閉。** 安裝檔、設定位置、首次 baseline、必要權限與驗收步驟見 [持續部署手冊](docs/deploy/continuous-deployment.md)。合併 workflow 不等於主機已安裝或正式 CD 已驗收。CD 不會套用 migration、還原 DB、同步 Discord 指令或開啟交換／領點。
+
+兩位維護者各自訂閱 [CI/CD 通知 Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7)，再開啟個人 GitHub／Email 通知，即可收到 CI、Release 與 Deploy 的結果。通知 workflow 合併到 main 後才生效。
 
 ### 開發與測試
 

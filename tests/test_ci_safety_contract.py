@@ -57,6 +57,22 @@ def test_release_and_deploy_have_separate_trust_boundaries():
                 assert re.search(r'@[a-f0-9]{40}$', line)
 
 
+def test_notifications_do_not_execute_triggering_pr_code_or_hold_deployment_secrets():
+    """@description: Keep shared result delivery on trusted default-branch code with issue-only writes.
+    @param: none
+    @return: None.
+    """
+    source = (ROOT / '.github' / 'workflows' / 'notify.yml').read_text()
+    assert 'workflows: [CI, Release, Deploy]' in source
+    assert 'ref: ${{ github.sha }}' in source and 'persist-credentials: false' in source
+    assert 'issues: write' in source and 'actions: read' in source
+    assert 'github.event.workflow_run.head_sha' not in source
+    assert all(forbidden not in source for forbidden in ('secrets.', 'packages: write', 'id-token: write',
+                                                        'pull_request_target', 'download-artifact', 'ssh '))
+    deploy = (ROOT / '.github' / 'workflows' / 'deploy.yml').read_text()
+    assert 'needs: notify' not in deploy
+
+
 @pytest.mark.parametrize('request_line', [
     f'deploy-v1 {"a"*40} sha256:{"b"*64} 10 1\n',
     'status-v1 10 1\n', 'status-v1 10 1\nextra', 'x' * 258,
