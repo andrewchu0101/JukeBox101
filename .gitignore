@@ -28,3 +28,8 @@ db_password.txt
 
 # Local Docker delivery images, test evidence and extracted verification artifacts
 /artifacts/
+
+# Production SSH handoff material must remain local
+/jukebox101-ssh-*/
+/JukeBox101-production-SSH-*.zip
+/release-candidate/

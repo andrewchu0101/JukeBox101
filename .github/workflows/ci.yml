@@ -41,6 +41,27 @@ jobs:
         run: python3 -m scripts.ci.runtime_smoke
       - name: Disposable PostgreSQL 18.6, TLS and exact-runtime DB contract
         run: python3 scripts/dev/verify-fresh-postgres.py
+      - name: Package the verified runtime for owner review
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-candidate
+          docker tag "$RUNTIME_IMAGE" "jukebox101-bot:git-$GITHUB_SHA"
+          docker save "jukebox101-bot:git-$GITHUB_SHA" | gzip -n > release-candidate/runtime.tar.gz
+          printf 'commit=%s\nimage_id=%s\nrun_id=%s\nrun_attempt=%s\n' \
+            "$GITHUB_SHA" "$RUNTIME_IMAGE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            > release-candidate/source.txt
+          (cd release-candidate && sha256sum runtime.tar.gz source.txt > SHA256SUMS)
+      - name: Preserve verified runtime candidate
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-candidate/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Preserve test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
