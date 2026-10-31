@@ -22,7 +22,7 @@
 CREATE TABLE jb2_api_observations (
     video_id         VARCHAR(11) COLLATE "C" NOT NULL PRIMARY KEY REFERENCES jb2_videos (video_id),
     observed_at      TIMESTAMPTZ NOT NULL,
-    expires_at       TIMESTAMPTZ NOT NULL,                 -- observed_at + 14 days (policy ceiling is 30)
+    expires_at       TIMESTAMPTZ NOT NULL,                 -- observed_at + RETENTION_DAYS (default 14); the CHECK below only bounds this column
     duration_seconds INTEGER,                              -- NULL after purge
     channel_id       VARCHAR(64),                          -- NULL after purge
     purged_at        TIMESTAMPTZ,
@@ -49,9 +49,9 @@ GRANT UPDATE (finished_at, expired_rows, purged_rows, failed_rows, error_class) 
 GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_role;
 ```
 
-**草稿 DDL 已在可丟棄的 PostgreSQL 17.11 與 18.6 驗證**（以管理者身分套用在已完成既有三個 migration 的測試資料庫；沒有經過遷移執行器，也沒有套用到任何正式資料庫）：語法有效；四種違規資料（保存超過 30 天、到期早於取得、清除後仍留有數值、有清除時間卻沒有原因）都被 `CHECK` 擋下；14 天內的合法資料可寫入；應用程式角色可 `UPDATE`（清除）、不能 `DELETE`、不能 `UPDATE` 歷史表。這證明草稿本身可行，不代表已核准。
+**草稿 DDL 已在可丟棄的 PostgreSQL 17.11 與 18.6 驗證**（以管理者身分套用在已完成既有三個 migration 的測試資料庫；沒有經過遷移執行器，也沒有套用到任何正式資料庫）：語法有效；四種違規**寫入**（到期時間超過取得後 30 天、到期早於取得、清除後仍留有數值、有清除時間卻沒有原因）都被 `CHECK` 擋下；到期設為 14 天的合法資料可寫入；應用程式角色可 `UPDATE`（清除）、不能 `DELETE`、不能 `UPDATE` 歷史表。這證明草稿本身可行，不代表已核准。
 
-`CHECK` 約束讓資料庫本身擋下「保存超過 30 天」與「清除後仍留有數值」，不依賴程式正確。清除用 `UPDATE` 把數值設為 NULL，不需要 `DELETE`，所以**不需要新增清除專用角色**（比上一版設計更簡單）。
+`CHECK` 約束**只限制欄位值**：它讓資料庫拒絕寫入 `expires_at` 超過取得時間 30 天的列、以及已標記清除卻仍有數值的列。**它不會、也無法自動清除已到期的資料**——到期後列仍原封不動留在表裡，直到背景工作把數值設為 NULL。下一節把「欄位限制、讀取拒絕、實際清除、失敗補救」四層分開說明。清除用 `UPDATE` 把數值設為 NULL，不需要 `DELETE`，所以**不需要新增清除專用角色**（比上一版設計更簡單）。
 
 ### 1.2 資料格式變更（程式內，不是 DDL）
 
@@ -64,7 +64,30 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
 | 寫入路徑 | 自動審核不再把含秒數的 `DurationEvidence` 放進快照；API 原始值只寫入觀測表。`jb2_evidence`、`jb2_review_history`、`jb2_decisions`、`jb2_receipts` 從此只看到結論 |
 | Owner 自述的時長 | **完全不變**：仍用 `DurationEvidence`，含秒數與來源，保留原樣 |
 
+### 1.3 一組一致的預設參數（全部是建議預設，待核准；其他天數都由此推得）
+
+| 參數 | 預設值 | 角色 |
+| --- | --- | --- |
+| `RETENTION_DAYS`（正常保存） | **14 天** | `expires_at = observed_at + 14 天`；程式寫入時使用 |
+| 資料庫 `CHECK` 上限 | **30 天** | 護欄：擋下程式錯誤寫出超過政策上限的到期時間。**不是預設值**，也不負責清除 |
+| 刷新（僅等待中案件） | 第 **10** 天一次 | 到期前留 4 天重試；失敗不延長到期 |
+| 已完成案件 | 完成後 **1 天內**清除，不為保留歷史而刷新 | 少打 API |
+| 清除頻率 | Bot 每日一次，另在啟動接受工作前先清 | 見 2.1 |
+| 逾期警示 | 逾期（超過 `expires_at` 仍未清除）**1／3／7／12 天** | 12 天逾期＝取得後第 26 天，距 30 天上限剩 4 天 |
+| 手動 dump 保留 `R` | **≤ 14 天** | 最壞：14（保存）＋1（清除延遲）＋14（dump）＝**29 天 ≤ 30** |
+
+先前文件出現的「14 天」是預設保存天數，「30 天」是 `CHECK` 護欄與政策上限，兩者並不矛盾；若核准時改變預設天數，只改 `RETENTION_DAYS`，其餘由上表推得。這些天數是安全估算，**不是官方認可**。
+
 ## 二、清除與刷新如何自動執行、失敗時如何阻止採信
+
+### 2.0 四層防線（各自負責不同的事，不可互相替代）
+
+| 層 | 做什麼 | **不**做什麼 |
+| --- | --- | --- |
+| ① 期限欄位限制 | `CHECK`：`expires_at` 必須晚於取得時間且不超過 30 天；已標記清除的列不得留有數值 | 不會清除任何資料；到期的列照舊留著 |
+| ② 所有讀取拒絕過期值 | 每個讀取觀測值的查詢都帶 `purged_at IS NULL AND expires_at > statement_timestamp()`，過期列視為不存在 | 不會刪除資料；副本仍在表裡、備份裡 |
+| ③ 背景工作實際清空 | Bot 每日與啟動時把到期列的 `duration_seconds`、`channel_id` 設為 NULL 並標記 `purged_at`；P4 另處理舊格式散在歷史 JSON 的副本 | 清除失敗時不能保證資料消失，所以仍要靠 ② |
+| ④ 失敗與長期停機補救 | 逾期警示（卡片）與唯讀 `status`；Bot 重啟先清除；還原備份後先清除才可啟用自動審核；必要時手動 `purge --apply` 或關閉自動審核 | 不自動刪除人工資料、不撤銷決定或獎勵 |
 
 ### 2.1 自動執行（不新增付費服務）
 
@@ -79,7 +102,21 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
 ### 2.2 失敗時阻止採信過期資料（不改既有 readiness 契約）
 
 1. **採信條件寫進查詢**：所有讀取觀測值的地方都帶 `purged_at IS NULL AND expires_at > statement_timestamp()`。過期或已清除的列視為「不存在」，不會被當成依據，**即使清除工作沒有成功**。
-2. **審核結論本身也會過期（預設嚴格）**：由 API 得出的 `DurationVerdict` 跟著觀測到期。`PENDING_REVIEW` 的案件若結論已過期，核准前必須重新取得（第 10 天已嘗試刷新）；API 無法取得時，Owner 可用卡片的「補時長」輸入人工時長（人工資料不受影響）。這**會改變核准的前置條件**，屬產品規則，需要你核准；若政策答覆認為內部結論可長期保存，再放寬。
+2. **只有「缺乏有效 API 證據」的待處理案件受影響**（預設嚴格，等政策答覆；需要你核准，**本輪不實作**）：
+   - 受影響：處於 `PENDING_REVIEW`、**唯一**的時長依據是已過期的 API 結論的案件。核准前必須重新驗證（第 10 天已嘗試刷新）；API 取不到時，Owner 可用卡片的「補時長」補人工證據。
+   - **不受影響**：Owner 自述的時長證據（`DurationEvidence`，含秒數與來源）永遠有效，不因任何到期而失效；已核准（`APPROVED`）及之後的決定、已發放的獎勵、帳本、回執與冪等紀錄**不會被自動撤銷、降級或補發**。
+   - 沒有新增狀態：「等待重新驗證」沿用既有的 `PENDING_VALIDATION` 與重新檢查機制（`reexamination_pending`）。
+
+   **與現有狀態機的具體差異**（若核准才實作，目前程式未動）：
+
+   | # | 現況 | 若核准後的差異 |
+   | --- | --- | --- |
+   | 1 | `ReviewSnapshot.duration` 只能是含秒數的 `DurationEvidence`，API 與人工同一種，永久存在歷史 JSON | 新增選填 `duration_verdict`（結論，無秒數）；API 路徑只寫結論；人工路徑不變 |
+   | 2 | `review.py` 的不變條件：寫入 `PENDING_REVIEW`／`APPROVED` 的任何新修訂都要求 `_duration_passes` | 改為：**進入** `PENDING_REVIEW`／`APPROVED` 的轉換才檢查時長依據（人工證據，或**未過期**的 API 結論）。已在 `APPROVED` 的快照再寫新修訂（版本確認、結算）時，沿用既有結論、**不重新檢查期限**，否則過期後版本確認會被錯誤擋下 |
+   | 3 | 只要快照有通過的時長就可由 Owner 核准 | `PENDING_REVIEW` → `APPROVED` 的確認多一個檢查：只有 API 結論且已過期 → 拒絕並提示「需重新驗證或補人工時長」，案件維持待處理 |
+   | 4 | 沒有任何「依期限改變案件」的流程 | 期限只在上述兩個轉換點被讀取；清除工作**不改變任何案件狀態** |
+
+   差異 2 是最容易出錯的一項（舊結論過期會連帶擋住已核准案件的後續操作），所以必須先有測試：已核准、API 結論已過期的案件，仍能完成版本確認與結算。
 3. **逾期逐級處理**（逾期 = 過了 `expires_at` 仍未清除）：
 
    | 逾期 | 行為 |
@@ -89,7 +126,7 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
    | ≥ 7 天 | 警示標為緊急，需手動執行 `purge --apply` |
    | ≥ 12 天 | 建議關閉 `JUKEBOX_AUTO_REVIEW` 並手動清除（距 30 天上限剩 4 天以內） |
 
-4. **觀察與通知**：每次清除寫入 `jb2_retention_runs`；唯讀的 `python -m bot.api_retention status` 回報逾期列數與最近成功時間；卡片警示直接查資料表，與清除工作是否存活無關。是否另外 DM Owner 屬新行為，預設不做。
+4. **觀察與通知**：每次清除寫入 `jb2_retention_runs`；唯讀的 `python -m bot.api_retention status` 回報逾期列數與最近成功時間；卡片警示直接查資料表，與清除工作是否存活無關。**不新增逾期 DM**（Owner 已裁決）；只沿用卡片警示與唯讀 `status`。
 5. **啟動前清除**：Bot 長期停機後，第一件事是清除。還原備份後同樣必須先清除才能啟用自動審核（還原手冊的強制步驟）。
 6. `readiness`、Compose healthcheck 與結束碼**不改**。
 
@@ -140,13 +177,12 @@ SELECT count(*) FROM jb2_review_history WHERE review_json::text LIKE '%youtube-d
 **產品與營運決定**
 - 結論過期是否阻擋核准（第 2.2 節第 2 點）。
 - 是否採用主機排程作為後備清除。
-- 是否在逾期時另外 DM Owner。
 
 ## 六、實作後的驗證計畫（可丟棄 PG17／18，TLS 開啟）
 
 1. 寫入後掃描**所有**資料表的 JSON 與文字欄位，確認頻道 ID、秒數與取得時間只出現在觀測表。
 2. 到期清除：數值設 NULL、`purged_at` 設定；重跑冪等；與管線和結算同時執行不死鎖、不重發。
-3. `CHECK` 約束：嘗試寫入超過 30 天或清除後仍有數值，資料庫拒絕。
+3. `CHECK` 約束：嘗試寫入到期時間超過 30 天或清除後仍有數值，資料庫拒絕；另測**已到期但未清除的列仍在表中**（證明 CHECK 不負責清除），且所有讀取路徑都不採信它。
 4. 新舊格式快照都可解碼；`_append_review_revision` 不誤判。
 5. 重播：遷移前取得的決定，遷移後重送仍回傳原結果。
 6. 還原模擬：載入含過期列的傾印，未清除前自動審核拒絕使用，清除後才恢復。

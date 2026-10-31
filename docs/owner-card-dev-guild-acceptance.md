@@ -55,3 +55,44 @@
 
 - 已驗證（離線與可丟棄 PostgreSQL）：權限、舊修訂、雙擊與並行、未知結果重試、版本與類別規則、獎勵不重複、元件與訊息大小。
 - **無法離線驗證**：真實的 3 秒回應時限、modal 的開啟與就地更新、重啟後 `DynamicItem` 的實際分派、Discord 對元件排版的實際呈現、暫時性訊息的壽命。這些只能在上表實測。
+
+## 四、最短操作順序、環境與分工（不含任何秘密；全部在開發環境）
+
+### 4.1 需要的環境
+
+| 項目 | 內容 |
+| --- | --- |
+| 開發 Application 與 Bot | **獨立於正式 Bot** 的 Discord 應用程式；token 只放在本機未提交的秘密檔，不貼進對話、不提交 |
+| 開發 Guild | 1 個專用伺服器（步驟 15 若要驗證「另一個伺服器」才需要第 2 個，可略過） |
+| 測試帳號 | A＝Owner（`DISCORD_OWNER_USER_ID`）；B＝投稿者（非 Owner，也用於步驟 14）。兩個帳號即可 |
+| 資料庫 | 可丟棄的 PostgreSQL（與正式庫完全無關），套用既有三個 migration |
+| 設定名稱 | `DISCORD_BOT_TOKEN`、`DISCORD_EXPECTED_APPLICATION_ID`（填**開發**應用程式 ID，作為防呆）、`DISCORD_OWNER_GUILD_ID`＝開發 Guild、`DISCORD_OWNER_USER_ID`＝A、`DISCORD_DEV_GUILD_ID`（如需）、資料庫連線設定；`JUKEBOX_AUTO_REVIEW=off`、`JUKEBOX_FORMAL_EXCHANGE` 維持關閉 |
+| 驗證 +1 時 | **只在可丟棄資料庫**：`settlement-switch` 設 on（`python -m bot.owner_cli settlement-switch preview` 再 `write`）且 `JUKEBOX_AUTO_SETTLEMENT=on`。其餘步驟不開 |
+
+自動審核保持關閉，所以不需要 YouTube API 金鑰；案件靠 B 用 `/share` 投稿，A 在卡片上補時長後處理。
+
+### 4.2 順序與分工
+
+| 順序 | 誰 | 做什麼 | 對應清單項目 |
+| --- | --- | --- | --- |
+| 0 | **我（授權後）** | 建立可丟棄資料庫、套用 migration、執行資料庫端的離線驗證 | — |
+| 1 | **Owner（一次性）** | 建立開發應用程式與 Bot、邀請進開發 Guild、把 token 放進本機秘密檔 | 前置 |
+| 2 | **Owner 或夥伴** | `python -m bot.command_sync preview`，確認目標是開發 Guild，再 `apply --target owner-guild`；啟動開發 Bot | 前置 |
+| 3 | B 點擊 | `/share` 投稿 5 支不同影片（其中 1 支網址含超長參數）；再多 6 支以上已知版本可由前幾筆確認後產生 | 16 的準備 |
+| 4 | A 點擊 | `/owner list`：確認私密、版面；補時長（6）→ 確認通過（2）→ 新版本（7）→ 另一支同錄音（8）→ 其他情況（10–13）→ 拒絕（5） | 1、2、5–13、16 |
+| 5 | A 點擊 | 同一張舊卡片再按（3）；快速連按兩次（4） | 3、4 |
+| 6 | B 點擊 | 用 B 帳號按卡片按鈕（14） | 14 |
+| 7 | **Owner 或夥伴** | 重啟開發 Bot（17）；開著表單超過 5 分鐘再送出（18）；重整 Discord 用戶端（19） | 17–19 |
+| 8 | **我（授權後）** | 唯讀檢查可丟棄資料庫：版本列、獎勵筆數、是否有重複寫入；對照畫面結果 | 7、8、13 的資料確認 |
+
+Owner 的操作只有第 1、2 步（一次性）與第 4 到 7 步的點擊；資料庫與稽核由我處理，避免 Owner 執行零碎指令。第 15 項（另一個伺服器）只有第 2 個 Guild 時才做。
+
+### 4.3 若需要另建開發 Bot／同步測試 Guild：具體操作與影響（**等待授權，尚未執行**）
+
+| 操作 | 影響 |
+| --- | --- |
+| 在 Discord Developer Portal 建立新的開發應用程式與 Bot（Owner 操作） | 只產生新的 token 與應用程式 ID；不影響正式 Bot |
+| 以 `bot` 與 `applications.commands` 範圍邀請至開發 Guild | 只加入開發 Guild |
+| `command_sync apply --target owner-guild` | 只在開發 Guild 註冊指令；因為使用**開發**應用程式 ID 與 Guild ID，正式指令不會被改動。執行前以 `preview` 確認目標 |
+| 設 `DISCORD_EXPECTED_APPLICATION_ID` 為開發應用程式 ID | 若誤用正式 token，同步會因 ID 不符而拒絕 |
+| 可丟棄資料庫開啟結算（僅驗證 +1） | 只影響可丟棄資料庫；驗收完成即丟棄 |
