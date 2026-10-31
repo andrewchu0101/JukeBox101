@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
+from bot.auto_pipeline import format_share_outcome, reward_label
 from bot.database.errors import DatabaseError
 from bot.database.nickel_grant_store import ClaimResult, ClaimStatus, claim_nickel_grants
 from bot.nickel_claim_replies import format_claim_reply
@@ -76,7 +77,7 @@ class MusicService:
 
     def __init__(self, repository: MusicRepository, submission_repository: SubmissionRepository | None = None,
                  synthetic_exchange: bool = False, formal_exchange: bool = False,
-                 nickel_claim_enabled: bool = False, nickel_connection_factory=None) -> None:
+                 nickel_claim_enabled: bool = False, nickel_connection_factory=None, auto_pipeline: Any | None = None) -> None:
         """@description: Keep Discord-independent business operations injectable for tests.
         @param self: Application service instance.
         @param repository: Synchronous persistence collaborator, including test replacements.
@@ -85,8 +86,10 @@ class MusicService:
         @param formal_exchange: Formal /exchange switch, off by default; only an exact True opens the unlabelled production route.
         @param nickel_claim_enabled: /claim switch, off by default; when off, /claim never opens a connection.
         @param nickel_connection_factory: Callable returning a fresh connection for one claim transaction; required only when the switch is on.
+        @param auto_pipeline: Automatic review and settlement coordinator, or None while those modes are off.
         @return: None.
         """
+        self.auto_pipeline = auto_pipeline  # [automatic modes]: None keeps /share and /history replies unchanged.
         self.nickel_claim_enabled = nickel_claim_enabled is True  # [/claim switch]: Only an exact True opens the grant route.
         self._nickel_connection_factory = nickel_connection_factory  # [claim connection]: One fresh connection per claim, closed after it.
         self.submission_repository = submission_repository  # [Beta persistence]: Never instantiate a second service or award worker.
@@ -190,10 +193,25 @@ class MusicService:
                                               discord_user_id, source_url, operation_id)
         except CommitOutcomeUnknown:
             return f"投稿提交結果未知；操作 {operation_id}。請先用 /history 查詢並聯絡 Owner 核對，勿重新投稿。"
+        if self.auto_pipeline is not None:
+            return await self._automatic_reply(operation_id)
         if not result.create_share_event:
             return f"重複操作，已取回原投稿回執；操作 {operation_id}。本次沒有新增投稿或發放 Nickel。"
         status = result.candidate.review.status.value  # [receipt state]: Existing review evidence is never reset by resubmission.
         return f"已儲存投稿；審核狀態：{status}（Pending 表示待驗證／審核）；操作 {operation_id}。本次不發放 Nickel。"
+
+    async def _automatic_reply(self, operation_id: str) -> str:
+        """@description: Run the automatic steps after the receipt committed; a failure here never undoes the accepted submission.
+        @param self: Application service with the automatic pipeline.
+        @param operation_id: Committed operation.
+        @return: Review and reward state read back from durable facts.
+        """
+        try:
+            outcome = await asyncio.to_thread(self.auto_pipeline.process, operation_id)
+        except (DatabaseError, PersistenceNotReady, CommitOutcomeUnknown, ValueError) as error:
+            LOGGER.error("Automatic review deferred after intake: %s", type(error).__name__)
+            return f"已儲存投稿；自動審核暫時未完成，系統會自動重試，請勿重新投稿。目前未確認發放 Nickel；操作 {operation_id}。"
+        return format_share_outcome(operation_id, outcome)
 
     async def exchange(self, discord_user_id: int) -> str:
         """@description: Protect credits until eligibility and delivery recovery rules are approved.
@@ -288,6 +306,8 @@ class MusicService:
         lines = ["最近本人投稿與目前審核狀態："]
         for submission in submissions[:HISTORY_LIMIT]:
             line = _submission_history_line(submission)
+            if self.auto_pipeline is not None:
+                line = f"{line} · {reward_label(submission['reward_status'])}"
             if len("\n".join(lines)) + len(line) + 1 > MAX_REPLY_LENGTH:
                 break
             lines.append(line)

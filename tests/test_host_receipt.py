@@ -68,7 +68,8 @@ def test_receipt_requires_exact_cli_policy(receipt):
     assert '--deny-self-hosted-runners' in argv and '--source-digest' in argv
     assert argv[argv.index('--source-ref') + 1] == 'refs/heads/main'
     assert options['timeout'] == 60 and options['cwd'] == '/'
-    assert set(options['env']) == {'PATH', 'HOME', 'GH_HOST', 'GH_PROMPT_DISABLED', 'GH_CONFIG_DIR'}
+    assert set(options['env']) == {'PATH', 'HOME', 'GH_HOST', 'GH_PROMPT_DISABLED', 'GH_CONFIG_DIR', 'DOCKER_CONFIG'}
+    assert options['env']['DOCKER_CONFIG'] == '/etc/jukebox101/docker'
 
 
 @pytest.mark.parametrize('field,value', [('enabled', False), ('crypto_acceptance_verified', False)])

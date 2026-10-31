@@ -37,7 +37,7 @@ APPROVED_BALANCE_WRITE_POINTS = frozenset({
 # [approved owner commands]: Top-level slash commands and Owner group subcommands; any addition must update this constant and be reviewed.
 # [claim is conditional]: "claim" is registered only when JUKEBOX_NICKEL_CLAIM is open (default closed); approved in 核准規則 2026-10-28.
 APPROVED_TOP_LEVEL_COMMANDS = frozenset({"share", "exchange", "balance", "history", "daily", "claim"})
-APPROVED_OWNER_SUBCOMMANDS = frozenset({"list", "show", "approve", "reject", "confirm_version", "reexamine"})
+APPROVED_OWNER_SUBCOMMANDS = frozenset({"list", "show", "duration", "approve", "reject", "confirm_version", "reexamine"})
 OWNER_GROUP_NAME = "owner"
 TOP_LEVEL_COMMAND_FILE = "bot/discord_app.py"
 OWNER_COMMAND_FILE = "bot/discord_owner_review.py"

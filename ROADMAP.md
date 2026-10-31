@@ -1,4 +1,4 @@
-> 2026-10-30 雲端 CI/CD 工作分支：使用者已授權正式部署；新增預設拒絕的 receipt／固定 Docker adapter／持久佇列審查實作，focused 145 passed、完整離線 1879 passed／2 UID 0 failure。GitHub App 寫入 403、無 Hostinger 管理連線與 Docker，正式 CD 仍未啟用、未部署。最新證據與 bootstrap 缺口見 [交接報告](docs/deploy/cloud-cicd-2026-10-30.md)；不表示已合併或正式驗收。
+> 最新狀態（2026-10-31，Asia/Taipei）：PR #2 已合併 main；hosted PR CI 1881 離線＋35 PostgreSQL 案例通過、零失敗／跳過，夥伴回報 main CI 也通過。Hostinger Bot 的首筆指定投稿已由 Codex 在 Supabase PG17.11 查到；使用者畫面確認補時長後歌曲核准、修訂 2，版本未確認、Nickel 0。CI 已完成，CD 未啟用，自動審核／發獎尚未完成。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。下一 MVP 已選「官方 API＋認可頻道，其餘待審」，見 [實作規格](docs/mvp-auto-review-nickel.md)。以下舊階段狀態與 [雲端交接報告](docs/deploy/cloud-cicd-2026-10-30.md) 的未推送／403 為歷史紀錄，不覆蓋本摘要；不將首筆驗證擴大成全部功能驗收。
 
 # JukeBox101 Roadmap
 
@@ -183,3 +183,7 @@ Harness 最終安全收斂（離線）：保持 submissions 僅 SELECT 與 18 �
 - Claude 前輪安裝／測試授權為已完成的限定工作，不延伸為離線持續執行權限。使用者恢復前不自動部署、建立資源、Apply、連線 DB／Discord、同步指令或發 DM。
 - 不讀 .env／秘密／.local，不解密、不增權、不清理重建資料；不提交／push，除非另行明確授權。不 force push、不 PR、不 merge、不碰 main；hook 失敗或遠端分歧停止，不繞過、不自行 rebase。
 - Claude prompt 提醒使用可用且適合的 tdd／start-dev-team skill；不可用或未使用如實說明，不主動要求建立團隊。先前 Auto mode classifier 無 verdict 曾造成工具中斷，後來已恢復；不要當成目前持續故障。
+
+## 自動審核與 Nickel 自動發放 MVP（2026-10-31）
+
+Implemented／Offline Tested／PostgreSQL 17.11 與 18.6 拋棄式資料庫 Tested；未部署、未啟用，真實 YouTube API、Session Pooler 與 Discord 待驗收，資料保存方案待 Owner 決定。見 [部署與啟用](docs/deploy/auto-review-nickel-enable.md)。

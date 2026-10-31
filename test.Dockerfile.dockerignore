@@ -11,6 +11,7 @@
 .pytest_cache
 .pytest_tmp
 ci-evidence
+artifacts
 discord_bot_token.txt
 db_password.txt
 *.pem

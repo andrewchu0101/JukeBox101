@@ -43,7 +43,8 @@ class GithubReceiptVerifier:
         """
         environment = {'PATH': '/usr/bin:/bin', 'HOME': '/var/lib/jukebox101-cd',
                        'GH_HOST': 'github.com', 'GH_PROMPT_DISABLED': '1',
-                       'GH_CONFIG_DIR': '/etc/jukebox101/gh'}
+                       'GH_CONFIG_DIR': '/etc/jukebox101/gh',
+                       'DOCKER_CONFIG': '/etc/jukebox101/docker'}
         result = self.runner(['/usr/bin/gh', *arguments], env=environment, text=True,
                              capture_output=True, timeout=60, cwd='/')
         if result.returncode or len(result.stdout.encode()) > MAX_RESPONSE_BYTES:

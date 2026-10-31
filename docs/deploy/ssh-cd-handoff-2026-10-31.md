@@ -1,3 +1,5 @@
+> 更新：本紀錄原以 dd83004 為基準。後續已 pull main 至 bac92cd，遠端已新增 Release / Deploy / Notify workflows、受限 SSH host 安裝元件與部署文件。下方「只有 CI」、「尚無 release workflow」及候選映像打包修改均為更新前歷史，不適合作為現況判斷。交付分支已整合最新 main，撤除重複打包步驟，CI 完整沿用最新 main；現行 CD 契約與啟用程序以 [continuous-deployment.md](continuous-deployment.md) 為準。本次只同步程式碼，未核對 GitHub CD_ENABLED / Environment 或 VPS 安裝現況，不能據此宣稱正式 CD 已啟用或驗收。先前 SSH status 實測結果仍有效。
+
 # SSH 與 CD 接續紀錄（2026-10-31，Asia/Taipei）
 
 ## 本次實測

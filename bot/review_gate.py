@@ -7,6 +7,7 @@ result tells the approve path whether the song may proceed and whether its versi
 from dataclasses import dataclass
 
 from bot.eligibility import DurationEvidence
+from bot.review import DurationVerdict
 from bot.song_judgement import ContentJudgement, SongStatus, judge_song
 from bot.version_identity import VersionAssignment, VersionIdentityStatus
 
@@ -29,18 +30,19 @@ class ApprovalGate:
 
 
 def evaluate_approval_gate(duration: DurationEvidence | None, content: ContentJudgement | None,
-                           identity: VersionAssignment) -> ApprovalGate:
+                           identity: VersionAssignment, verdict: DurationVerdict | None = None) -> ApprovalGate:
     """@description: Decide the song and report the version separately, so an unconfirmed version never blocks an eligible song.
     @param duration: Full-video duration evidence for the video, or None when no evidence exists.
     @param content: Owner content judgement for the video, or None when no judgement exists.
     @param identity: Version assignment for the same video, confirmed or not.
+    @param verdict: Official-data duration conclusion, consulted only when there is no duration evidence.
     @return: ApprovalGate with the song status, version confirmation and an audit reason.
     """
     if duration is not None and duration.video != identity.video:
         raise ValueError("Duration evidence must describe the identity's video")
     if content is not None and content.video != identity.video:
         raise ValueError("Content judgement must describe the identity's video")
-    song = judge_song(duration, content)
+    song = judge_song(duration, content, verdict)
     version_confirmed = identity.status is VersionIdentityStatus.CONFIRMED
     reason = f"Song: {song.reason}. Version: {_version_reason(identity.status)}."
     return ApprovalGate(song.status, version_confirmed, reason)

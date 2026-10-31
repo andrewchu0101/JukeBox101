@@ -15,6 +15,7 @@ from bot.database.migration_runner import (ADVISORY_LOCK_KEY, Migration, Migrati
 from tests.postgres_support import admin_query, apply_all_migrations, create_database, drop_database
 
 pytestmark = pytest.mark.postgres
+SUPPORTED_POSTGRES_MAJORS = ("17", "18")  # [supported majors]: Production runs PostgreSQL 17.x (Supabase); CI pins 18.6. Both must migrate.
 
 
 def _run(settings, *, apply: bool, available=None) -> dict:
@@ -51,7 +52,7 @@ def test_fresh_database_gets_every_version_and_a_rerun_changes_nothing(pg_databa
     assert [(row["version"], row["sha256"]) for row in ledger] == [(item.version, item.sha256) for item in shipped]
     summary = _run(pg_database.migrator, apply=True)
     assert summary["pending_before"] == [] and summary["applied_now"] == []
-    assert summary["server_version"].startswith("18.")
+    assert summary["server_version"].split(".")[0] in SUPPORTED_POSTGRES_MAJORS
     control = admin_query(pg_database, "SELECT * FROM jb2_control")
     assert control == [{"singleton_id": 1, "schema_version": "2b2-b1", "accepted_sequence": 0, "revision": 0,
                         "snapshot_ready": True, "legacy_writers_quiesced": True, "settlement_enabled": False}]

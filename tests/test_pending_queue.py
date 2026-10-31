@@ -138,7 +138,7 @@ def test_pending_item_carries_source_url_and_accepted_sequence_in_the_frozen_fie
     assert item.accepted_sequence > 0  # [database-assigned order]: The repository assigns the sequence, never the caller.
     assert [field for field in item.__dataclass_fields__] == [
         "operation_id", "source_url", "accepted_sequence", "review_status", "identity_status", "revision",
-        "evidence_count", "conflict_reason"]
+        "evidence_count", "conflict_reason", "submitter_id", "duration_seconds", "api_basis"]
 
 
 def test_keyset_pages_do_not_duplicate_or_skip_when_a_new_submission_arrives_between_requests(world):

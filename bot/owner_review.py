@@ -13,16 +13,17 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 from bot.database.review_persistence import (
-    MAX_PENDING_PAGE, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
+    MAX_KNOWN_VERSIONS_PAGE, MAX_PENDING_PAGE, KnownVersionPage, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
     decision_digest, require_owner,
 )
 from bot.database.review_projection import ReviewProjection
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown
+from bot.eligibility import DurationEligibility, DurationEvidence, assess_duration
 from bot.decision_snapshot import DecisionSnapshot
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
 from bot.review import (
-    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, reject_review,
+    ApprovalSource, DurationEvidenceExpired, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, record_validation, reject_review,
 )
 from bot.review_gate import evaluate_approval_gate
 from bot.song_judgement import ContentJudgement
@@ -33,6 +34,9 @@ REEXAMINATION_PASS_NOTE = "重審通過：確認時產生新排序事件，排�
 NO_AWARD_EFFECT = "不發 Nickel，不寫入 credit_ledger，點數餘額不變。"  # [financial preview]: Shown before every confirmation.
 REEXAMINATION_EFFECT = "重審會保留原決策與歷史；重審通過核准時，建立新的排序事件並排到當時隊尾，不恢復原優先權，也不保證發點。" + NO_AWARD_EFFECT  # [reexamination preview]: States the pass rule without claiming the event exists yet.
 VERSION_CONFIRMATION_EFFECT = "版本確認不重開審核，不改變受理順序。" + NO_AWARD_EFFECT  # [version preview]: Identity only, never a payout.
+AUTO_SETTLEMENT_EFFECT = "確認後若審核與版本資格齊全，系統會自動結算首次獎勵 +1；資格未齊則不發，並回覆尚待的條件。"  # [financial preview]: Replaces the no-award text while automatic settlement is on.
+DURATION_REJECT_NOTE = "警告：此時長超出 60–720 秒；確認後此影片將被拒絕，只能以正式重審撤回。"  # [explicit consequence]: Shown before confirmation.
+DURATION_STATEMENT = "確認即聲明此為完整影片的可靠時長。"  # [Owner statement]: The confirmation itself asserts reliability and full video.
 UNRESOLVED_IDENTITY_NOTE = "版本未確認：此次決定不會確認錄音版本。"  # [identity preview]: Approval never proves the recording.
 CONFLICT_IDENTITY_NOTE = "版本衝突：維持凍結，此次決定不會清除衝突。"  # [identity preview]: Conflicts stay frozen.
 TRACEABLE_SOURCE_MIN_LENGTH = 8  # [source reference floor]: Shorter text cannot name a URL, document or manual check.
@@ -47,6 +51,7 @@ class ReviewAction(Enum):
     REJECT = "reject"  # [song decision]: Explicit negative song eligibility after duration validation.
     REEXAMINE = "reexamine"  # [formal reopen]: Confirmed only with a reliable evidence record bound into the token.
     CONFIRM_VERSION = "confirm_version"  # [version identity]: Confirmed only with reliable evidence; never reopens review or pays.
+    DURATION = "duration"  # [validation evidence]: Owner-stated full-video duration when official metadata cannot supply one.
 
 
 class UnknownReviewToken(LookupError):
@@ -116,25 +121,28 @@ class _IssuedToken:
     content: ContentJudgement | None = None  # [approval intent]: Owner content verdict the approval gate accepted at preview.
     song_eligible: bool = False  # [song decision]: Gate result at preview; never a constant, and never changed at confirmation.
     expected_snapshot: DecisionSnapshot | None = None  # [previewed facts]: Identity, canonical root and evidence set the preview read.
+    duration: DurationEvidence | None = None  # [duration intent]: Owner-stated evidence bound at preview.
 
 
 class OwnerReviewService:
     """Coordinate Owner previews, tokens and confirmations over the audited repository boundary."""
 
     def __init__(self, repository: SubmissionRepository, owner_id: int, clock: Callable[[], datetime],
-                 token_ttl: timedelta = timedelta(minutes=5)) -> None:
+                 token_ttl: timedelta = timedelta(minutes=5), settlement_followup: Callable[[str], str] | None = None) -> None:
         """@description: Bind the Owner, clock and token lifetime before any decision can be previewed.
         @param self: New Owner review coordinator.
         @param repository: Audited repository boundary that performs every database write.
         @param owner_id: Deployment-configured Owner Discord user ID.
         @param clock: Timezone-aware current-instant provider, injectable for expiry checks.
         @param token_ttl: Lifetime of an unconfirmed preview.
+        @param settlement_followup: Runs settlement after a committed decision and describes the reward; None keeps the decision award-free.
         @return: None.
         """
         self._repository = repository  # [write boundary]: Owns every transaction and audit row.
         self._owner_id = owner_id  # [authorization authority]: Never taken from a caller-supplied argument.
         self._clock = clock  # [expiry time source]: Synthetic in tests.
         self._token_ttl = token_ttl  # [confirmation window]: Short by default.
+        self._settlement_followup = settlement_followup  # [automatic settlement]: Called only after the decision committed.
         self._tokens: dict[str, _IssuedToken] = {}  # [issued previews]: In-memory only, lost on restart by design.
         self._token_lock = threading.Lock()  # [single-use guard]: Serializes preview issue and confirmation.
 
@@ -181,9 +189,59 @@ class OwnerReviewService:
             self._tokens[token_id] = issued
         return ReviewPreview(token_id, operation_id, action, expected_revision, evidence_reference,
                              projection.review.status, projected.status,
-                             _financial_effect(projection.identity.status) + _pass_note(action, projection.review),
+                             self._effect_text(_financial_effect(projection.identity.status)) + _pass_note(action, projection.review),
                              expires_at, content_digest=content_judgement_digest(content) if content is not None else None,
                              reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
+
+    def preview_duration(self, actor_id: int, operation_id: str, seconds: int, source: str, reason: str,
+                         expected_revision: int | None = None) -> ReviewPreview:
+        """@description: Let the Owner supply a full-video duration from Discord, sharing the same gates and audited write as the operator CLI.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner.
+        @param operation_id: Accepted operation whose video the duration describes.
+        @param seconds: Owner-stated full-video seconds.
+        @param source: Traceable source of the observation.
+        @param reason: Audit explanation.
+        @param expected_revision: Revision the Owner examined, bound into the token and rechecked inside the confirmation transaction; None means the current revision.
+        @return: Preview with the projected status and any rejection warning.
+        """
+        require_owner(actor_id, self._owner_id, reason)
+        require_traceable_source(source)
+        projection = self._repository.review_view(actor_id, operation_id)
+        revision = projection.review.version if expected_revision is None else expected_revision  # [examined revision]: A stale value is refused below.
+        evidence = DurationEvidence(projection.review.video, seconds, source, True, True)
+        verdict = assess_duration(evidence)
+        if verdict is DurationEligibility.PENDING_VALIDATION:
+            raise ValueError("時長必須是非負整數秒。")
+        projected = record_validation(projection.review, evidence, revision)  # [hard gates]: Terminal reviews and stale revisions refuse here.
+        token_id = secrets.token_urlsafe(24)
+        expires_at = self._clock() + self._token_ttl
+        issued = _IssuedToken(actor_id, operation_id, ReviewAction.DURATION, reason, revision, source,
+                              uuid.uuid4().hex, expires_at, expected_snapshot=projection.snapshot, duration=evidence)
+        with self._token_lock:
+            self._tokens[token_id] = issued
+        warning = DURATION_REJECT_NOTE if verdict is DurationEligibility.REJECT else ""
+        return ReviewPreview(token_id, operation_id, ReviewAction.DURATION, revision, source,
+                             projection.review.status, projected.status, f"時長 {seconds} 秒。{DURATION_STATEMENT}{warning}{NO_AWARD_EFFECT}", expires_at,
+                             source_reference=source, reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
+
+    def settlement_note(self, actor_id: int, operation_id: str) -> str:
+        """@description: After a committed decision, run automatic settlement and say what happened, so a reply can never claim an unpaid reward.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner.
+        @param operation_id: Operation just decided.
+        @return: Reward sentence, or an empty string while automatic settlement is off.
+        """
+        require_owner(actor_id, self._owner_id, "owner settlement followup")
+        return "" if self._settlement_followup is None else self._settlement_followup(operation_id)
+
+    def _effect_text(self, effect: str) -> str:
+        """@description: Keep the previewed financial effect true for the deployment's settlement mode.
+        @param self: Owner review coordinator.
+        @param effect: Effect text written for the award-free mode.
+        @return: The same text, or the automatic-settlement statement in its place.
+        """
+        return effect if self._settlement_followup is None else effect.replace(NO_AWARD_EFFECT, AUTO_SETTLEMENT_EFFECT)
 
     def confirm(self, actor_id: int, token_id: str) -> ReviewSnapshot:
         """@description: Apply a previewed decision exactly once and replay its original result on repeat.
@@ -218,6 +276,31 @@ class OwnerReviewService:
         if type(limit) is not int or limit < 1:
             raise ValueError("A positive page size is required")
         return self._repository.pending_items(actor_id, after_sequence, min(limit, MAX_PENDING_PAGE))
+
+    def retention_status(self, actor_id: int):
+        """@description: Read API-data retention health for the Owner's card warning, read-only; repositories without the table report nothing.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @return: Retention status, or None when the repository keeps no API observations.
+        """
+        require_owner(actor_id, self._owner_id, "owner retention status")
+        reader = getattr(self._repository, "api_retention_status", None)
+        return None if reader is None else reader()
+
+    def list_known_versions(self, actor_id: int, *, after_sequence: int | None = None, limit: int = MAX_KNOWN_VERSIONS_PAGE) -> KnownVersionPage:
+        """@description: Show one keyset page of the recording versions already confirmed, so the Owner can recognize one without typing an id, read-only.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @param after_sequence: First-video acceptance order already seen, from the previous page's next cursor, or None for the first page.
+        @param limit: Requested page size, capped at the maximum page size.
+        @return: One page of known versions, oldest first, with the cursor for the next page.
+        """
+        require_owner(actor_id, self._owner_id, "owner known versions")
+        if after_sequence is not None and (type(after_sequence) is not int or after_sequence < 0):
+            raise ValueError("A paging cursor must be a non-negative accepted sequence")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("A positive page size is required")
+        return self._repository.known_versions(actor_id, after_sequence, min(limit, MAX_KNOWN_VERSIONS_PAGE))
 
     def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
         """@description: Return a stored Owner evidence record for the operation's video so the Owner can cite it again.
@@ -254,7 +337,7 @@ class OwnerReviewService:
         with self._token_lock:
             self._tokens[token_id] = issued
         return ReviewPreview(token_id, operation_id, ReviewAction.CONFIRM_VERSION, expected_revision, confirmed.evidence_id,
-                             plan.review.status, plan.review.status, _version_effect(plan.projected_identity.status), expires_at,
+                             plan.review.status, plan.review.status, self._effect_text(_version_effect(plan.projected_identity.status)), expires_at,
                              evidence_digest=decision_digest((confirmed,)), source_reference=confirmed.source_reference,
                              reason=reason, current_identity=plan.current.identity, projected_identity=plan.projected_identity)
 
@@ -333,7 +416,10 @@ def _approval_song_eligibility(actor_id: int, projection: ReviewProjection, cont
         raise InvalidReviewTransition("Content judgement must be the Owner's own verdict")
     if projection.identity.status is VersionIdentityStatus.CONFLICT:
         raise InvalidReviewTransition("Version conflict forbids approval; rejection stays allowed and does not clear the conflict")
-    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity)  # [cross-video]: May raise ValueError.
+    if projection.duration_basis_expired:
+        raise DurationEvidenceExpired("官方時長資料已過期：請等待重新驗證，或由 Owner 補人工時長")
+    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity,
+                                  projection.review.duration_verdict)  # [cross-video]: May raise ValueError.
     if not gate.song_eligible:
         raise InvalidReviewTransition(f"Approval refused by the song gate: {gate.reason}")
     return gate.song_eligible
@@ -362,6 +448,9 @@ def _command_for(issued: _IssuedToken) -> ReviewCommand:
     @param issued: Token holding the fixed decision intent and the gate's song decision.
     @return: Command that never clears identity conflicts or touches credits.
     """
+    if issued.action is ReviewAction.DURATION:
+        return ReviewCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason, issued.expected_revision,
+                             duration=issued.duration, evidence_reference=issued.evidence_reference, expected_snapshot=_snapshot_for(issued))
     if issued.action is ReviewAction.APPROVE:
         return ReviewCommand(issued.decision_id, issued.operation_id, issued.actor_id, issued.reason,
                              issued.expected_revision, approval_source=ApprovalSource.OWNER, song_eligible=issued.song_eligible,

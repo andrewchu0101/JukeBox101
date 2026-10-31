@@ -14,6 +14,8 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
+EXPECTED_SERVER_VERSION_NUM = os.environ.get('JB_EXPECTED_SERVER_VERSION_NUM', '180006')  # [exact build]: Declared by the lab; unset means the reviewed 18.6 build.
+
 
 def admin_connection(database='postgres'):
     """@description: Connect only to the explicitly injected disposable test server.
@@ -147,8 +149,8 @@ def main():
     with admin_connection() as admin:
         if admin.execute('SHOW cluster_name').fetchone()[0] != 'jukebox101-disposable-test':
             raise RuntimeError('refusing unmarked server')
-        if admin.execute('SHOW server_version_num').fetchone()[0] != '180006':
-            raise RuntimeError('require PostgreSQL 18.6')
+        if admin.execute('SHOW server_version_num').fetchone()[0] != EXPECTED_SERVER_VERSION_NUM:
+            raise RuntimeError(f'require PostgreSQL build {EXPECTED_SERVER_VERSION_NUM} exactly')
         suffix = secrets.token_hex(6)
         database, migrator, app = ['jb_t_' + label + suffix for label in ('cli', 'mig', 'app')]
         passwords = {role: secrets.token_urlsafe(32) for role in (migrator, app)}

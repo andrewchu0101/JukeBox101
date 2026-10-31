@@ -317,7 +317,7 @@ def test_group_is_named_owner_and_scoped_to_one_private_guild():
 def test_group_exposes_all_six_subcommands():
     group = _group(FakeOwnerReviewService())
     names = {command.name for command in group.commands}
-    assert names == {"list", "show", "approve", "reject", "confirm_version", "reexamine"}
+    assert names == {"list", "show", "duration", "approve", "reject", "confirm_version", "reexamine"}
 
 
 # --- Gate: guild and Owner before any private read ---------------------------

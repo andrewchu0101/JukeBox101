@@ -44,6 +44,28 @@ class StaleReviewVersion(InvalidReviewTransition):
     """Reject results produced for an earlier review revision."""
 
 
+class DurationEvidenceExpired(InvalidReviewTransition):
+    """Refuse an approval whose only duration basis is an official-data conclusion that outlived its retention window."""
+
+
+@dataclass(frozen=True)
+class DurationVerdict:
+    """Carry the pass or reject conclusion drawn from official API data, without the data itself."""
+
+    video: VideoIdentity  # [conclusion subject]: A conclusion about one video cannot open another video's review.
+    outcome: DurationEligibility  # [conclusion]: Only PASS or REJECT; the measured seconds live in the short-lived observation table.
+
+    def __post_init__(self) -> None:
+        """@description: Refuse a malformed or undecided conclusion before it can authorize a review step.
+        @param self: Immutable verdict being constructed.
+        @return: None.
+        """
+        if not isinstance(self.video, VideoIdentity):
+            raise InvalidReviewTransition("Duration verdict needs a video identity")
+        if self.outcome not in (DurationEligibility.PASS, DurationEligibility.REJECT):
+            raise InvalidReviewTransition("A duration verdict is either pass or reject")
+
+
 @dataclass(frozen=True)
 class ReviewSnapshot:
     """Carry one video's review revision with evidence, source and error kept separate."""
@@ -60,6 +82,8 @@ class ReviewSnapshot:
     priority_released: bool = False
     # [ordering event]: System sequence assigned when a reexamination approval took effect; it replaces the intake order for priority.
     ordering_sequence: int | None = None
+    # [API conclusion]: Set only by the official-data path; omitted from the stored JSON while None so older releases keep reading every other row.
+    duration_verdict: DurationVerdict | None = None
 
     def __post_init__(self) -> None:
         """@description: Reject contradictory snapshots before they can authorize future rewards.
@@ -79,6 +103,8 @@ class ReviewSnapshot:
         if self.duration is not None:
             if not isinstance(self.duration, DurationEvidence) or self.duration.video != self.video:
                 raise InvalidReviewTransition("Duration evidence belongs to another video")
+        if self.duration_verdict is not None and (not isinstance(self.duration_verdict, DurationVerdict) or self.duration_verdict.video != self.video):
+            raise InvalidReviewTransition("Duration verdict belongs to another video")
         _validate_snapshot_fields(self)
 
 
@@ -87,7 +113,9 @@ def _duration_passes(snapshot: ReviewSnapshot) -> bool:
     @param snapshot: Review with evidence bound to the same platform identity.
     @return: Whether reliable full-video duration passes the inclusive limits.
     """
-    return snapshot.duration is not None and assess_duration(snapshot.duration) is DurationEligibility.PASS
+    if snapshot.duration is not None and assess_duration(snapshot.duration) is DurationEligibility.PASS:
+        return True
+    return snapshot.duration is None and snapshot.duration_verdict is not None and snapshot.duration_verdict.outcome is DurationEligibility.PASS
 
 
 def _validate_snapshot_fields(snapshot: ReviewSnapshot) -> None:
@@ -103,7 +131,7 @@ def _validate_snapshot_fields(snapshot: ReviewSnapshot) -> None:
     elif snapshot.approval_source is not None:
         raise InvalidReviewTransition("Only approved reviews have an approval source")
     if snapshot.status is ReviewStatus.VALIDATION_FAILED:
-        if not isinstance(snapshot.validation_error, ValidationError) or snapshot.duration is not None:
+        if not isinstance(snapshot.validation_error, ValidationError) or snapshot.duration is not None or snapshot.duration_verdict is not None:
             raise InvalidReviewTransition("Failed validation requires an error and no usable evidence")
     elif snapshot.validation_error is not None:
         raise InvalidReviewTransition("Only failed validation has a validation error")
@@ -157,7 +185,25 @@ def record_validation_error(snapshot: ReviewSnapshot, error: ValidationError, ex
     """
     _require_active_version(snapshot, expected_version)
     return replace(snapshot, version=snapshot.version + 1, status=ReviewStatus.VALIDATION_FAILED,
-                   duration=None, validation_error=error)
+                   duration=None, duration_verdict=None, validation_error=error)
+
+
+def record_duration_verdict(snapshot: ReviewSnapshot, verdict: DurationVerdict, expected_version: int) -> ReviewSnapshot:
+    """@description: Turn an official-data conclusion into review progress with the same transitions as duration evidence, without approving music.
+    @param snapshot: Current pending or failed review, possibly awaiting reexamination.
+    @param verdict: Pass or reject conclusion for the same platform identity.
+    @param expected_version: Revision used by the validation worker.
+    @return: New revision awaiting review or rejected for duration.
+    """
+    _require_active_version(snapshot, expected_version)
+    if verdict.video != snapshot.video:
+        raise InvalidReviewTransition("Duration verdict belongs to another video")
+    next_status = ReviewStatus.PENDING_REVIEW if verdict.outcome is DurationEligibility.PASS else ReviewStatus.REJECTED
+    # [reexamination block]: Rejection ends reexamination, exactly as for duration evidence.
+    still_pending = snapshot.reexamination_pending and next_status is not ReviewStatus.REJECTED
+    released = snapshot.priority_released or next_status is ReviewStatus.REJECTED
+    return replace(snapshot, version=snapshot.version + 1, status=next_status, duration_verdict=verdict, validation_error=None,
+                   reexamination_pending=still_pending, priority_released=released)
 
 
 def approve_review(snapshot: ReviewSnapshot, source: ApprovalSource, expected_version: int, *, song_eligible: bool,

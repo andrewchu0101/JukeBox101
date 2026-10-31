@@ -7,6 +7,7 @@ import json
 import os
 import sys
 
+from bot.auto_startup import load_auto_settings
 from bot.config import ConfigurationError, load_formal_exchange_enabled, load_nickel_claim_enabled
 from bot.database.errors import DatabaseError
 from bot.gateway_health import check_gateway
@@ -22,6 +23,7 @@ def check_health() -> dict:
     try:
         if load_formal_exchange_enabled() or load_nickel_claim_enabled():
             problems.append('FEATURE_POLICY_ENABLED')
+        load_auto_settings()  # [fail closed]: A switched-on mode with an invalid allowlist or no credential is unhealthy.
         application_id = int(os.environ['DISCORD_EXPECTED_APPLICATION_ID'])
         gateway = check_gateway(application_id)
         database = check_readiness()

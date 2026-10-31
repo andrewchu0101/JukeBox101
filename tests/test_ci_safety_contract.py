@@ -20,9 +20,7 @@ def test_ci_has_no_publication_or_production_secret():
     @param: none
     @return: None.
     """
-    workflows = list((ROOT / '.github' / 'workflows').glob('*.yml'))
-    assert len(workflows) == 1
-    source = workflows[0].read_text()
+    source = (ROOT / '.github' / 'workflows' / 'ci.yml').read_text()
     for forbidden in ('pull_request_target', 'secrets.', 'packages: write', 'id-token: write',
                       'docker push', 'environment: production', 'self-hosted', 'ssh '):
         assert forbidden not in source
@@ -32,6 +30,47 @@ def test_ci_has_no_publication_or_production_secret():
         if 'uses:' in line:
             import re
             assert re.search(r'@[a-f0-9]{40}$', line)
+
+
+def test_release_and_deploy_have_separate_trust_boundaries():
+    """@description: Keep publishing behind verification and SSH behind a completed release plus host gates.
+    @param: none
+    @return: None.
+    """
+    workflows = ROOT / '.github' / 'workflows'
+    release = (workflows / 'release.yml').read_text()
+    deploy = (workflows / 'deploy.yml').read_text()
+    assert 'uses: ./.github/workflows/ci.yml' in release and 'needs: verify' in release
+    assert 'docker load' in release and 'docker build' not in release
+    assert 'subject-digest: ${{ steps.image.outputs.digest }}' in release
+    assert 'workflow_run:' in deploy and 'workflows: [Release]' in deploy
+    assert "vars.CD_ENABLED == 'true'" in deploy and 'environment: production' in deploy
+    assert 'cancel-in-progress: false' in deploy and 'StrictHostKeyChecking=yes' in deploy
+    secret_job = deploy.split('\n  deploy:', 1)[1]
+    assert 'checkout@' not in secret_job and 'GH_TOKEN' not in secret_job
+    assert 'rolled_back|rollback_failed|rejected)' in secret_job
+    for source in (release, deploy):
+        assert 'pull_request_target' not in source and 'self-hosted' not in source
+        for line in source.splitlines():
+            if 'uses:' in line and '@' in line:
+                import re
+                assert re.search(r'@[a-f0-9]{40}$', line)
+
+
+def test_notifications_do_not_execute_triggering_pr_code_or_hold_deployment_secrets():
+    """@description: Keep shared result delivery on trusted default-branch code with issue-only writes.
+    @param: none
+    @return: None.
+    """
+    source = (ROOT / '.github' / 'workflows' / 'notify.yml').read_text()
+    assert 'workflows: [CI, Release, Deploy]' in source
+    assert 'ref: ${{ github.sha }}' in source and 'persist-credentials: false' in source
+    assert 'issues: write' in source and 'actions: read' in source
+    assert 'github.event.workflow_run.head_sha' not in source
+    assert all(forbidden not in source for forbidden in ('secrets.', 'packages: write', 'id-token: write',
+                                                        'pull_request_target', 'download-artifact', 'ssh '))
+    deploy = (ROOT / '.github' / 'workflows' / 'deploy.yml').read_text()
+    assert 'needs: notify' not in deploy
 
 
 @pytest.mark.parametrize('request_line', [
