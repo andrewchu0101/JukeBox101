@@ -53,7 +53,8 @@
       "bot/__main__.py#main",
       ".github/workflows/ci.yml",
       "deploy/host_ingress.py#main",
-      "deploy/host_worker.py#main"
+      "deploy/host_worker.py#main",
+      ".github/workflows/notify.yml"
     ],
     "feature_roots": [
       "bot/",
@@ -76,14 +77,16 @@
       "PostgreSQL with TLS verify-full",
       "GHCR",
       "GitHub attestation verification",
-      "Fixed local Docker socket via host worker"
+      "Fixed local Docker socket via host worker",
+      "Fixed GitHub notification Issue #7; subscribers choose their own GitHub/Email delivery"
     ]
   },
   "conventions": {
     "patterns": [
       "Stop old Gateway and confirm exit before starting candidate or rollback",
       "Atomic fsync journal and numeric run/attempt idempotency",
-      "Fixed root-owned configuration with default-deny deployment gates"
+      "Fixed root-owned configuration with default-deny deployment gates",
+      "Notification job uses trusted default-branch code only; validates completed runs and appends one fixed-issue comment per run/attempt"
     ],
     "naming": [
       "snake_case functions, UPPER_SNAKE_CASE constants"
@@ -141,7 +144,8 @@
   "known_unknowns": [
     "Production SSH account currently cannot operate Docker",
     "Actual production configuration, database target and compatible last-known-good image require current inventory",
-    "GitHub environment reviewers and branch protections require repository administrator permissions"
+    "GitHub environment configuration and branch protections require repository administrator permissions",
+    "Each maintainer must subscribe to Issue #7 and enable their own verified email; notification delivery cannot be configured for another account"
   ],
   "evidence": [
     {
@@ -159,6 +163,10 @@
     {
       "fact": "Production gates fail closed",
       "source": "deploy/host_worker.py#require_enabled"
+    },
+    {
+      "fact": "Shared notifications validate actual deploy job and never gate the CD workflow",
+      "source": "deploy/github_notifications.py#publish"
     }
   ]
 }

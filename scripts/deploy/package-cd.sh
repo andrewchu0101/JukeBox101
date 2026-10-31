@@ -13,7 +13,8 @@ cp scripts/deploy/install-cd-host.sh "$bundle/scripts/deploy/"
 cp docs/deploy/continuous-deployment.md "$bundle/docs/deploy/"
 python3 - "$bundle" <<'PY'
 import json, pathlib, subprocess, sys
-paths = ['.github/workflows/ci.yml', '.github/workflows/release.yml', '.github/workflows/deploy.yml']
+paths = ['.github/workflows/ci.yml', '.github/workflows/release.yml', '.github/workflows/deploy.yml',
+         '.github/workflows/notify.yml']
 paths += sorted(str(path) for path in pathlib.Path('bot/database/postgres').rglob('*') if path.is_file())
 approved = {path: subprocess.check_output(['git', 'hash-object', '--', path], text=True).strip() for path in paths}
 root = pathlib.Path(sys.argv[1])

@@ -4,7 +4,7 @@
 
 PR 只測試，不取用部署秘密。合併 main 後，`Release` 呼叫同一個 CI，建立一次 runtime，對同一 image ID 執行離線、Compose、PostgreSQL 18.6／17.11 與 TLS 驗證。成功後才把這個映像推送 GHCR，產生 GitHub OIDC 來源證明與 `release.json`。不在測試後重建部署映像。
 
-`Release` 完成成功後，另一個 `Deploy` workflow 才可能執行。它要求 repo variable `CD_ENABLED=true`，先核對目前 main、固定 repo、成功的 push run／attempt，再讀取該次唯一的 receipt。部署 job 必須通過 `production` Environment 的審查規則；首次設定必須有人工審查。部署 job 不 checkout、不持有 GitHub Token，只能用專用 SSH key 送固定協定。
+`Release` 完成成功後，另一個 `Deploy` workflow 才可能執行。它要求 repo variable `CD_ENABLED=true`，先核對目前 main、固定 repo、成功的 push run／attempt，再讀取該次唯一的 receipt。依 2026-10-31 使用者選擇，正式驗收與 CD 啟用後採全自動部署；`production` Environment 保留 main 限制及專用 secrets，日常部署不設 required reviewers／wait timer。首次主機安裝、baseline 與來源證明仍須完成實際驗收，不能跳過驗收直接開 gate。部署 job 不 checkout、不持有 GitHub Token，只能用專用 SSH key 送固定協定。
 
 主機獨立驗證來源證明、核准的 workflow／schema blob、固定設定雜湊與秘密檔 metadata。先下載新版，確認上一穩定版健康，再停舊 Bot、確認退出、啟動唯一新版。啟動上限 180 秒，再連續觀察 120 秒。Discord 有短暫維護中斷。新版失敗只嘗試回滾一次；`rolled_back` 也會讓 Actions 失敗，`rollback_failed` 鎖住後續部署並要求維運介入。
 
@@ -29,7 +29,7 @@ GitHub `workflow_run` 有獨立的權限邊界，不能接受 PR artifacts。來
 
 這是分開的階段；合併 workflow 不代表正式 CD 已啟用。沒有完成的驗收不得透過把 policy boolean 設為 true 來代替。
 
-1. Repo 管理員保護 main：要求 PR、必要 CI、審查，禁止 force push／刪除。建立 `production` Environment，限制 main，首次要求 reviewer；確認 release job 的 GHCR／OIDC／attestation 權限。一般 Bot 相容更新可在實測後另行決定是否移除逐次人工審查。
+1. Repo 管理員保護 main：要求 PR、必要 CI、審查，禁止 force push／刪除。建立 `production` Environment，限制 main 並保存專用 secrets；確認 release job 的 GHCR／OIDC／attestation 權限。依已選定的全自動模式，驗收完成啟用時不設定 required reviewers 或 wait timer。main 的 PR／CI／審查保護仍保留；合併後不再逐次核准部署。
 2. 先在隔離環境驗證 Release 的實際映像、GHCR push、`gh attestation verify` 真實輸出與 verifier 的精確欄位契約。目前 verifier 的單元測試使用 synthetic fixture，不能當作密碼學驗收。主機需要固定 `/usr/bin/gh`、`/usr/bin/docker`、`/usr/bin/python3`；controller 僅用標準庫及包內 runtime policy helper。
 3. 重新盤點正式環境：Bot image ID／command／labels、實際 Compose/env、功能開關、秘密檔 uid/gid/mode、TLS CA、database 名稱／使用者／埠、網路及所有相同 Application 的 Gateway。Supabase 可能使用 `postgres` 與帶專案 suffix 的角色，不能沿用歷史 `jukebox101` 假設。root Compose 的 DB_NAME／DB_USER／DB_PORT 由核准的 env 提供。
 4. 在 repo 根目錄執行 `sh scripts/deploy/package-cd.sh`，產生 `artifacts/cd-host.<random>.tar.gz` 與 SHA-256。包內只有明列的 controller、policy helper、units、Compose 及文件；不含 secrets、映像、測試資料。`approved_blobs` 由目前工作樹計算，須確認與實際合併 commit 相同；若合併時有修改，重新封裝與審查。
@@ -51,7 +51,19 @@ GitHub `workflow_run` 有獨立的權限邊界，不能接受 PR artifacts。來
 
 10. 在隔離 Docker 與 SSH/systemd 環境實測成功、新版失聯回滾、SSH 中斷、worker 中斷、重啟恢復與回滾失敗；核對受限帳號不能取得 shell／執行任意 sudo、舊版健康訊號相容且無雙 Gateway。真實 CLI provenance、Docker 與 baseline 接受後，才把四個 gate（`enabled`、`crypto_acceptance_verified`、`docker_acceptance_verified`、`baseline_supports_gateway_health`）設為 true。
 11. `systemctl daemon-reload`，再 `systemctl enable --now jukebox101-cd.path jukebox101-cd.timer`。path 接收新 request，timer 在開機或 worker 退出後重新處理未完成 journal；不依賴 SSH session 存活。這兩個 unit 只啟動 JukeBox worker。
-12. 設 GitHub Environment secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`（透過可信既有通道核對 host key，不能臨場 ssh-keyscan 後直接信任），以及 Environment variable `DEPLOY_HOST`。最後設定 **repository variable** `CD_ENABLED=true`；它必須在 repo 層，resolve job 才看得到。之後一次 main push 會進入 Release → production 人工核准 → Deploy。尚未完成或已過期的先前 release 不會因開 gate 自動補部署。
+12. 設 GitHub Environment secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`（透過可信既有通道核對 host key，不能臨場 ssh-keyscan 後直接信任），以及 Environment variable `DEPLOY_HOST`。最後設定 **repository variable** `CD_ENABLED=true`；它必須在 repo 層，resolve job 才看得到。之後一次 main push 會進入 Release → Deploy 自動部署。尚未完成或已過期的先前 release 不會因開 gate 自動補部署。
+
+## 兩位維護者的 GitHub／Email 通知
+
+通知集中在 [CI/CD 執行通知 Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7)。兩人各用自己的帳號按 **Subscribe（訂閱）**，再到 [個人通知設定](https://github.com/settings/notifications) 開啟參與／訂閱對話的 **On GitHub** 與 **Email**，並確認接收地址已驗證。這些是每人帳號的個別設定，專案無法替另一個帳號開啟或確認 Email 送達。
+
+原生 Actions 通知主要發送給觸發該 run 的使用者；只開啟個人 Actions 通知，無法保證兩位每次都收到。`Notify` 改用 `workflow_run`，在 CI、Release、Deploy 完成後向固定 Issue 新增結果。通知 workflow 必須先合併到 main 才會生效；本次首次建立 Issue 不等於通知已自動啟用。
+
+通知程式只 checkout 通知 workflow 本身的可信預設分支 snapshot，不 checkout 觸發的 PR、不下載 PR artifacts、不讀取部署 secrets。每次重新查核固定 repo／workflow／run／attempt，只張貼固定狀態、commit 與 Actions 連結，沒有 PR 標題、日誌、秘密或使用者內容。GitHub Actions bot 的同一 run／attempt 不重複貼文，不同 run 不共用會取代排隊工作的 concurrency group。
+
+Deploy 的訊息讀取實際 `deploy` job 結果；被跳過時明確顯示未部署，不會因其他 job 綠燈宣稱上線。失敗／中斷時請到該 Actions 連結確認主機狀態與回滾結果。通知與部署獨立：Email 的傳遞或 Notify job 的失敗都不會觸發、阻止或重跑 CD。關閉 Issue #7 會讓後續通知 job 拒絕寫入。
+
+官方說明：[Actions 通知對象](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)、[通知與訂閱](https://docs.github.com/en/subscriptions-and-notifications/concepts/about-notifications)、[個人通知設定](https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications)。
 
 ## 停用與故障
 
@@ -63,4 +75,4 @@ GitHub `workflow_run` 有獨立的權限邊界，不能接受 PR artifacts。來
 
 ## 本次交付狀態（2026-10-31）
 
-本文件與 workflow 是可執行的設定與首次安裝包。測試證據另記本次 PR；未完成的 GHCR／主機／真實 Discord 驗收不算通過。現有管理連線 `neighbor-vps` 可 SSH，但無 Docker 管理權；連線帳號名稱與 sudo 拒絕已核對，未取得或變更正式秘密。Repo 連線有 push、無 admin，不能替管理員設定 branch protection、required reviewer 或 Environment。
+本文件與 workflow 是可執行的設定與首次安裝包。測試證據另記本次 PR；未完成的 GHCR／主機／真實 Discord 驗收不算通過。現有管理連線 `neighbor-vps` 可 SSH，但無 Docker 管理權；連線帳號名稱與 sudo 拒絕已核對，未取得或變更正式秘密。Repo 連線有 push、無 admin，不能替管理員設定 branch protection 或 Environment。
