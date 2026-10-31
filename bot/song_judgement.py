@@ -8,6 +8,7 @@ from datetime import datetime
 from enum import Enum
 
 from bot.eligibility import DurationEligibility, DurationEvidence, assess_duration
+from bot.review import DurationVerdict
 from bot.song_identity import VideoIdentity
 
 
@@ -55,15 +56,18 @@ class SongJudgement:
     reason: str  # [audit explanation]: Names the missing input or the refusal rule that applied.
 
 
-def judge_song(duration: DurationEvidence | None, content: ContentJudgement | None) -> SongJudgement:
+def judge_song(duration: DurationEvidence | None, content: ContentJudgement | None, verdict: DurationVerdict | None = None) -> SongJudgement:
     """@description: Decide song eligibility in a fixed order so identical inputs give identical reasons.
     Order: cross-video mismatch refusal, missing duration, missing content, unreliable duration, clip, unvalidatable or out-of-range duration, content not a song.
     @param duration: Full-video duration evidence, or None when no evidence exists.
     @param content: Owner content judgement, or None when no judgement exists.
+    @param verdict: Official-data conclusion used only when there is no duration evidence; pass reaches the same content checks, reject is final.
     @return: SongJudgement whose ELIGIBLE status only permits the Owner approve path to consume it.
     """
     if duration is not None and content is not None and duration.video != content.video:
         raise ValueError("Duration and content judgement must describe the same video")
+    if duration is None and verdict is not None:
+        return _judge_by_verdict(verdict, content)
     if duration is None:
         return SongJudgement(SongStatus.PENDING, "Duration evidence is missing")
     if content is None:
@@ -77,6 +81,23 @@ def judge_song(duration: DurationEvidence | None, content: ContentJudgement | No
         return SongJudgement(SongStatus.PENDING, "Duration evidence could not be validated")
     if duration_result is DurationEligibility.REJECT:
         return SongJudgement(SongStatus.NOT_ELIGIBLE, "Duration is outside the 60 to 720 second limits")
+    if content.is_song is not True:
+        return SongJudgement(SongStatus.NOT_ELIGIBLE, "Content judgement says the video is not a song")
+    return SongJudgement(SongStatus.ELIGIBLE, "Complete reliable song within limits and judged to be a song")
+
+
+def _judge_by_verdict(verdict: DurationVerdict, content: ContentJudgement | None) -> SongJudgement:
+    """@description: Apply the content checks to an official-data duration conclusion, which carries no seconds to assess.
+    @param verdict: Pass or reject conclusion for the video.
+    @param content: Owner content judgement, or None when no judgement exists.
+    @return: Song judgement with the same reasons as the evidence path.
+    """
+    if content is not None and verdict.video != content.video:
+        raise ValueError("Duration and content judgement must describe the same video")
+    if verdict.outcome is DurationEligibility.REJECT:
+        return SongJudgement(SongStatus.NOT_ELIGIBLE, "Duration is outside the 60 to 720 second limits")
+    if content is None:
+        return SongJudgement(SongStatus.PENDING, "Content judgement is missing")
     if content.is_song is not True:
         return SongJudgement(SongStatus.NOT_ELIGIBLE, "Content judgement says the video is not a song")
     return SongJudgement(SongStatus.ELIGIBLE, "Complete reliable song within limits and judged to be a song")

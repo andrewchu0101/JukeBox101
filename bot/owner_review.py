@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 
 from bot.database.review_persistence import (
-    MAX_PENDING_PAGE, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
+    MAX_KNOWN_VERSIONS_PAGE, MAX_PENDING_PAGE, KnownVersionPage, PendingPage, ReexaminationCommand, ReviewCommand, VersionConfirmationCommand, content_judgement_digest,
     decision_digest, require_owner,
 )
 from bot.database.review_projection import ReviewProjection
@@ -23,7 +23,7 @@ from bot.eligibility import DurationEligibility, DurationEvidence, assess_durati
 from bot.decision_snapshot import DecisionSnapshot
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
 from bot.review import (
-    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, record_validation, reject_review,
+    ApprovalSource, DurationEvidenceExpired, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, record_validation, reject_review,
 )
 from bot.review_gate import evaluate_approval_gate
 from bot.song_judgement import ContentJudgement
@@ -193,7 +193,8 @@ class OwnerReviewService:
                              expires_at, content_digest=content_judgement_digest(content) if content is not None else None,
                              reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
 
-    def preview_duration(self, actor_id: int, operation_id: str, seconds: int, source: str, reason: str) -> ReviewPreview:
+    def preview_duration(self, actor_id: int, operation_id: str, seconds: int, source: str, reason: str,
+                         expected_revision: int | None = None) -> ReviewPreview:
         """@description: Let the Owner supply a full-video duration from Discord, sharing the same gates and audited write as the operator CLI.
         @param self: Owner review coordinator.
         @param actor_id: Authenticated caller, which must be the Owner.
@@ -201,24 +202,26 @@ class OwnerReviewService:
         @param seconds: Owner-stated full-video seconds.
         @param source: Traceable source of the observation.
         @param reason: Audit explanation.
+        @param expected_revision: Revision the Owner examined, bound into the token and rechecked inside the confirmation transaction; None means the current revision.
         @return: Preview with the projected status and any rejection warning.
         """
         require_owner(actor_id, self._owner_id, reason)
         require_traceable_source(source)
         projection = self._repository.review_view(actor_id, operation_id)
+        revision = projection.review.version if expected_revision is None else expected_revision  # [examined revision]: A stale value is refused below.
         evidence = DurationEvidence(projection.review.video, seconds, source, True, True)
         verdict = assess_duration(evidence)
         if verdict is DurationEligibility.PENDING_VALIDATION:
             raise ValueError("時長必須是非負整數秒。")
-        projected = record_validation(projection.review, evidence, projection.review.version)  # [hard gates]: Terminal reviews refuse here.
+        projected = record_validation(projection.review, evidence, revision)  # [hard gates]: Terminal reviews and stale revisions refuse here.
         token_id = secrets.token_urlsafe(24)
         expires_at = self._clock() + self._token_ttl
-        issued = _IssuedToken(actor_id, operation_id, ReviewAction.DURATION, reason, projection.review.version, source,
+        issued = _IssuedToken(actor_id, operation_id, ReviewAction.DURATION, reason, revision, source,
                               uuid.uuid4().hex, expires_at, expected_snapshot=projection.snapshot, duration=evidence)
         with self._token_lock:
             self._tokens[token_id] = issued
         warning = DURATION_REJECT_NOTE if verdict is DurationEligibility.REJECT else ""
-        return ReviewPreview(token_id, operation_id, ReviewAction.DURATION, projection.review.version, source,
+        return ReviewPreview(token_id, operation_id, ReviewAction.DURATION, revision, source,
                              projection.review.status, projected.status, f"時長 {seconds} 秒。{DURATION_STATEMENT}{warning}{NO_AWARD_EFFECT}", expires_at,
                              source_reference=source, reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
 
@@ -273,6 +276,31 @@ class OwnerReviewService:
         if type(limit) is not int or limit < 1:
             raise ValueError("A positive page size is required")
         return self._repository.pending_items(actor_id, after_sequence, min(limit, MAX_PENDING_PAGE))
+
+    def retention_status(self, actor_id: int):
+        """@description: Read API-data retention health for the Owner's card warning, read-only; repositories without the table report nothing.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @return: Retention status, or None when the repository keeps no API observations.
+        """
+        require_owner(actor_id, self._owner_id, "owner retention status")
+        reader = getattr(self._repository, "api_retention_status", None)
+        return None if reader is None else reader()
+
+    def list_known_versions(self, actor_id: int, *, after_sequence: int | None = None, limit: int = MAX_KNOWN_VERSIONS_PAGE) -> KnownVersionPage:
+        """@description: Show one keyset page of the recording versions already confirmed, so the Owner can recognize one without typing an id, read-only.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @param after_sequence: First-video acceptance order already seen, from the previous page's next cursor, or None for the first page.
+        @param limit: Requested page size, capped at the maximum page size.
+        @return: One page of known versions, oldest first, with the cursor for the next page.
+        """
+        require_owner(actor_id, self._owner_id, "owner known versions")
+        if after_sequence is not None and (type(after_sequence) is not int or after_sequence < 0):
+            raise ValueError("A paging cursor must be a non-negative accepted sequence")
+        if type(limit) is not int or limit < 1:
+            raise ValueError("A positive page size is required")
+        return self._repository.known_versions(actor_id, after_sequence, min(limit, MAX_KNOWN_VERSIONS_PAGE))
 
     def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
         """@description: Return a stored Owner evidence record for the operation's video so the Owner can cite it again.
@@ -388,7 +416,10 @@ def _approval_song_eligibility(actor_id: int, projection: ReviewProjection, cont
         raise InvalidReviewTransition("Content judgement must be the Owner's own verdict")
     if projection.identity.status is VersionIdentityStatus.CONFLICT:
         raise InvalidReviewTransition("Version conflict forbids approval; rejection stays allowed and does not clear the conflict")
-    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity)  # [cross-video]: May raise ValueError.
+    if projection.duration_basis_expired:
+        raise DurationEvidenceExpired("官方時長資料已過期：請等待重新驗證，或由 Owner 補人工時長")
+    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity,
+                                  projection.review.duration_verdict)  # [cross-video]: May raise ValueError.
     if not gate.song_eligible:
         raise InvalidReviewTransition(f"Approval refused by the song gate: {gate.reason}")
     return gate.song_eligible

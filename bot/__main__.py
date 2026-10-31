@@ -21,6 +21,7 @@ import discord
 from bot.auto_startup import AutoSettings, build_auto_pipeline, load_auto_settings
 from bot.config import (SECRET_FILE_SUFFIX, ConfigurationError, load_database_settings, load_formal_exchange_enabled,
                         load_nickel_claim_enabled)
+from bot.database.api_retention_job import verify_retention_schema
 from bot.database.repository import MusicRepository
 from bot.database.connection import open_connection
 from bot.database.submission_repository import SubmissionRepository
@@ -350,10 +351,13 @@ def main() -> None:
         nickel_claim = load_nickel_claim_enabled()  # [/claim]: Off unless the setting is explicitly enabled.
         verify_mounted_secrets()
         auto_settings = load_auto_settings()  # [automatic modes]: Off unless explicitly enabled; invalid settings refuse startup.
+        if auto_settings.api_retention:
+            verify_retention_schema(database_settings)  # [before the Gateway]: Retention on needs its tables and privileges; nothing is applied here.
     except ConfigurationError as configuration_error:
         raise SystemExit(str(configuration_error)) from None
     submission_repository = SubmissionRepository(partial(open_connection, database_settings), owner_id,
-                                                 automatic_settlement=auto_settings.settlement_enabled)
+                                                 automatic_settlement=auto_settings.settlement_enabled,
+                                                 api_retention=auto_settings.api_retention)
     pipeline = build_auto_pipeline(submission_repository, auto_settings)
     service = MusicService(MusicRepository(database_settings), submission_repository, formal_exchange=formal_exchange,
                            nickel_claim_enabled=nickel_claim, nickel_connection_factory=partial(open_connection, database_settings), auto_pipeline=pipeline)

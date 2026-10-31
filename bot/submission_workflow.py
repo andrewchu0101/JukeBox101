@@ -7,8 +7,8 @@ from dataclasses import dataclass, replace
 from random import Random
 
 from bot.eligibility import DurationEvidence
-from bot.review import (ApprovalSource, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
-                        approve_review, record_validation, record_validation_error, reject_review)
+from bot.review import (ApprovalSource, DurationVerdict, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
+                        approve_review, record_duration_verdict, record_validation, record_validation_error, reject_review)
 from bot.reward_candidates import (RewardCandidate, RewardCandidateStatus, RewardDecision,
                                    RewardDecisionReason, evaluate_reward_candidates)
 from bot.share_replies import ShareScenario, classify_share_scenario, select_share_reply
@@ -30,6 +30,7 @@ class SubmissionRequest:
     review: ReviewSnapshot  # [current review]: Authoritative revision supplied by trusted callers.
     expected_review_version: int  # [concurrency token]: Required even when no action is requested.
     duration: DurationEvidence | None = None  # [validation action]: Full original video evidence only.
+    duration_verdict: DurationVerdict | None = None  # [validation action]: Official-data conclusion, never alongside duration evidence.
     approval_source: ApprovalSource | None = None  # [review action]: Does not authenticate an Owner.
     song_eligible: bool | None = None  # [song decision]: None means no decision yet.
     validation_error: ValidationError | None = None  # [retryable failure]: Never a content rejection.
@@ -55,8 +56,10 @@ def _validate_review_request(request: SubmissionRequest) -> None:
     """
     if type(request.expected_review_version) is not int or request.expected_review_version != request.review.version:
         raise StaleReviewVersion("Review version no longer matches")
-    if request.duration is not None and request.validation_error is not None:
+    if (request.duration is not None or request.duration_verdict is not None) and request.validation_error is not None:
         raise ValueError("Validation evidence and failure are mutually exclusive")
+    if request.duration is not None and request.duration_verdict is not None:
+        raise ValueError("Duration evidence and an API verdict are mutually exclusive")
     if request.song_eligible is not None and type(request.song_eligible) is not bool:
         raise ValueError("Song eligibility must be an explicit internal decision")
 
@@ -73,6 +76,8 @@ def _review_request(request: SubmissionRequest) -> ReviewSnapshot:
         review = record_validation_error(review, request.validation_error, review.version)
     if request.duration is not None:
         review = record_validation(review, request.duration, review.version)
+    if request.duration_verdict is not None:
+        review = record_duration_verdict(review, request.duration_verdict, review.version)
     if request.approval_source is not None:
         review = approve_review(review, request.approval_source, review.version, song_eligible=request.song_eligible,
                                 ordering_sequence=request.ordering_sequence)

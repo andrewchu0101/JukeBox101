@@ -102,8 +102,8 @@ def test_owner_list_reaches_the_synthetic_service_only_for_the_owner_in_the_priv
     _run(command.callback(command.binding, stranger_call))
     owner_texts = " ".join(content or "" for _method, content, _options in owner_call.replies())
     stranger_texts = " ".join(content or "" for _method, content, _options in stranger_call.replies())
-    assert "op-1" in owner_texts
-    assert "op-1" not in stranger_texts
+    assert "待處理案件" in owner_texts and "op-1" not in owner_texts
+    assert "待處理案件" not in stranger_texts
 
 
 def test_owner_contract_is_the_owner_group_alone_and_accepts_its_own_remote_payload(client, settings):

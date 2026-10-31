@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from bot.database.api_observations import basis_expired
 from bot.database.persisted_snapshot import decode_current_identity, decode_current_review
 from bot.database.review_persistence import (conflict_reason, current_decision_snapshot, decision_digest, load_content_judgements,
                                              replay_decision, save_decision)
@@ -43,6 +44,7 @@ class ReviewProjection:
     history_entries: tuple[ReviewHistoryEntry, ...]  # [audit trail]: Each revision with its actor and reason, oldest first.
     conflict_reason: str | None  # [freeze explanation]: Cited contradiction, set only while the identity is CONFLICT.
     snapshot: DecisionSnapshot  # [preview facts]: Identity, canonical root and evidence set read in this same transaction.
+    duration_basis_expired: bool = False  # [expired API basis]: True when the only duration basis is an official-data conclusion past its retention window.
 
 
 def review_projection(cursor: Any, operation_id: str) -> ReviewProjection:
@@ -67,7 +69,8 @@ def review_projection(cursor: Any, operation_id: str) -> ReviewProjection:
     identity = decode_current_identity(row)
     return ReviewProjection(row["operation_id"], row["accepted_sequence"], identity, decode_current_review(row), evidence, history,
                             load_content_judgements(cursor, row["video_id"]), row["source_url"], history_entries,
-                            conflict_reason(identity), current_decision_snapshot(cursor, identity))
+                            conflict_reason(identity), current_decision_snapshot(cursor, identity),
+                            basis_expired(cursor, decode_current_review(row)))
 
 
 def append_evidence(cursor: Any, decision_id: str, operation_id: str, actor_id: int, reason: str,

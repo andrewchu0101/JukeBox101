@@ -28,10 +28,10 @@
 
 ## Owner 在 Discord 的最短流程
 
-1. `/owner list` 查看待處理案件。
-2. 沒有時長時：`/owner duration` → 按確認。
-3. 待審核時：`/owner approve` → 按確認。
-4. 版本未確認時：`/owner confirm_version` → 按確認；回覆會說明已發放 +1 或尚待的條件。
+1. `/owner list`：開啟最早一筆待處理案件的卡片（不需要案件編號）。
+2. 待審核：按「確認通過」（只核准歌曲資格），或按「拒絕」並填理由；沒有時長時按「補時長」。
+3. 按「下一筆」只切換顯示。操作後卡片會換成實際結果（待版本、待前序、已發 +1 或結果未知）。
+4. 版本未確認時，卡片會明確顯示；目前仍用 `/owner confirm_version` → 按確認。卡片內的版本確認操作尚待 Owner 決定語意，見 [Owner 待審案件卡片](../owner-case-cards.md)。
 
 ## 設定名稱
 
@@ -39,6 +39,7 @@
 |---|---|
 | `JUKEBOX_AUTO_REVIEW` | `on`／`off`；on 時必須有 API 金鑰 |
 | `JUKEBOX_AUTO_SETTLEMENT` | `on`／`off`；必須與資料庫開關一致 |
+| `JUKEBOX_API_RETENTION` | `on`／`off`；on 才把官方 API 數值只存短期表並執行清除（需先套用 migration 0004，見 [API 資料保存發行說明](../api-retention-release.md)）。**`JUKEBOX_AUTO_REVIEW=on` 必須搭配 `on`，否則拒絕啟動** |
 | `YOUTUBE_TRUSTED_CHANNEL_IDS` | 逗號分隔的 `UC...` 頻道 ID，不接受名稱或 handle |
 | `${JB_SECRET_DIR}/youtube_api_key.txt` | API 金鑰秘密檔（uid/gid 10001、0400），由 `YOUTUBE_API_KEY_FILE` 指向；不進 Git 或聊天 |
 
@@ -48,8 +49,8 @@
 
 ## 啟用順序（由 Owner 與夥伴安排，本 PR 未執行）
 
-1. 先備份資料庫；依部署手冊更新映像。此版本不需 migration。
-2. 只開自動審核：放置秘密檔、填名單，`JUKEBOX_AUTO_REVIEW=on`，以 `compose.yaml` 加 `compose.auto-review.yaml` 啟動；驗收真實 API 回應。
+1. 先備份資料庫；依部署手冊更新映像。啟用自動審核前需要 migration 0004 與 `JUKEBOX_API_RETENTION=on`（順序見 [部署前清單](partner-predeploy-api-retention.md)）。
+2. 只開自動審核（保存開關必須已開，否則 Bot 拒絕啟動）：放置秘密檔、填名單，`JUKEBOX_AUTO_REVIEW=on`，以 `compose.yaml` 加 `compose.auto-review.yaml` 啟動；驗收真實 API 回應。
 3. 處理所有版本未確認的既有案件（包含首筆），否則後面的發獎會等待。**開啟前先決定首筆案件的處理**：開啟後若確認其版本，它會走一般流程領 +1。
 4. 開發獎：停 Bot → `python -m bot.owner_cli settlement-switch preview --enabled on` → 用印出的 digest 執行 `write` → 設 `JUKEBOX_AUTO_SETTLEMENT=on` → 啟動 → `python -m bot.healthcheck`。
 5. 同步 Owner 指令（`/owner duration` 是新指令）：Owner 指令只註冊在 `DISCORD_OWNER_GUILD_ID` 伺服器，**全域 `apply` 不會同步它**。由 Owner 依序執行：
@@ -63,5 +64,5 @@
 ## YouTube 資料政策待辦（啟用前需確認）
 
 - Google 回覆（Issue 576880673）只涵蓋 Discord 內分享獎勵與後端 metadata 驗證用途，並要求遵守其他全部條款；見 `docs/youtube-policy-confirmation.md`（PR #3）。
-- 開發者政策 III.E.4 對存放的 API 資料設有 30 日刷新或刪除的要求。本版把**官方時長、channel ID、取得時間**寫入審核歷程，且歷程目前是只增不改，**尚未實作 30 日刷新或刪除**。啟用前須由 Owner 決定保存方案；我讀到的是政策摘要，影片／頻道 ID 是否豁免未確認。
+- 開發者政策 III.E.4 對存放的 API 資料設有 30 日刷新或刪除的要求。本版把**官方時長、channel ID、取得時間**寫入審核歷程，且歷程目前是只增不改，**尚未實作 30 日刷新或刪除**。啟用前須由 Owner 決定保存方案。政策頁面（2026-10-15 版）文字中未見影片／頻道 ID 的豁免，但內部衍生結果是否適用仍未決。保存位置清單、設計與待決問題見 [API 資料生命週期設計](../api-data-lifecycle-design.md)。
 - 本版不保存標題；API 預設配額 10,000 單位／日，每次 `videos.list` 1 單位，每輪巡檢最多 20 次。

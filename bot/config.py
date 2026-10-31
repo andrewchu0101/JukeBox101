@@ -205,6 +205,7 @@ def load_nickel_claim_enabled(environ: Mapping[str, str] | None = None) -> bool:
 
 
 AUTO_REVIEW_ENV = "JUKEBOX_AUTO_REVIEW"  # [automatic review switch]: Absent or disabling keeps every lookup off.
+API_RETENTION_ENV = "JUKEBOX_API_RETENTION"  # [API retention switch]: On keeps official values only in the short-lived table and runs the purge; off keeps the previous behaviour.
 AUTO_SETTLEMENT_ENV = "JUKEBOX_AUTO_SETTLEMENT"  # [automatic settlement switch]: Must agree with the database settlement flag.
 TRUSTED_CHANNELS_ENV = "YOUTUBE_TRUSTED_CHANNEL_IDS"  # [Owner allowlist]: Comma-separated stable channel IDs; empty approves nothing.
 YOUTUBE_API_KEY_SETTING = "YOUTUBE_API_KEY"  # [API credential]: Environment value or the file named by its _FILE setting.
@@ -232,6 +233,14 @@ def load_auto_settlement_enabled(environ: Mapping[str, str] | None = None) -> bo
     @return: Whether a committed qualification may pay automatically.
     """
     return _strict_switch(AUTO_SETTLEMENT_ENV, environ)
+
+
+def load_api_retention_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """@description: Read the API retention switch, closed unless explicitly enabled.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: Whether official API values go only to the short-lived table and the purge job runs.
+    """
+    return _strict_switch(API_RETENTION_ENV, environ)
 
 
 def load_auto_review_enabled(environ: Mapping[str, str] | None = None) -> bool:

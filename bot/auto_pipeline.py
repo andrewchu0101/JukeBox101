@@ -23,6 +23,8 @@ SWEEP_LOOKUP_LIMIT = 20  # [quota bound]: Provider calls per sweep.
 SWEEP_CANDIDATE_LIMIT = 200  # [read bound]: Pending operations examined per sweep.
 RETRY_BACKOFF_SECONDS = 1800.0  # [held-case pause]: A held or failed lookup is not asked again sooner than this.
 MAX_TRACKED_BACKOFFS = 1000  # [memory bound]: Older in-memory pauses are dropped; losing one only costs one quota unit.
+PURGE_INTERVAL_SECONDS = 86400.0  # [retention cadence]: One purge run per day, plus one at startup before any lookup; a failed run is retried at the next sweep.
+STOP_LOOKUPS_AFTER_OVERDUE_DAYS = 3.0  # [overdue escalation]: Past this much retention debt no new official values are fetched or stored.
 SWEEP_ERRORS = (DatabaseError, PersistenceNotReady, CommitOutcomeUnknown, LedgerBalanceMismatch, PermissionError, ValueError)  # [isolated step]: One case never stops the others.
 
 
@@ -34,19 +36,21 @@ class PipelineOutcome:
     decision: RewardDecision  # [reward state]: Recomputed from committed facts.
     retry_later: bool = False  # [automatic retry]: The provider failed and the sweep will ask again.
     settlement_unknown: bool = False  # [uncertain money]: Repeated lost acknowledgements; the receipt decides later.
+    settlement_enabled: bool = False  # [money switch]: Whether this process was allowed to settle, so a READY reply can describe the real cause.
 
 
 class AutoPipeline:
     """Coordinate one operation or a whole sweep; holds no business state beyond a bounded in-memory retry pause."""
 
     def __init__(self, repository: Any, metadata_client: Any | None, trusted_channel_ids: frozenset[str], *,
-                 settlement_enabled: bool, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 settlement_enabled: bool, api_retention: bool = False, monotonic: Callable[[], float] = time.monotonic) -> None:
         """@description: Bind collaborators without any I/O.
         @param self: New pipeline.
         @param repository: Submission repository owning every transaction.
         @param metadata_client: Official provider, or None when automatic review is switched off.
         @param trusted_channel_ids: Owner-approved stable channel IDs; may be empty.
         @param settlement_enabled: Deployment switch; False never writes a reward.
+        @param api_retention: Deployment switch; True keeps official values only in the short-lived table and runs the purge.
         @param monotonic: Time source for the retry pause.
         @return: None.
         """
@@ -54,6 +58,9 @@ class AutoPipeline:
         self._metadata_client = metadata_client  # [official source]: Called outside transactions only.
         self._trusted_channel_ids = trusted_channel_ids  # [allowlist]: Empty means nothing is automatically approved.
         self._settlement_enabled = settlement_enabled is True  # [money switch]: Only an exact True may pay.
+        self._api_retention = api_retention is True  # [API data lifecycle]: Only an exact True changes where official values are stored.
+        self._next_purge_at = 0.0  # [purge schedule]: Zero means the next sweep purges first, which is also the startup purge.
+        self._lookups_stopped = False  # [overdue stop]: True while the purge is so far behind that no new official value may be fetched.
         self._monotonic = monotonic  # [pause clock]: Injected for tests.
         self._paused_until: dict[str, float] = {}  # [lookup pause]: Video to earliest next lookup; lost on restart by design.
 
@@ -73,15 +80,81 @@ class AutoPipeline:
         @return: Number of operations whose review step ran.
         """
         reviewed = 0
-        for operation_id, video_id in self._repository.pending_validation_operations(SWEEP_CANDIDATE_LIMIT):
-            if reviewed >= SWEEP_LOOKUP_LIMIT or self._metadata_client is None:
+        self.maintain_retention()
+        paused_video_ids = self._paused_video_ids()
+        for operation_id, video_id in self._repository.pending_validation_operations(SWEEP_CANDIDATE_LIMIT, paused_video_ids):
+            if reviewed >= SWEEP_LOOKUP_LIMIT or self._metadata_client is None or self._lookups_stopped:
                 break
             if self._monotonic() < self._paused_until.get(video_id, 0.0):
                 continue
             reviewed += 1
             self._guarded_review(operation_id)
+        reviewed += self._revalidate_expired(SWEEP_LOOKUP_LIMIT - reviewed)
         self.settle_ready()
         return reviewed
+
+    def purge_expired(self) -> int:
+        """@description: Clear every expired or completed API observation now, so no official value outlives its window.
+        @param self: Pipeline.
+        @return: Number of observations cleared; zero when the purge failed, which the next sweep retries.
+        """
+        try:
+            cleared = self._repository.purge_api_observations()
+        except SWEEP_ERRORS as error:
+            LOGGER.error("API retention purge failed: %s", type(error).__name__)
+            return 0
+        self._next_purge_at = self._monotonic() + PURGE_INTERVAL_SECONDS
+        return cleared
+
+    def maintain_retention(self) -> None:
+        """@description: Purge on schedule and stop new lookups while the purge is far behind, using the database clock for the debt.
+        @param self: Pipeline.
+        @return: None.
+        """
+        if not self._api_retention:
+            return
+        if self._monotonic() >= self._next_purge_at:
+            self.purge_expired()
+        try:
+            status = self._repository.api_retention_status()
+            overdue = None if status is None else status.oldest_overdue_days
+        except SWEEP_ERRORS as error:
+            LOGGER.error("API retention status unreadable, stopping new lookups: %s", type(error).__name__)
+            self._lookups_stopped = True
+            return
+        self._lookups_stopped = overdue is not None and overdue >= STOP_LOOKUPS_AFTER_OVERDUE_DAYS
+
+    def _revalidate_expired(self, budget: int) -> int:
+        """@description: Ask the provider again only for pending reviews whose sole duration basis has expired, within the sweep's lookup budget.
+        @param self: Pipeline.
+        @param budget: Lookups still available in this sweep.
+        @return: Number of lookups made.
+        """
+        if not self._api_retention or self._metadata_client is None or self._lookups_stopped or budget <= 0:
+            return 0
+        asked = 0
+        for operation_id, video_id in self._repository.revalidation_operations(SWEEP_CANDIDATE_LIMIT, self._paused_video_ids()):
+            if asked >= budget:
+                break
+            asked += 1
+            self._guarded_revalidation(operation_id, video_id)
+        return asked
+
+    def _guarded_revalidation(self, operation_id: str, video_id: str) -> None:
+        """@description: Refresh one expired conclusion's values, isolating its failure from the other cases.
+        @param self: Pipeline.
+        @param operation_id: Pending operation resting on an expired conclusion.
+        @param video_id: Its video.
+        @return: None.
+        """
+        try:
+            verdict = decide_auto_review(self._metadata_client.lookup(video_id), self._trusted_channel_ids)
+            if verdict.kind in {AutoReviewKind.RETRY, AutoReviewKind.HOLD, AutoReviewKind.UNAVAILABLE, AutoReviewKind.DURATION_REJECT}:
+                self._pause(video_id)  # [no refresh]: Only a confirmed pass renews the values; anything else leaves the case for the Owner.
+                return
+            self._replaying(lambda: self._repository.refresh_api_observation(operation_id, verdict))
+        except SWEEP_ERRORS as error:
+            LOGGER.error("Revalidation deferred one operation: %s", type(error).__name__)
 
     def settle_ready(self) -> bool:
         """@description: Settle every candidate currently READY, in acceptance order, each in its own transaction, so a resolved predecessor wakes those behind it.
@@ -127,7 +200,7 @@ class AutoPipeline:
         @param operation_id: Accepted operation.
         @return: True when the provider gave no usable answer and a later sweep should ask again.
         """
-        if self._metadata_client is None:
+        if self._metadata_client is None or self._lookups_stopped:
             return False
         subject = self._replaying(lambda: self._repository.auto_review_subject(operation_id))
         if not subject.awaits_validation:
@@ -136,8 +209,28 @@ class AutoPipeline:
         if verdict.kind in {AutoReviewKind.RETRY, AutoReviewKind.HOLD}:
             self._pause(subject.video_id)
             return verdict.kind is AutoReviewKind.RETRY
-        self._replaying(lambda: self._repository.apply_auto_review(operation_id, subject.revision, verdict))
+        self._replaying(lambda: self._apply(operation_id, subject.revision, verdict))
         return False
+
+    def _apply(self, operation_id: str, revision: int, verdict) -> Any:
+        """@description: Apply a verdict, naming the retention mode only when it is on so the previous repository contract stays unchanged.
+        @param self: Pipeline.
+        @param operation_id: Accepted operation.
+        @param revision: Revision the lookup was made for.
+        @param verdict: Verdict from the policy.
+        @return: Review after the call.
+        """
+        if self._api_retention:
+            return self._repository.apply_auto_review(operation_id, revision, verdict, retain_api_values=True)
+        return self._repository.apply_auto_review(operation_id, revision, verdict)
+
+    def _paused_video_ids(self) -> tuple[str, ...]:
+        """@description: Name the videos still inside their pause, so the sweep's read window only holds videos it can look up.
+        @param self: Pipeline.
+        @return: Paused video identifiers at this moment.
+        """
+        now = self._monotonic()
+        return tuple(video_id for video_id, until in self._paused_until.items() if now < until)
 
     def _pause(self, video_id: str) -> None:
         """@description: Avoid spending quota on the same held video at every sweep, keeping the pause table bounded.
@@ -171,7 +264,8 @@ class AutoPipeline:
         @return: Outcome.
         """
         review_status, decision = self._replaying(lambda: self._repository.reward_state(operation_id))
-        return PipelineOutcome(review_status, decision, retry_later, unknown and decision.status is RewardCandidateStatus.READY)
+        return PipelineOutcome(review_status, decision, retry_later, unknown and decision.status is RewardCandidateStatus.READY,
+                               settlement_enabled=self._settlement_enabled)
 
 
 REVIEW_TEXT = {  # [review line]: Plain language for each review state.
@@ -215,6 +309,8 @@ def _reward_text(outcome: PipelineOutcome, third_person: bool = False) -> str:
     if decision.status is RewardCandidateStatus.AWARDED:
         return "已為投稿者發放 +1 Nickel。" if third_person else "已發放 +1 Nickel。"
     if decision.status is RewardCandidateStatus.READY:
+        if outcome.settlement_enabled:
+            return "符合首次獎勵資格，系統尚未完成發放；目前未發放 Nickel。"
         return "符合首次獎勵資格，但自動發獎尚未開啟；目前未發放 Nickel。"
     return _WAITING_TEXT.get(decision.reason, "本次未發放 Nickel。")
 

@@ -11,7 +11,8 @@ from enum import Enum
 
 from bot.eligibility import DurationEvidence
 from bot.evidence_record import EvidenceRecord, EvidenceSourceType, VersionClaimKind
-from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus, ValidationError
+from bot.eligibility import DurationEligibility
+from bot.review import ApprovalSource, DurationVerdict, ReviewSnapshot, ReviewStatus, ValidationError
 from bot.reward_candidates import RewardCandidate, RewardCandidateStatus, RewardDecision, RewardDecisionReason
 from bot.share_replies import ShareScenario
 from bot.song_judgement import ContentJudgement
@@ -21,12 +22,14 @@ from bot.urls import YouTubeVideo
 from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus, VersionExclusion
 
 # [persisted contracts]: Only reviewed internal value types may be reconstructed from database JSON.
-CONTRACTS = {item.__name__: item for item in (DurationEvidence, ReviewSnapshot, RewardCandidate, RewardDecision,
+CONTRACTS = {item.__name__: item for item in (DurationEvidence, DurationVerdict, ReviewSnapshot, RewardCandidate, RewardDecision,
              VideoIdentity, SubmissionResult, YouTubeVideo, RecordingVersionIdentity, VersionAssignment, VersionExclusion,
              EvidenceRecord, ContentJudgement)}
 # [enum allowlist]: Presentation keys are stored separately from business decisions.
 ENUMS = {item.__name__: item for item in (ApprovalSource, ReviewStatus, ValidationError, RewardCandidateStatus,
-         RewardDecisionReason, ShareScenario, VersionIdentityStatus, EvidenceSourceType, VersionClaimKind)}
+         RewardDecisionReason, ShareScenario, VersionIdentityStatus, EvidenceSourceType, VersionClaimKind, DurationEligibility)}
+# [rollback-safe fields]: Omitted from the stored JSON while None, so a row written without them stays readable by the release before they existed.
+OMITTED_WHEN_NONE = frozenset({("ReviewSnapshot", "duration_verdict")})
 
 
 def encode_contract(value: object) -> str:
@@ -64,8 +67,18 @@ def _pack(value: object) -> object:
     if isinstance(value, Enum) and ENUMS.get(type(value).__name__) is type(value):
         return {"enum": type(value).__name__, "value": value.value}
     if is_dataclass(value) and CONTRACTS.get(type(value).__name__) is type(value):
-        return {"contract": type(value).__name__, "fields": {field.name: _pack(getattr(value, field.name)) for field in fields(value)}}
+        return {"contract": type(value).__name__, "fields": _pack_fields(value)}
     return _pack_container_scalar(value)
+
+
+def _pack_fields(value: object) -> dict:
+    """@description: Encode the fields of one contract, leaving out the optional ones that are still unset.
+    @param value: Allowlisted dataclass instance.
+    @return: Field name to encoded value.
+    """
+    kind = type(value).__name__
+    return {field.name: _pack(getattr(value, field.name)) for field in fields(value)
+            if not ((kind, field.name) in OMITTED_WHEN_NONE and getattr(value, field.name) is None)}
 
 
 def _pack_container_scalar(value: object) -> dict:

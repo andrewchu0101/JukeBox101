@@ -38,6 +38,10 @@ class ProductionGatewayClient(JukeBoxClient):
             self.gateway_health.task = asyncio.create_task(self.gateway_health.monitor(self), name='gateway-health')
         pipeline = getattr(self.handlers.service, 'auto_pipeline', None)
         if pipeline is not None:
+            try:
+                await asyncio.to_thread(pipeline.maintain_retention)  # [purge first]: Expired API values are cleared before this process connects or looks anything up.
+            except Exception as error:  # [startup boundary]: A failed purge never blocks startup; reads already refuse expired values and the sweep retries.
+                LOGGER.error('Startup retention maintenance failed: %s', type(error).__name__)
             self._auto_sweep_task = asyncio.create_task(self._auto_sweep(pipeline), name='auto-review-sweep')
 
     async def _auto_sweep(self, pipeline) -> None:

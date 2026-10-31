@@ -31,12 +31,22 @@ class AutoReviewKind(Enum):
 
 
 @dataclass(frozen=True)
+class ObservedValues:
+    """Hold the official values that only the short-lived observation table may store."""
+
+    duration_seconds: int  # [official duration]: Never written to a snapshot, history row, receipt or reason in retention mode.
+    channel_id: str | None  # [official channel]: Same rule.
+
+
+@dataclass(frozen=True)
 class AutoReviewVerdict:
     """Carry one verdict with the evidence and audit reason it would write."""
 
     kind: AutoReviewKind  # [effect]: Applied by the repository under the writer gate.
     reason: str  # [audit explanation]: Policy version, reason code, channel and retrieval time.
     duration: DurationEvidence | None = None  # [official evidence]: Only for verdicts that record a duration.
+    public_reason: str = ""  # [retention-mode explanation]: Policy version and reason code only; no channel or time.
+    observation: ObservedValues | None = None  # [short-lived values]: Present only for verdicts that recorded a duration.
 
 
 def decide_auto_review(lookup: MetadataLookup, trusted_channel_ids: frozenset[str]) -> AutoReviewVerdict:
@@ -46,14 +56,14 @@ def decide_auto_review(lookup: MetadataLookup, trusted_channel_ids: frozenset[st
     @return: Verdict for the repository to apply.
     """
     if lookup.status in {LookupStatus.TEMPORARY_FAILURE, LookupStatus.QUOTA_EXHAUSTED}:
-        return AutoReviewVerdict(AutoReviewKind.RETRY, _audit("api_unavailable"))
+        return _verdict(AutoReviewKind.RETRY, "api_unavailable")
     if lookup.status is LookupStatus.NOT_FOUND:
-        return AutoReviewVerdict(AutoReviewKind.UNAVAILABLE, _audit("video_not_found"))
+        return _verdict(AutoReviewKind.UNAVAILABLE, "video_not_found")
     metadata = lookup.metadata
     if metadata.privacy_status == "private" or metadata.upload_status in UNAVAILABLE_UPLOAD_STATUSES:
-        return AutoReviewVerdict(AutoReviewKind.UNAVAILABLE, _audit("video_not_public", metadata))
+        return _verdict(AutoReviewKind.UNAVAILABLE, "video_not_public", metadata)
     if metadata.live_broadcast_content != "none" or metadata.upload_status != "processed" or metadata.duration_seconds is None:
-        return AutoReviewVerdict(AutoReviewKind.HOLD, _audit("undetermined", metadata))
+        return _verdict(AutoReviewKind.HOLD, "undetermined", metadata)
     return _duration_verdict(metadata, trusted_channel_ids)
 
 
@@ -66,11 +76,11 @@ def _duration_verdict(metadata: VideoMetadata, trusted_channel_ids: frozenset[st
     source = f"{SOURCE_LABEL}@{metadata.fetched_at.isoformat(timespec='seconds')}"
     evidence = DurationEvidence(VideoIdentity(metadata.video_id), metadata.duration_seconds, source, True, True)
     if assess_duration(evidence) is DurationEligibility.REJECT:
-        return AutoReviewVerdict(AutoReviewKind.DURATION_REJECT, _audit("duration_out_of_range", metadata), evidence)
+        return _verdict(AutoReviewKind.DURATION_REJECT, "duration_out_of_range", metadata, evidence)
     withheld = _trust_withheld(metadata, trusted_channel_ids)
     if withheld is not None:
-        return AutoReviewVerdict(AutoReviewKind.DURATION_ONLY, _audit(withheld, metadata), evidence)
-    return AutoReviewVerdict(AutoReviewKind.AUTO_APPROVE, _audit("trusted_channel_music", metadata), evidence)
+        return _verdict(AutoReviewKind.DURATION_ONLY, withheld, metadata, evidence)
+    return _verdict(AutoReviewKind.AUTO_APPROVE, "trusted_channel_music", metadata, evidence)
 
 
 def _trust_withheld(metadata: VideoMetadata, trusted_channel_ids: frozenset[str]) -> str | None:
@@ -91,6 +101,19 @@ def _trust_withheld(metadata: VideoMetadata, trusted_channel_ids: frozenset[str]
     if not title or any(hint in title for hint in NON_SONG_TITLE_HINTS):
         return "title_needs_owner"
     return None
+
+
+def _verdict(kind: AutoReviewKind, reason_code: str, metadata: VideoMetadata | None = None,
+             evidence: DurationEvidence | None = None) -> AutoReviewVerdict:
+    """@description: Build a verdict with both audit texts, so retention mode can leave the channel and retrieval time out of every permanent row.
+    @param kind: Effect of the verdict.
+    @param reason_code: Stable decision reason.
+    @param metadata: Official metadata, when any exists.
+    @param evidence: Official duration evidence, only for verdicts that record a duration.
+    @return: Verdict carrying the full reason, the public reason and the short-lived values.
+    """
+    observed = None if evidence is None else ObservedValues(metadata.duration_seconds, metadata.channel_id)
+    return AutoReviewVerdict(kind, _audit(reason_code, metadata), evidence, _audit(reason_code), observed)
 
 
 def _audit(reason_code: str, metadata: VideoMetadata | None = None) -> str:

@@ -6,8 +6,10 @@ Existing Hybrid Review transitions enforce duration gates; operation-keyed audit
 import hashlib
 import json
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Any
 
+from bot.database.api_observations import basis_expired, require_unexpired_basis
 from bot.database.reward_settlement import current_decisions, persist_decisions
 from bot.database.persisted_snapshot import decode_current_identity, decode_current_review, fetch_all
 from bot.database.reward_history import audit_reward_history
@@ -17,7 +19,7 @@ from bot.decision_snapshot import DecisionSnapshot, require_unchanged_snapshot, 
 from bot.eligibility import DurationEvidence
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
 from bot.review import (
-    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
+    ApprovalSource, DurationVerdict, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
     reopen_for_reexamination,
 )
 from bot.song_identity import VideoIdentity
@@ -29,7 +31,7 @@ from bot.version_identity import RecordingVersionIdentity, VersionAssignment, Ve
 
 
 # [optional citations]: Unset citations are left out of the digest so decisions recorded before they existed still replay.
-OPTIONAL_CITATION_FIELDS = ("evidence_reference", "content_judgement", "expected_snapshot")
+OPTIONAL_CITATION_FIELDS = ("evidence_reference", "content_judgement", "expected_snapshot", "duration_verdict")
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,7 @@ class ReviewCommand:
     evidence_reference: str | None = None  # [decision citation]: Unset references keep older digests.
     content_judgement: ContentJudgement | None = None  # [content verdict]: Owner's song judgement an approval relied on.
     expected_snapshot: DecisionSnapshot | None = None  # [previewed facts]: Refuse the write when identity, canonical root or evidence moved.
+    duration_verdict: DurationVerdict | None = None  # [API conclusion]: Official-data path only; unset keeps every older digest replayable.
 
     def __post_init__(self) -> None:
         """@description: Reject malformed action identities and mutable-policy switches before persistence.
@@ -753,10 +756,13 @@ def _apply_transitions(cursor: Any, request: SubmissionRequest, command: ReviewC
     @return: Final review with every accepted intermediate revision audited.
     """
     # [validation revision]: Evidence/error transition must pass the original expected version.
-    validated = _review_request(replace(request, duration=command.duration, validation_error=command.validation_error))
+    validated = _review_request(replace(request, duration=command.duration, duration_verdict=command.duration_verdict,
+                                        validation_error=command.validation_error))
     if validated.version == request.review.version and (identity != request.identity or command.clear_conflict_freeze):
         validated = replace(validated, version=validated.version + 1)
     persist_review(cursor, validated, command.actor_id, reason, identity)
+    if command.approval_source is not None:
+        require_unexpired_basis(cursor, validated)  # [expired API basis]: Only a pending review is stopped; an approved one never returns here.
     # [approval revision]: AUTO and OWNER both use the existing hard gates, never direct field assignment.
     reviewed = _review_request(replace(request, review=validated, expected_review_version=validated.version,
                               approval_source=command.approval_source, song_eligible=command.song_eligible))
@@ -803,6 +809,9 @@ class PendingItem:
     revision: int  # [expected revision]: The value a later preview and confirmation must present.
     evidence_count: int  # [audit size]: Owner evidence records stored for the video.
     conflict_reason: str | None  # [freeze explanation]: Cited contradiction, set only while the identity is CONFLICT.
+    submitter_id: int = 0  # [submitter]: Discord user who submitted the operation, shown on the Owner's case card.
+    duration_seconds: int | None = None  # [known duration]: Reliable full-video seconds, or None when no trustworthy duration exists.
+    api_basis: str | None = None  # [API duration basis]: "valid" or "expired" when the only duration basis is an official-data conclusion; otherwise None.
 
 
 @dataclass(frozen=True)
@@ -813,36 +822,116 @@ class PendingPage:
     next_after_sequence: int | None  # [keyset cursor]: Pass back as the after-sequence; None when no later pending item exists.
 
 
-def pending_review_items(cursor: Any) -> tuple[PendingItem, ...]:
-    """@description: List operations whose review is still open, whose approval awaits a version, or whose identity is frozen, in acceptance order.
+AWAITS_OWNER_SQL = (  # [queue predicate]: SQL mirror of _awaits_owner, so the database limits what it hands back; Python rechecks every row.
+    f"(v.review_status IN ('{ReviewStatus.PENDING_VALIDATION.value}','{ReviewStatus.PENDING_REVIEW.value}','{ReviewStatus.VALIDATION_FAILED.value}') "
+    f"OR (v.review_status = '{ReviewStatus.APPROVED.value}' AND (v.identity_json::jsonb #>> '{{value,fields,status,value}}') = '{VersionIdentityStatus.UNRESOLVED.value}') "
+    f"OR (v.identity_json::jsonb #>> '{{value,fields,status,value}}') = '{VersionIdentityStatus.CONFLICT.value}')")
+
+
+EARLIEST_EVENT_SQL = ("e.accepted_sequence = (SELECT MIN(first_event.accepted_sequence) FROM jb2_events first_event "
+                      "WHERE first_event.video_id = e.video_id)")  # [one question per video]: The decision belongs to the video, so only its earliest acceptance is asked.
+
+
+def pending_review_page(cursor: Any, after_sequence: int | None, limit: int) -> PendingPage:
+    """@description: Read one keyset page of operations that still need the Owner, transferring at most one row more than the page, in acceptance order.
     @param cursor: Transaction-owned cursor holding the writer gate.
-    @return: Pending items with counts and conflict reasons; clean terminal reviews are omitted.
-    """
-    rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.video_id,v.identity_json,v.review_json,"
-                             "v.review_revision,v.review_status FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
-                             "ORDER BY e.accepted_sequence")
-    items = []
-    for row in rows:
-        review = decode_current_review(row)
-        identity = decode_current_identity(row)
-        if not _awaits_owner(review.status, identity.status):
-            continue
-        items.append(PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status,
-                                 review.version, len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity)))
-    return tuple(items)
-
-
-def page_pending(items: tuple[PendingItem, ...], after_sequence: int | None, limit: int) -> PendingPage:
-    """@description: Cut one keyset page from the acceptance-ordered queue, so items never shift when earlier ones leave the queue.
-    @param items: Complete pending queue in acceptance order.
-    @param after_sequence: Last accepted sequence the Owner already saw, or None for the first page.
+    @param after_sequence: Last accepted sequence already shown, or None for the first page.
     @param limit: Page size already capped by the service.
-    @return: Page of items after the cursor, with the next cursor when more items remain.
+    @return: Page of pending items; the next cursor is set only when a further pending item exists.
     """
-    remaining = tuple(item for item in items if after_sequence is None or item.accepted_sequence > after_sequence)
-    page = remaining[:limit]
-    more_follow = len(remaining) > limit
-    return PendingPage(page, page[-1].accepted_sequence if more_follow else None)
+    after = 0 if after_sequence is None else after_sequence
+    rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.discord_user_id,e.video_id,v.identity_json,v.review_json,"
+                             "v.review_revision,v.review_status FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
+                             f"WHERE e.accepted_sequence > %s AND {AWAITS_OWNER_SQL} AND {EARLIEST_EVENT_SQL} ORDER BY e.accepted_sequence LIMIT %s", (after, limit + 1))
+    wanted = []  # [one extra row]: The row after the page only proves that a next page exists.
+    asked_videos: set[str] = set()  # [one question per video]: Python repeats the SQL rule so the offline fake behaves the same.
+    for row in sorted(rows, key=lambda candidate: candidate["accepted_sequence"]):
+        review, identity = decode_current_review(row), decode_current_identity(row)
+        if row["accepted_sequence"] > after and row["video_id"] not in asked_videos and _awaits_owner(review.status, identity.status):
+            asked_videos.add(row["video_id"])
+            wanted.append((row, review, identity))
+        if len(wanted) > limit:
+            break
+    page = tuple(_pending_item(cursor, row, review, identity) for row, review, identity in wanted[:limit])
+    return PendingPage(page, page[-1].accepted_sequence if len(wanted) > limit else None)
+
+
+def _pending_item(cursor: Any, row: dict, review: ReviewSnapshot, identity: VersionAssignment) -> PendingItem:
+    """@description: Summarize one queue row for the Owner, counting its stored evidence.
+    @param cursor: Transaction-owned cursor.
+    @param row: Joined event and video row.
+    @param review: Decoded current review of the video.
+    @param identity: Decoded current identity of the video.
+    @return: Pending item with submitter and known duration.
+    """
+    return PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status, review.version,
+                       len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity), row["discord_user_id"],
+                       _known_duration_seconds(review), _api_basis(cursor, review))
+
+
+MAX_KNOWN_VERSIONS_PAGE = 10  # [page size cap]: Keeps the known-version list inside one Discord card.
+_VERSION_VALUE_PATH = "'{value,fields,version,fields,value}'"  # [stored version]: JSON path of the asserted version inside identity_json.
+_IDENTITY_STATUS_PATH = "'{value,fields,status,value}'"  # [stored status]: JSON path of the identity status inside identity_json.
+
+
+@dataclass(frozen=True)
+class KnownVersion:
+    """Describe one recording version the Owner has already confirmed, by its first video, never by a title."""
+
+    version_id: str  # [internal identity]: Canonical root of the version; the card keeps it internal and never shows it.
+    first_sequence: int  # [opaque choice]: Acceptance order of the version's first video; also the paging cursor.
+    first_video_id: str  # [recognizable name]: Video that first carried the version, shown as a link.
+    created_at: datetime  # [creation time]: When the version was first recorded.
+
+
+@dataclass(frozen=True)
+class KnownVersionPage:
+    """Carry one bounded slice of the known versions plus the cursor for the next slice."""
+
+    items: tuple[KnownVersion, ...]  # [page rows]: At most the capped page size, oldest first.
+    next_after_sequence: int | None  # [keyset cursor]: Pass back as after_sequence; None when no later version exists.
+
+
+def known_versions_page(cursor: Any, after_sequence: int | None, limit: int) -> KnownVersionPage:
+    """@description: Read one keyset page of confirmed recording versions, one per canonical root, transferring at most one row more than the page.
+    @param cursor: Transaction-owned cursor holding the writer gate.
+    @param after_sequence: First-video acceptance order already shown, or None for the first page.
+    @param limit: Page size already capped by the service.
+    @return: Page of known versions, oldest first, with the next cursor only when a further version exists.
+    """
+    rows = fetch_all(cursor, "SELECT ver.canonical_id AS version_id, MIN(e.accepted_sequence) AS first_sequence, MIN(root.created_at) AS created_at "
+                             "FROM jb2_videos v JOIN jb2_events e ON e.video_id = v.video_id "
+                             f"JOIN jb2_versions ver ON ver.version_id = (v.identity_json::jsonb #>> {_VERSION_VALUE_PATH}) "
+                             "JOIN jb2_versions root ON root.version_id = ver.canonical_id "
+                             f"WHERE (v.identity_json::jsonb #>> {_IDENTITY_STATUS_PATH}) = '{VersionIdentityStatus.CONFIRMED.value}' "
+                             "GROUP BY ver.canonical_id HAVING MIN(e.accepted_sequence) > %s ORDER BY first_sequence LIMIT %s",
+                     (0 if after_sequence is None else after_sequence, limit + 1))
+    first_videos = {row["accepted_sequence"]: row["video_id"] for row in fetch_all(
+        cursor, "SELECT accepted_sequence, video_id FROM jb2_events WHERE accepted_sequence = ANY(%s)", ([row["first_sequence"] for row in rows[:limit]],))}
+    page = tuple(KnownVersion(row["version_id"], row["first_sequence"], first_videos[row["first_sequence"]], row["created_at"]) for row in rows[:limit])
+    return KnownVersionPage(page, page[-1].first_sequence if len(rows) > limit else None)
+
+
+def _api_basis(cursor: Any, review: ReviewSnapshot) -> str | None:
+    """@description: Tell the card whether an official-data conclusion still backs the duration, since the seconds themselves are not kept.
+    @param cursor: Transaction-owned cursor.
+    @param review: Current review snapshot of the video.
+    @return: "expired" or "valid" when the review rests only on an API conclusion, otherwise None.
+    """
+    if review.duration is not None or review.duration_verdict is None:
+        return None
+    return "expired" if basis_expired(cursor, review) else "valid"
+
+
+def _known_duration_seconds(review: ReviewSnapshot) -> int | None:
+    """@description: Show a duration on the Owner's card only when it is reliable and covers the full video, so a card never presents a guess.
+    @param review: Current review snapshot of the video.
+    @return: Whole seconds, or None when no trustworthy full-video duration exists.
+    """
+    duration = review.duration
+    if duration is None or not (duration.reliable and duration.full_video) or type(duration.seconds) is not int:
+        return None
+    return duration.seconds
 
 
 def _awaits_owner(review_status: ReviewStatus, identity_status: VersionIdentityStatus) -> bool:
