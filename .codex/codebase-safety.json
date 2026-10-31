@@ -39,7 +39,8 @@
       "docker build -f test.Dockerfile -t jukebox101-test:v7-local .",
       "python3 -m scripts.ci.offline",
       "python3 -m scripts.ci.runtime_smoke",
-      "python3 scripts/dev/verify-fresh-postgres.py"
+      "python3 scripts/dev/verify-fresh-postgres.py",
+      "TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke"
     ],
     "lint": [],
     "typecheck": [],
@@ -86,7 +87,9 @@
       "Stop old Gateway and confirm exit before starting candidate or rollback",
       "Atomic fsync journal and numeric run/attempt idempotency",
       "Fixed root-owned configuration with default-deny deployment gates",
-      "Notification job uses trusted default-branch code only; validates completed runs and appends one fixed-issue comment per run/attempt"
+      "Notification job uses trusted default-branch code only; validates completed runs and appends one fixed-issue comment per run/attempt",
+      "Quick CD smoke reuses offline tests and the existing Compose lab; only a local Unix Docker endpoint and synthetic health are admitted",
+      "Automatic PR/main CI runs only the isolated smoke entrypoint; Release/Deploy are inert workflow_dispatch placeholders; Notify watches only CI"
     ],
     "naming": [
       "snake_case functions, UPPER_SNAKE_CASE constants"
@@ -99,7 +102,8 @@
     ],
     "tests": [
       "pytest offline with no network; opt-in disposable postgres tests",
-      "Focused policy tests use fake CLI and Docker boundaries; these do not prove real signature/daemon acceptance"
+      "Focused policy tests use fake CLI and Docker boundaries; these do not prove real signature/daemon acceptance",
+      "Quick smoke includes existing DB driver/cursor contract tests; report real_connection=not_run and real_persistence=not_verified even when the isolated simulation passes"
     ],
     "notes": ""
   },
@@ -119,6 +123,15 @@
         "One Gateway; stop-before-start; bounded rollback",
         "Formal exchange and claim remain off",
         "Do not alter Office, DNS, firewall, database containers, or credentials"
+      ]
+    },
+    {
+      "path_or_symbol": ".github/workflows/",
+      "reason": "Separates safe automatic tests from deferred live publishing/deployment",
+      "invariants": [
+        "PR/main must not execute migrations, runtime export, GHCR push, SSH or production secrets",
+        "Release/Deploy have no automatic trigger or live capability",
+        "Notification workflow reports CI only"
       ]
     }
   ],
@@ -167,6 +180,18 @@
     {
       "fact": "Shared notifications validate actual deploy job and never gate the CD workflow",
       "source": "deploy/github_notifications.py#publish"
+    },
+    {
+      "fact": "Short isolated deployment simulation with truthful failure evidence, no database or remote Docker",
+      "source": "scripts/ci/cd_smoke.py#main"
+    },
+    {
+      "fact": "Mock DB parameter-forwarding proof is separate from unverified live connection and persistence",
+      "source": "scripts/ci/cd_smoke.py#DATABASE_SCOPE"
+    },
+    {
+      "fact": "Safe-only automatic CI and inert formal workflows replace the old main-push publishing chain",
+      "source": ".github/workflows/ci.yml"
     }
   ]
 }
