@@ -8,8 +8,10 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import discord
+import pytest
 
 from bot.discord_owner_cards import OwnerCards
+from bot.evidence_record import VersionClaimKind
 from bot.owner_review import ReviewAction, ReviewOutcomeUnknown, ReviewPreview
 from bot.review import ReviewStatus, StaleReviewVersion
 from bot.song_identity import VideoIdentity
@@ -56,6 +58,7 @@ class CardService:
         self.confirm_failures: list[Exception] = []  # [scripted failures]: Raised by successive confirms, oldest first.
         self.versions: list = []  # [known versions]: Rows shaped like the service's KnownVersion, oldest first.
         self.evidence: list = []  # [recorded evidence]: Evidence records handed to version confirmation previews.
+        self.version_preview_error: Exception | None = None  # [scripted refusal]: Raised by the next version preview, like the real rules do.
 
     def called(self, name: str) -> list[tuple]:
         """@description: Select recorded calls by method name.
@@ -169,6 +172,8 @@ class CardService:
         @return: Preview.
         """
         self.calls.append(("preview_version_confirmation", actor_id, operation_id, reason, expected_revision, evidence))
+        if self.version_preview_error is not None:
+            raise self.version_preview_error
         self.evidence.append(evidence)
         return self._issue("preview_version_confirmation", operation_id, ReviewAction.CONFIRM_VERSION, expected_revision, evidence.source_reference)
 
@@ -724,14 +729,16 @@ def test_an_unknown_version_outcome_is_retried_with_the_same_token_and_version()
     assert len(service.evidence) == 1 and len(service.called("confirm")) == 2
 
 
-def test_other_cases_point_to_the_existing_command_and_write_nothing():
-    """@description: Special categories keep their existing evidence rules through /owner confirm_version; the button only explains that.
+def test_other_cases_open_a_category_menu_and_write_nothing():
+    """@description: The other-cases button lists the existing categories and the known versions for a remaster, states the evidence promise, and writes nothing.
     @param: none
     @return: None.
     """
-    service = version_service(known(5, MV_ID))
+    service = version_service(known(5, MV_ID), known(9, OTHER_ID))
     shown = press(cards_for(service), "other", 1, 3)
-    assert "/owner confirm_version" in shown.shown() and "version_kind" in shown.shown()
+    assert labels(shown.edits[-1]["view"]) == {"Live 現場": True, "Cover 翻唱": True, "Remix": True, "重新錄製": True,
+                                              "重製：同一錄音 1": True, "重製：同一錄音 2": True, "返回": True}
+    assert "證據不足時不會建立任何版本" in shown.shown() and "可追溯" in shown.shown()
     assert not (service.called("preview_version_confirmation") or service.called("confirm"))
 
 
@@ -758,3 +765,171 @@ def test_a_foreign_press_on_a_version_button_reads_and_writes_nothing():
     service = version_service(known(5, MV_ID))
     foreign = press(cards_for(service), "new", 1, 3, Press(OTHER_USER_ID))
     assert service.calls == [] and foreign.edits == [] and foreign.response.messages
+
+
+CATEGORY_CASES = [("Live 現場", 1, VersionClaimKind.LIVE), ("Cover 翻唱", 2, VersionClaimKind.COVER),
+                  ("Remix", 3, VersionClaimKind.REMIX), ("重新錄製", 4, VersionClaimKind.RE_RECORDING)]
+SOURCE_TEXT = "https://example.test/live-performance-page-2026"
+
+
+def submit_category(cards: OwnerCards, service: CardService, action: str, extra: int, source: str, revision: int = 3) -> Press:
+    """@description: Press a category button, fill its form with the given source and submit it.
+    @param cards: Card handler.
+    @param service: Fake service, for the assertions after the call.
+    @param action: kind or remaster.
+    @param extra: Category ordinal, or the first acceptance order of the version to remaster.
+    @param source: Judgement basis the Owner types.
+    @param revision: Displayed revision.
+    @return: The submission interaction.
+    """
+    modal = press(cards, action, 1, revision, extra=extra).response.modals[0]
+    modal.source._value = source
+    submitted = Press()
+    asyncio.run(modal.on_submit(submitted))
+    return submitted
+
+
+@pytest.mark.parametrize("name,ordinal,kind", CATEGORY_CASES)
+def test_a_distinct_category_creates_a_new_version_with_that_category_and_the_typed_source(name, ordinal, kind):
+    """@description: Live, Cover, Remix and re-recording each create a new opaque version carrying the chosen category, with the Owner's own source and the displayed revision.
+    @param name: Category button label.
+    @param ordinal: Category ordinal in the button id.
+    @param kind: Existing version category the evidence must carry.
+    @return: None.
+    """
+    service = version_service()
+    submitted = submit_category(cards_for(service), service, "kind", ordinal, SOURCE_TEXT)
+    evidence = service.evidence[0]
+    assert evidence.version_kind is kind and evidence.source_reference == SOURCE_TEXT
+    assert evidence.version.value.startswith("rv-") and "dQw4w9WgXcQ" not in evidence.version.value
+    assert service.called("preview_version_confirmation")[0][4] == 3 and len(service.called("confirm")) == 1
+    assert "已確認" in submitted.shown() and name.split()[0] in submitted.shown()
+
+
+def test_a_remaster_maps_to_the_selected_known_version_with_its_category_and_the_typed_source():
+    """@description: A remaster is the same performance as the selected version, so it reuses that version with the remaster category and the Owner's source.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(5, MV_ID, "rv-a"), known(9, OTHER_ID, "rv-b"))
+    submitted = submit_category(cards_for(service), service, "remaster", 9, SOURCE_TEXT)
+    evidence = service.evidence[0]
+    assert evidence.version.value == "rv-b" and evidence.version_kind is VersionClaimKind.REMASTER and evidence.source_reference == SOURCE_TEXT
+    assert "已確認" in submitted.shown()
+
+
+@pytest.mark.parametrize("weak_source", ["", "1234", "12345678", "discord:1234567", "interaction-98765"])
+def test_a_source_the_existing_rule_rejects_never_reaches_a_preview_and_keeps_the_case_pending(weak_source):
+    """@description: The form applies the same traceable-source rule as /owner confirm_version before any service call, so a weak source writes nothing and the card stays.
+    @param weak_source: Text the existing rule refuses.
+    @return: None.
+    """
+    service = version_service()
+    submitted = submit_category(cards_for(service), service, "kind", 1, weak_source)
+    assert not (service.called("preview_version_confirmation") or service.called("confirm"))
+    assert "維持待處理" in submitted.shown() and labels(submitted.edits[-1]["view"])["確認為新的錄音版本"]
+
+
+def test_evidence_the_rules_find_insufficient_keeps_the_case_pending_without_a_token():
+    """@description: When the existing rules say the evidence establishes no version, nothing is confirmed, the card returns with the reason, and a corrected try works.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    cards = cards_for(service)
+    service.version_preview_error = ValueError("Version confirmation has nothing to confirm: the evidence establishes no recording version")
+    refused = submit_category(cards, service, "kind", 1, SOURCE_TEXT)
+    assert not service.called("confirm") and "證據不足" in refused.shown() and "維持待處理" in refused.shown()
+    service.version_preview_error = None
+    assert "已確認" in submit_category(cards, service, "kind", 1, SOURCE_TEXT).shown()
+
+
+def test_category_forms_are_gated_and_bound_to_the_displayed_revision():
+    """@description: A foreign press opens no form, a foreign submission writes nothing, and a form opened on an old revision is refused on submit.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    cards = cards_for(service)
+    assert press(cards, "kind", 1, 3, Press(OTHER_USER_ID), extra=1).response.modals == []
+    modal = press(cards, "kind", 1, 3, extra=1).response.modals[0]
+    modal.source._value = SOURCE_TEXT
+    foreign = Press(OTHER_USER_ID)
+    asyncio.run(modal.on_submit(foreign))
+    assert service.calls == [] and foreign.edits == []
+    service.items[1].revision = 4
+    stale = Press()
+    asyncio.run(modal.on_submit(stale))
+    assert not service.called("preview_version_confirmation") and "重新載入" in stale.shown()
+
+
+def test_two_simultaneous_category_submissions_create_one_version():
+    """@description: A double submission of the same form previews and confirms once.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    cards = cards_for(service)
+    modal = press(cards, "kind", 1, 3, extra=2).response.modals[0]
+    modal.source._value = SOURCE_TEXT
+    first, second = Press(), Press()
+
+    async def both():
+        """@description: Submit the same form twice at the same moment.
+        @param: none
+        @return: None.
+        """
+        await asyncio.gather(modal.on_submit(first), modal.on_submit(second))
+
+    asyncio.run(both())
+    assert len(service.called("preview_version_confirmation")) == 1 and len(service.called("confirm")) == 1
+
+
+def test_an_unknown_category_outcome_retries_the_same_token_for_the_same_source():
+    """@description: After a lost acknowledgement, submitting the same form again confirms the same token and keeps the same version id.
+    @param: none
+    @return: None.
+    """
+    service = version_service()
+    service.confirm_failures = [ReviewOutcomeUnknown("lost")]
+    cards = cards_for(service)
+    assert "未知" in submit_category(cards, service, "kind", 1, SOURCE_TEXT).shown()
+    assert "已確認" in submit_category(cards, service, "kind", 1, SOURCE_TEXT).shown()
+    assert len(service.evidence) == 1 and len(service.called("confirm")) == 2
+
+
+def test_back_returns_to_the_card_and_the_menu_pages_without_any_write():
+    """@description: Back shows the card again and the menu pages through known versions, changing nothing.
+    @param: none
+    @return: None.
+    """
+    service = version_service(*[known(10 + number, f"V{number:010d}", f"rv-{number}") for number in range(7)])
+    cards = cards_for(service)
+    menu = press(cards, "other", 1, 3)
+    assert sum(1 for name in labels(menu.edits[-1]["view"]) if name.startswith("重製")) == 5
+    cursor = int(next(c.custom_id for c in menu.edits[-1]["view"].children if c.custom_id.startswith("ocard:opage")).rsplit(":", 1)[1])
+    second = press(cards, "opage", 1, 3, extra=cursor)
+    assert sum(1 for name in labels(second.edits[-1]["view"]) if name.startswith("重製")) == 2
+    assert "確認為新的錄音版本" in labels(press(cards, "back", 1, 3).edits[-1]["view"])
+    assert not (service.called("preview_version_confirmation") or service.called("confirm"))
+
+
+def test_every_card_variant_fits_discord_component_and_message_limits():
+    """@description: Each variant respects the documented limits: at most 5 rows, 5 buttons per row, custom_id up to 100 characters, labels up to 80, and 2000 characters of content, even with a very long link.
+    @param: none
+    @return: None.
+    """
+    long_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&" + "t=1&" * 500
+    service = version_service(*[known(1000000000 + number, f"V{number:010d}", f"rv-{number}") for number in range(8)])
+    service.items[1].source_url = long_url
+    cards = cards_for(service)
+    shots = [asyncio.run(cards.first_replies(OWNER_ID))[0]]
+    for action, extra in (("other", 0), ("back", 0)):
+        result = press(cards, action, 1, 3, extra=extra)
+        shots.append(SimpleNamespace(text=result.shown(), view=result.edits[-1]["view"]))
+    for shot in shots:
+        rows: dict[int, int] = {}
+        for child in shot.view.children:
+            rows[child.row] = rows.get(child.row, 0) + 1
+            assert len(child.custom_id) <= 100 and len(child.item.label) <= 80
+        assert len(rows) <= 5 and max(rows.values()) <= 5 and len(shot.text) <= 2000

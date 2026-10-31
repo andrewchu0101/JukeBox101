@@ -7,7 +7,7 @@ Nothing here claims a recording category: category evidence keeps its existing p
 import uuid
 from datetime import datetime
 
-from bot.evidence_record import EvidenceRecord, EvidenceSourceType, record_evidence
+from bot.evidence_record import EvidenceRecord, EvidenceSourceType, VersionClaimKind, record_evidence
 from bot.song_identity import VideoIdentity
 from bot.version_identity import RecordingVersionIdentity
 
@@ -18,8 +18,20 @@ NEW_REASON = "Owner 於案件卡片確認為新的錄音版本"  # [audit reason
 SAME_REASON = "Owner 於案件卡片確認與既有版本為同一錄音"  # [audit reason]: Stored with a mapping made from a card.
 NEW_HEADLINE = "已記錄：此影片為一個獨立的錄音版本（由 Owner 判斷）。"
 SAME_HEADLINE = "已記錄：此影片與所選版本為同一錄音（由 Owner 判斷，未宣稱特定類別）。"
-OTHER_HINT = ("其他情況（Live、Cover、Remix、重新錄製、重製等）需要類別與可追溯的來源，請用 /owner confirm_version"
-              "（version_kind 與 source 參數）；證據要求不變。這個按鈕不寫入任何資料。")
+CATEGORY_BY_ORDINAL = {1: (VersionClaimKind.LIVE, "Live 現場"), 2: (VersionClaimKind.COVER, "Cover 翻唱"),
+                       3: (VersionClaimKind.REMIX, "Remix"), 4: (VersionClaimKind.RE_RECORDING, "重新錄製")}  # [distinct categories]: Button ordinal to the existing category and its label.
+REMASTER_LABEL = "重製（同一原始演出）"  # [same performance]: Maps to an existing version, so it is chosen from the known versions.
+REMASTER_REASON = "Owner 於案件卡片確認為既有版本的重製（同一原始演出）"  # [audit reason]: Stored with a remaster mapping made from a card.
+NO_VERSION_ERROR = "establishes no recording version"  # [service refusal]: Text of the existing rule's refusal, matched to keep the case pending.
+OTHER_MENU_TEXT = ("其他情況：請選擇這支影片屬於哪一種。\n"
+                   "• Live、Cover、Remix、重新錄製：為這支影片建立一個新的版本，並記錄你選的類別。\n"
+                   "• 重製（同一原始演出）：對應到下列某個已知版本，視為同一錄音。\n"
+                   "每個選項都會要求你輸入可追溯的判斷依據（連結或說明），必須由你輸入，系統不會自動帶入影片連結；網址本身不自動證明。\n"
+                   "證據不足時不會建立任何版本，案件維持待處理。是否發獎依既有規則，結果按下後顯示。\n"
+                   "也可以改用 /owner confirm_version（version_kind 與 source 參數），證據要求相同。")
+SOURCE_REQUIRED_TEXT = ("判斷依據不符合既有規則（需要 8 到 512 個字元、可追溯的連結或說明，不能是純數字或互動編號）。"
+                        "沒有建立任何版本，案件維持待處理。")
+INSUFFICIENT_TEXT = "證據不足：依既有規則，這份證據不足以確認此影片的版本。沒有建立任何版本，案件維持待處理。"
 PROMISE_LINES = (
     "• 「確認為新的錄音版本」表示由你判斷：這支影片是一個獨立的錄音版本。來源記為「人工核對：此影片連結」。",
     "• 「確認為同一錄音」表示你已比對兩支影片，判斷是同一個錄音；不宣稱特定類別（MV、純音源、重製等），來源記為兩支影片連結。",
@@ -68,7 +80,7 @@ def manual_check_source(this_video_id: str, other_video_id: str | None = None) -
 
 
 def version_evidence(video: VideoIdentity, identity: RecordingVersionIdentity, source: str, retrieved_at: datetime, reason: str,
-                     actor_id: int) -> EvidenceRecord:
+                     actor_id: int, version_kind: VersionClaimKind | None = None) -> EvidenceRecord:
     """@description: Build the Owner's evidence record for a basic version assertion, with no category claimed.
     @param video: Video the evidence describes.
     @param identity: Asserted version.
@@ -76,6 +88,27 @@ def version_evidence(video: VideoIdentity, identity: RecordingVersionIdentity, s
     @param retrieved_at: Time of the Owner's check.
     @param reason: Audit explanation.
     @param actor_id: Owner identifier.
+    @param version_kind: Existing version category the Owner chose, or None for a basic assertion.
     @return: Evidence record; the service marks it Owner-confirmed when previewing.
     """
-    return record_evidence(uuid.uuid4().hex, video, EvidenceSourceType.OWNER_REVIEW, source, retrieved_at, reason, actor_id, identity)
+    return record_evidence(uuid.uuid4().hex, video, EvidenceSourceType.OWNER_REVIEW, source, retrieved_at, reason, actor_id, identity,
+                           version_kind=version_kind)
+
+
+def category_reason(label: str) -> str:
+    """@description: Name the category in the audit reason of a new version made from a card.
+    @param label: Category label shown on the button.
+    @return: Audit reason.
+    """
+    return f"Owner 於案件卡片確認為新的{label}版本"
+
+
+def category_headline(label: str, remaster: bool) -> str:
+    """@description: State what the Owner's judgement recorded, naming the category.
+    @param label: Category label shown on the button.
+    @param remaster: Whether the video was mapped to an existing version instead of creating one.
+    @return: Sentence shown above the committed revision.
+    """
+    if remaster:
+        return f"已記錄：此影片為所選版本的{label}（由 Owner 判斷，依你輸入的判斷依據）。"
+    return f"已記錄：此影片為新的錄音版本，類別：{label}（由 Owner 判斷，依你輸入的判斷依據）。"
