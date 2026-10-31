@@ -39,7 +39,7 @@
 |---|---|
 | `JUKEBOX_AUTO_REVIEW` | `on`／`off`；on 時必須有 API 金鑰 |
 | `JUKEBOX_AUTO_SETTLEMENT` | `on`／`off`；必須與資料庫開關一致 |
-| `JUKEBOX_API_RETENTION` | `on`／`off`；on 才把官方 API 數值只存短期表並執行清除（需先套用 migration 0004，見 [API 資料保存發行說明](../api-retention-release.md)） |
+| `JUKEBOX_API_RETENTION` | `on`／`off`；on 才把官方 API 數值只存短期表並執行清除（需先套用 migration 0004，見 [API 資料保存發行說明](../api-retention-release.md)）。**`JUKEBOX_AUTO_REVIEW=on` 必須搭配 `on`，否則拒絕啟動** |
 | `YOUTUBE_TRUSTED_CHANNEL_IDS` | 逗號分隔的 `UC...` 頻道 ID，不接受名稱或 handle |
 | `${JB_SECRET_DIR}/youtube_api_key.txt` | API 金鑰秘密檔（uid/gid 10001、0400），由 `YOUTUBE_API_KEY_FILE` 指向；不進 Git 或聊天 |
 
@@ -49,8 +49,8 @@
 
 ## 啟用順序（由 Owner 與夥伴安排，本 PR 未執行）
 
-1. 先備份資料庫；依部署手冊更新映像。此版本不需 migration。
-2. 只開自動審核：放置秘密檔、填名單，`JUKEBOX_AUTO_REVIEW=on`，以 `compose.yaml` 加 `compose.auto-review.yaml` 啟動；驗收真實 API 回應。
+1. 先備份資料庫；依部署手冊更新映像。啟用自動審核前需要 migration 0004 與 `JUKEBOX_API_RETENTION=on`（順序見 [部署前清單](partner-predeploy-api-retention.md)）。
+2. 只開自動審核（保存開關必須已開，否則 Bot 拒絕啟動）：放置秘密檔、填名單，`JUKEBOX_AUTO_REVIEW=on`，以 `compose.yaml` 加 `compose.auto-review.yaml` 啟動；驗收真實 API 回應。
 3. 處理所有版本未確認的既有案件（包含首筆），否則後面的發獎會等待。**開啟前先決定首筆案件的處理**：開啟後若確認其版本，它會走一般流程領 +1。
 4. 開發獎：停 Bot → `python -m bot.owner_cli settlement-switch preview --enabled on` → 用印出的 digest 執行 `write` → 設 `JUKEBOX_AUTO_SETTLEMENT=on` → 啟動 → `python -m bot.healthcheck`。
 5. 同步 Owner 指令（`/owner duration` 是新指令）：Owner 指令只註冊在 `DISCORD_OWNER_GUILD_ID` 伺服器，**全域 `apply` 不會同步它**。由 Owner 依序執行：

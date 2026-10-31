@@ -55,7 +55,7 @@
 
 - `JUKEBOX_API_RETENTION=on` 並重啟。**`JUKEBOX_AUTO_REVIEW` 的啟用是另一個決定**，不在本階段。
 - 啟動後 1 小時內檢查 `python -m bot.api_retention status`：最近一次成功清除為「剛剛」。`jb2_retention_runs` 無錯誤類別。
-- **停止條件**：清除失敗（`status` 顯示 overdue rows 增加，或 `last successful purge` 不是最近）；readiness 不是 `ready`。處置：把 `JUKEBOX_API_RETENTION` 改回 `off`、保留新版程式。
+- **停止條件**：清除失敗（`status` 顯示 overdue rows 增加，或 `last successful purge` 不是最近）；readiness 不是 `ready`。處置：保留新版程式；若自動審核已開，先把 `JUKEBOX_AUTO_REVIEW` 改為 `off`（只關保存而自動審核仍開，新版會拒絕啟動）。
 
 ## 5. 寫入新格式前後各自可用的回滾版本
 
@@ -66,17 +66,17 @@
 | 第一階段後（R1，開關關，未 migration） | R0 | 切回備份映像 |
 | 第二階段後（0004 已套用，開關關） | R0 的執行程式 | 切回備份映像；新表閒置無害；但 R0 的 `bot.migrate` 會拒絕，遷移用 R1 |
 | 第三階段後，自動審核仍關（沒有新格式列） | R0 | 先把開關改 `off`，再切映像；要先以 [發行說明第六節的 SQL](../api-retention-release.md) 確認五個計數皆為 0 |
-| 已寫出第一筆含結論的列之後 | **最低只能回到 R1** | 只把 `JUKEBOX_API_RETENTION` 改為 `off`、保留 R1 程式；**不要**退回 R0（R0 讀到這些列會出錯）；除非上述 SQL 的計數全為 0 |
+| 已寫出第一筆含結論的列之後 | **最低只能回到 R1** | 把 `JUKEBOX_AUTO_REVIEW` 與 `JUKEBOX_API_RETENTION` 都改為 `off`、保留 R1 程式（只關後者會拒絕啟動）；**不要**退回 R0（R0 讀到這些列會出錯）；除非上述 SQL 的計數全為 0 |
 
 ## 6. 「保存開關關、自動審核開」不是已解決的組合
 
 | `JUKEBOX_AUTO_REVIEW` | `JUKEBOX_API_RETENTION` | 結果（已在可丟棄 PostgreSQL 實測） |
 | --- | --- | --- |
 | off | off／on | 沒有 API 查詢；沒有新資料；（on 時仍會執行清除） |
-| **on** | **off** | 與現在相同：官方時長秒數、頻道 ID、取得時間與 API 來源標籤，**永久**寫進 `jb2_videos`、`jb2_review_history`、`jb2_evidence`、`jb2_decisions`（第二位投稿時還有 `jb2_receipts`），沒有期限、沒有清除。**這個組合沒有解決 API 保存問題，不要用它** |
-| on | on | 官方數值只在 `jb2_api_observations`，決定後清空，到期清除；永久表只有結論 |
+| **on** | **off** | **新版拒絕啟動**（設定檢查階段，早於任何連線與 Gateway）。原因：此組合會讓官方時長秒數、頻道 ID、取得時間與 API 來源標籤**永久**寫進 `jb2_videos`、`jb2_review_history`、`jb2_evidence`、`jb2_decisions`（第二位投稿時還有 `jb2_receipts`）。拒絕訊息說明必須先完成 migration 並開啟保存處理 |
+| on | on | 官方數值只在 `jb2_api_observations`，決定後清空，到期清除；永久表只有結論。啟動時另外檢查 0004 的兩張表與權限，缺少就拒絕啟動 |
 
-目前程式**允許**「審核開、保存關」（為了讓新版能先部署）。是否改為拒絕啟動，是需要 Owner 決定的行為變更，本清單不做。
+注意：`bot.healthcheck` 也會載入同一組設定，所以「審核開、保存關」的容器會被判為不健康，而不是悄悄運作。系統不會自動套用 migration，也不會自行修改任何設定值。
 
 ## 7. 避免多次意外部署的交付方式（建議）
 

@@ -185,3 +185,123 @@ def test_the_command_refuses_without_the_owner_or_database_and_prints_no_values(
     broken = lambda settings, owner: (_ for _ in ()).throw(RuntimeError("secret-password-text"))
     assert main(["status"], environ=DATABASE_ENVIRONMENT, repository_factory=broken) == 1
     assert capsys.readouterr().out.strip() == "failed: RuntimeError"
+
+
+SECRET_KEY_VALUE = "SYNTHETIC-KEY-MUST-NOT-APPEAR"  # [leak probe]: A refusal must never echo or even read this.
+
+
+def combination(review: str, retention: str, **extra: str) -> dict:
+    """@description: Build the environment mapping of one switch combination.
+    @param review: JUKEBOX_AUTO_REVIEW value.
+    @param retention: JUKEBOX_API_RETENTION value.
+    @param extra: Further settings.
+    @return: Mapping for load_auto_settings.
+    """
+    return {"JUKEBOX_AUTO_REVIEW": review, "JUKEBOX_API_RETENTION": retention, "YOUTUBE_API_KEY": SECRET_KEY_VALUE, **extra}
+
+
+def test_automatic_review_without_retention_refuses_before_reading_any_credential():
+    """@description: The refusal names the migration and the switch, says the system will not apply or change anything, and never touches the credential.
+    @param: none
+    @return: None.
+    """
+    with pytest.raises(ConfigurationError) as refusal:
+        load_auto_settings(combination("on", "off"))
+    text = str(refusal.value)
+    assert "migration 0004" in text and "JUKEBOX_API_RETENTION" in text and "不會自動套用 migration" in text and "不會自行修改任何設定值" in text
+    assert SECRET_KEY_VALUE not in text
+    with pytest.raises(ConfigurationError, match="migration 0004"):
+        load_auto_settings({"JUKEBOX_AUTO_REVIEW": "on"})
+
+
+def test_the_other_switch_combinations_keep_their_behaviour():
+    """@description: Both off keeps the manual flow; retention alone needs no credential; both on reads the key; settlement stays independent.
+    @param: none
+    @return: None.
+    """
+    both_off = load_auto_settings(combination("off", "off"))
+    assert (both_off.review_enabled, both_off.api_retention, both_off.api_key) == (False, False, None)
+    retention_only = load_auto_settings({"JUKEBOX_API_RETENTION": "on"})
+    assert (retention_only.review_enabled, retention_only.api_retention, retention_only.api_key) == (False, True, None)
+    both_on = load_auto_settings(combination("on", "on"))
+    assert both_on.review_enabled and both_on.api_retention and both_on.api_key == SECRET_KEY_VALUE
+    assert load_auto_settings({"JUKEBOX_AUTO_SETTLEMENT": "on"}).settlement_enabled is True
+
+
+def test_retention_alone_purges_but_never_builds_or_calls_the_youtube_client(monkeypatch):
+    """@description: With review off the pipeline has no provider: the purge runs and not one lookup is attempted.
+    @param monkeypatch: Pytest patching.
+    @return: None.
+    """
+    import bot.auto_startup as startup
+    monkeypatch.setattr(startup, "YouTubeMetadataClient", lambda key: pytest.fail("the YouTube client must not be built"))
+    repository = RecordingRepository()
+    repository.pending_validation_operations = lambda limit, excluded=(): [("discord:1", "aaaaaaaaaaa")]
+    repository.auto_review_subject = lambda operation: pytest.fail("no lookup may start")
+    running = build_auto_pipeline(repository, load_auto_settings({"JUKEBOX_API_RETENTION": "on"}))
+    running.sweep()
+    assert running._metadata_client is None and "purge_api_observations" in repository.calls
+    assert "revalidation_operations" not in repository.calls
+
+
+def stub_startup(monkeypatch, environment: dict) -> list[str]:
+    """@description: Replace everything main() reaches after configuration with a recorder, so only the order of refusals is observed.
+    @param monkeypatch: Pytest patching.
+    @param environment: Switch environment for this run.
+    @return: Names of the stages main() reached.
+    """
+    import types
+    import bot.__main__ as entry
+    stages: list[str] = []
+    for name in ("JUKEBOX_AUTO_REVIEW", "JUKEBOX_AUTO_SETTLEMENT", "JUKEBOX_API_RETENTION", "YOUTUBE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(entry, "load_production_discord_settings", lambda: types.SimpleNamespace(owner_id=1, application_id=2))
+    monkeypatch.setattr(entry, "load_database_settings", lambda: "database-settings")
+    monkeypatch.setattr(entry, "load_formal_exchange_enabled", lambda: False)
+    monkeypatch.setattr(entry, "load_nickel_claim_enabled", lambda: False)
+    monkeypatch.setattr(entry, "verify_mounted_secrets", lambda: None)
+    monkeypatch.setattr(entry, "verify_retention_schema", lambda settings: stages.append("schema-check"))
+    monkeypatch.setattr(entry, "SubmissionRepository", lambda *a, **k: (stages.append("repository"), (_ for _ in ()).throw(RuntimeError("stop")))[1])
+    return stages
+
+
+def test_main_refuses_review_without_retention_before_any_connection_or_gateway(monkeypatch):
+    """@description: The refusal happens in configuration: no schema check, no repository, no Gateway.
+    @param monkeypatch: Pytest patching.
+    @return: None.
+    """
+    import bot.__main__ as entry
+    stages = stub_startup(monkeypatch, {"JUKEBOX_AUTO_REVIEW": "on", "YOUTUBE_API_KEY": SECRET_KEY_VALUE})
+    with pytest.raises(SystemExit) as refusal:
+        entry.main()
+    assert "migration 0004" in str(refusal.value) and SECRET_KEY_VALUE not in str(refusal.value) and stages == []
+
+
+def test_main_checks_the_schema_once_when_retention_is_on_and_not_at_all_when_it_is_off(monkeypatch):
+    """@description: Retention on verifies its tables and privileges before the repository exists; both off never looks at the retention schema.
+    @param monkeypatch: Pytest patching.
+    @return: None.
+    """
+    import bot.__main__ as entry
+    for environment, expected in (({"JUKEBOX_API_RETENTION": "on"}, ["schema-check", "repository"]),
+                                  ({"JUKEBOX_AUTO_REVIEW": "on", "JUKEBOX_API_RETENTION": "on", "YOUTUBE_API_KEY": SECRET_KEY_VALUE}, ["schema-check", "repository"]),
+                                  ({}, ["repository"])):
+        stages = stub_startup(monkeypatch, environment)
+        with pytest.raises(RuntimeError, match="stop"):
+            entry.main()
+        assert stages == expected
+
+
+def test_main_stops_when_the_retention_schema_check_refuses(monkeypatch):
+    """@description: A refused schema check ends startup before the repository, the pipeline or the Gateway exist.
+    @param monkeypatch: Pytest patching.
+    @return: None.
+    """
+    import bot.__main__ as entry
+    stages = stub_startup(monkeypatch, {"JUKEBOX_API_RETENTION": "on"})
+    monkeypatch.setattr(entry, "verify_retention_schema", lambda settings: (_ for _ in ()).throw(ConfigurationError("table jb2_api_observations is missing")))
+    with pytest.raises(SystemExit, match="jb2_api_observations"):
+        entry.main()
+    assert stages == []

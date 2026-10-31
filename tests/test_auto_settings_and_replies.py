@@ -38,7 +38,7 @@ def test_automatic_review_without_a_credential_refuses_to_start() -> None:
     @return: None.
     """
     with pytest.raises(ConfigurationError, match="YOUTUBE_API_KEY"):
-        load_auto_settings({"JUKEBOX_AUTO_REVIEW": "on"})
+        load_auto_settings({"JUKEBOX_AUTO_REVIEW": "on", "JUKEBOX_API_RETENTION": "on"})
 
 
 @pytest.mark.parametrize("value", ["maybe", "2"])
@@ -65,7 +65,7 @@ def test_the_credential_never_appears_in_a_representation() -> None:
     """@description: Settings may be logged by accident; the key must not be.
     @return: None.
     """
-    settings = load_auto_settings({"JUKEBOX_AUTO_REVIEW": "on", "YOUTUBE_API_KEY": "secret-value"})
+    settings = load_auto_settings({"JUKEBOX_AUTO_REVIEW": "on", "JUKEBOX_API_RETENTION": "on", "YOUTUBE_API_KEY": "secret-value"})
     assert "secret-value" not in repr(settings)
     assert "secret-value" not in repr(build_auto_pipeline(None, settings)._metadata_client)
 

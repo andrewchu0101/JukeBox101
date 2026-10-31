@@ -27,6 +27,34 @@ class RetentionStatus:
     last_success_age_days: float | None  # [liveness]: Days since the last run that finished without error; None when never.
 
 
+REQUIRED_TABLE_PRIVILEGES = (("jb2_api_observations", "SELECT"), ("jb2_api_observations", "INSERT"), ("jb2_api_observations", "UPDATE"),
+                             ("jb2_retention_runs", "SELECT"), ("jb2_retention_runs", "INSERT"))  # [what the job needs]: Each checked on its own, since a combined check passes on any one.
+REQUIRED_RUN_COLUMNS = ("finished_at", "purged_rows", "error_class")  # [run closing]: Columns the application role must be able to update.
+
+
+def missing_retention_requirements(cursor: Any) -> list[str]:
+    """@description: List what the current role lacks to keep and purge API observations, without changing anything.
+    @param cursor: Cursor on the application connection.
+    @return: Plain descriptions of each missing table or privilege; empty when everything needed exists.
+    """
+    missing = []
+    for table in ("jb2_api_observations", "jb2_retention_runs"):
+        cursor.execute("SELECT to_regclass(%s) IS NOT NULL AS present", (table,))
+        if not cursor.fetchone()["present"]:
+            missing.append(f"table {table} is missing")
+    if missing:
+        return missing
+    for table, privilege in REQUIRED_TABLE_PRIVILEGES:
+        cursor.execute("SELECT has_table_privilege(current_user, %s, %s) AS granted", (table, privilege))
+        if not cursor.fetchone()["granted"]:
+            missing.append(f"{privilege} on {table} is not granted")
+    for column in REQUIRED_RUN_COLUMNS:
+        cursor.execute("SELECT has_column_privilege(current_user, 'jb2_retention_runs', %s, 'UPDATE') AS granted", (column,))
+        if not cursor.fetchone()["granted"]:
+            missing.append(f"UPDATE on jb2_retention_runs.{column} is not granted")
+    return missing
+
+
 def record_observation(cursor: Any, video_id: str, duration_seconds: int, channel_id: str | None) -> None:
     """@description: Store or refresh the only copy of the API values for a video, with a new expiry.
     @param cursor: Transaction-owned cursor holding the writer gate.

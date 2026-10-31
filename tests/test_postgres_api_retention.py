@@ -472,3 +472,61 @@ def test_an_owner_decided_case_is_cleared_by_the_next_purge_before_it_expires(wo
     row = world.observation(VIDEO_A)
     assert row["duration_seconds"] is None and row["channel_id"] is None and row["purge_reason"] == "completed"
 
+
+
+def test_the_startup_check_accepts_a_migrated_database(pg_database) -> None:
+    """@description: With 0004 applied and the shipped grants, the application role passes the check without changing anything.
+    @param pg_database: Disposable database.
+    @return: None.
+    """
+    from bot.database.api_retention_job import verify_retention_schema
+    verify_retention_schema(pg_database.app)
+
+
+def test_the_startup_check_names_missing_tables_and_applies_nothing(pg_database) -> None:
+    """@description: Without the migration the check refuses with an explicit message, and the database is exactly as it was afterwards.
+    @param pg_database: Disposable database.
+    @return: None.
+    """
+    from bot.config import ConfigurationError
+    from bot.database.api_retention_job import verify_retention_schema
+    admin_query(pg_database, "DROP TABLE jb2_retention_runs, jb2_api_observations")
+    with pytest.raises(ConfigurationError) as refusal:
+        verify_retention_schema(pg_database.app)
+    assert "jb2_api_observations is missing" in str(refusal.value) and "migration 0004" in str(refusal.value) and "不會自動套用" in str(refusal.value)
+    assert admin_query(pg_database, "SELECT to_regclass('jb2_api_observations') IS NOT NULL AS present")[0]["present"] is False
+
+
+@pytest.mark.parametrize("revoke,expected", [
+    ("REVOKE UPDATE ON jb2_api_observations FROM jukebox101_app_role", "UPDATE on jb2_api_observations is not granted"),
+    ("REVOKE INSERT ON jb2_api_observations FROM jukebox101_app_role", "INSERT on jb2_api_observations is not granted"),
+    ("REVOKE INSERT ON jb2_retention_runs FROM jukebox101_app_role", "INSERT on jb2_retention_runs is not granted"),
+    ("REVOKE UPDATE (finished_at) ON jb2_retention_runs FROM jukebox101_app_role", "UPDATE on jb2_retention_runs.finished_at is not granted"),
+])
+def test_the_startup_check_names_each_missing_privilege(pg_database, revoke, expected) -> None:
+    """@description: Every privilege the purge needs is checked on its own and named, and nothing is granted back.
+    @param pg_database: Disposable database.
+    @param revoke: Statement removing one privilege.
+    @param expected: Text the refusal must contain.
+    @return: None.
+    """
+    from bot.config import ConfigurationError
+    from bot.database.api_retention_job import verify_retention_schema
+    admin_query(pg_database, revoke)
+    with pytest.raises(ConfigurationError, match="migration 0004") as refusal:
+        verify_retention_schema(pg_database.app)
+    assert expected in str(refusal.value)
+
+
+def test_the_startup_check_refuses_when_the_database_cannot_be_checked(pg_database) -> None:
+    """@description: An unreachable database is a refusal that names only the error class and never echoes connection details.
+    @param pg_database: Disposable database.
+    @return: None.
+    """
+    from dataclasses import replace
+    from bot.config import ConfigurationError
+    from bot.database.api_retention_job import verify_retention_schema
+    unreachable = replace(pg_database.app, port=1, password="SYNTHETIC-PASSWORD-MUST-NOT-APPEAR")
+    with pytest.raises(ConfigurationError) as refusal:
+        verify_retention_schema(unreachable)
+    assert "無法檢查資料庫" in str(refusal.value) and "SYNTHETIC-PASSWORD" not in str(refusal.value) and unreachable.host not in str(refusal.value)
