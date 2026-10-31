@@ -2,10 +2,9 @@
 # yuipan
 對外顯示名稱：**JukeBox101 v1.0.0 (Beta)**。此名稱對應已驗證的 **v7** 交付包；打包檔名、映像 tag 與程式技術版本保持原樣。夥伴交接清單見 `docs/deploy/partner-handoff-v1.0.0-beta.md`。
 
-Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**，正式資料庫為 **PostgreSQL 18**。
+Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**。自動整合測試使用 PostgreSQL 18.6；目前 Supabase PostgreSQL 17.11 已完成首筆指定投稿落盤驗證，尚非完整版本相容性驗收。
 
-> 狀態（2026-10-30）：v7 為開發分支 `feature/postgresql-multi-guild` 的成果，交付包封裝時來源尚未 commit；後續提交以 Git 紀錄為準。真實 Discord 與正式資料庫尚未驗收。
-> 程式已完成，並通過離線測試與 PostgreSQL 18.6 拋棄式資料庫的整合測試；這些結果不代表正式部署已驗收。
+> 狀態（2026-10-31）：PR #2 已合併，CI 已啟用；首筆 Discord 投稿已查證寫入 Supabase，使用者確認完成時長補登與歌曲核准，版本仍未確認、Nickel 0。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。CD 尚未啟用；下一個 [自動審核與發獎 MVP](docs/mvp-auto-review-nickel.md) 尚未實作，不能據此視為已自動發獎或完整部署驗收。
 
 ## 使用者說明（user）
 
