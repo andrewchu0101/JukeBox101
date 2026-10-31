@@ -821,6 +821,10 @@ AWAITS_OWNER_SQL = (  # [queue predicate]: SQL mirror of _awaits_owner, so the d
     f"OR (v.identity_json::jsonb #>> '{{value,fields,status,value}}') = '{VersionIdentityStatus.CONFLICT.value}')")
 
 
+EARLIEST_EVENT_SQL = ("e.accepted_sequence = (SELECT MIN(first_event.accepted_sequence) FROM jb2_events first_event "
+                      "WHERE first_event.video_id = e.video_id)")  # [one question per video]: The decision belongs to the video, so only its earliest acceptance is asked.
+
+
 def pending_review_page(cursor: Any, after_sequence: int | None, limit: int) -> PendingPage:
     """@description: Read one keyset page of operations that still need the Owner, transferring at most one row more than the page, in acceptance order.
     @param cursor: Transaction-owned cursor holding the writer gate.
@@ -831,11 +835,13 @@ def pending_review_page(cursor: Any, after_sequence: int | None, limit: int) -> 
     after = 0 if after_sequence is None else after_sequence
     rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.discord_user_id,e.video_id,v.identity_json,v.review_json,"
                              "v.review_revision,v.review_status FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
-                             f"WHERE e.accepted_sequence > %s AND {AWAITS_OWNER_SQL} ORDER BY e.accepted_sequence LIMIT %s", (after, limit + 1))
+                             f"WHERE e.accepted_sequence > %s AND {AWAITS_OWNER_SQL} AND {EARLIEST_EVENT_SQL} ORDER BY e.accepted_sequence LIMIT %s", (after, limit + 1))
     wanted = []  # [one extra row]: The row after the page only proves that a next page exists.
+    asked_videos: set[str] = set()  # [one question per video]: Python repeats the SQL rule so the offline fake behaves the same.
     for row in sorted(rows, key=lambda candidate: candidate["accepted_sequence"]):
         review, identity = decode_current_review(row), decode_current_identity(row)
-        if row["accepted_sequence"] > after and _awaits_owner(review.status, identity.status):
+        if row["accepted_sequence"] > after and row["video_id"] not in asked_videos and _awaits_owner(review.status, identity.status):
+            asked_videos.add(row["video_id"])
             wanted.append((row, review, identity))
         if len(wanted) > limit:
             break

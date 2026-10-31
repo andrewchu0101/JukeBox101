@@ -62,6 +62,17 @@ def waiting_reason(item) -> str:
     return reasons.get(item.review_status, "待處理")
 
 
+def _version_line(item) -> str:
+    """@description: State the version status without presenting a missing mapping as a finding about the recording.
+    @param item: Pending row of the card.
+    @return: Version line; an unresolved version says the system lacks a mapping, not that the recording is new.
+    """
+    label = IDENTITY_LABELS[item.identity_status]
+    if item.identity_status is VersionIdentityStatus.UNRESOLVED:
+        return f"版本狀態：{label}（系統沒有這支影片的版本對應；這不代表它是新錄音）"
+    return f"版本狀態：{label}"
+
+
 def render_card(item) -> str:
     """@description: Show one pending case with everything needed to decide it, and never its internal operation id.
     @param item: Pending row with submitter, link, duration and states.
@@ -69,7 +80,7 @@ def render_card(item) -> str:
     """
     return "\n".join([
         "待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{item.source_url}", f"已知時長：{_duration_text(item.duration_seconds)}",
-        f"審核狀態：{REVIEW_LABELS[item.review_status]}", f"版本狀態：{IDENTITY_LABELS[item.identity_status]}",
+        f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item),
         f"待處理：{waiting_reason(item)}", "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"])
 
 

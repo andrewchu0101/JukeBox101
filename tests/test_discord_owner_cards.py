@@ -544,3 +544,14 @@ def test_the_displayed_revision_reaches_the_duration_preview_so_a_late_change_is
     asyncio.run(modal.on_submit(submitted))
     assert service.called("preview_duration")[0][6] == 2
     assert not service.called("confirm") and "重新載入" in submitted.shown()
+
+
+def test_a_missing_version_mapping_is_never_described_as_a_new_recording():
+    """@description: The card says the system has no mapping for the video and that this is not a claim that it is new, and says nothing of the sort when the version is known.
+    @param: none
+    @return: None.
+    """
+    unresolved = asyncio.run(cards_for(CardService(case(review=ReviewStatus.APPROVED))).first_replies(OWNER_ID))[0].text
+    assert "沒有這支影片的版本對應" in unresolved and "不代表它是新錄音" in unresolved
+    known = asyncio.run(cards_for(CardService(case(identity=VersionIdentityStatus.CONFIRMED))).first_replies(OWNER_ID))[0].text
+    assert "沒有這支影片的版本對應" not in known and "版本狀態：已確認" in known
