@@ -19,11 +19,11 @@ from bot.discord_owner_review import (
 from bot.owner_card_versions import (
     CATEGORY_BY_ORDINAL, INSUFFICIENT_TEXT, KNOWN_VERSIONS_PER_CARD, NEW_HEADLINE, NEW_REASON, NO_VERSION_ERROR, OTHER_MENU_TEXT, PROMISE_LINES,
     REMASTER_LABEL, REMASTER_REASON, SAME_HEADLINE, SAME_REASON, SOURCE_REQUIRED_TEXT, category_headline, category_reason, manual_check_source,
-    new_version_identity, render_known_versions, version_evidence, watch_url,
+    new_version_identity, render_known_versions, retention_warning, version_evidence, watch_url,
 )
 from bot.evidence_record import VersionClaimKind
 from bot.owner_review import OwnerReviewService, ReviewAction, ReviewOutcomeUnknown, require_traceable_source
-from bot.review import ReviewStatus, StaleReviewVersion
+from bot.review import DurationEvidenceExpired, ReviewStatus, StaleReviewVersion
 from bot.song_identity import video_identity_from_url
 from bot.song_judgement import ContentJudgement
 from bot.version_identity import RecordingVersionIdentity, VersionIdentityStatus
@@ -52,15 +52,19 @@ NO_MORE_TEXT = "目前沒有更多待處理案件。"
 STALE_CARD_TEXT = "此案件已變更或已處理，這張卡片已失效，沒有執行任何操作。請按「重新載入」。"  # [stale card]: Never claims a decision.
 UNKNOWN_OUTCOME_TEXT = "結果未知（連線中斷，決定可能已儲存）。請再按一次同一個按鈕，系統會以原決定查回結果，不會重複執行。"
 DURATION_FORMAT_TEXT = "秒數必須是整數（0 到 86400）。"
+EXPIRED_BASIS_TEXT = "官方時長資料已過期，不能再依它核准。沒有執行任何操作；請等待系統重新驗證，或按「補時長」由你輸入時長與來源。"  # [expired API basis]: The case stays pending.
 MAX_LINK_CHARS = 300  # [message budget]: A longer submitted link is shown as its canonical watch link so the message stays under Discord's 2000-character limit.
 FORM_ACTIONS = {"reject", "duration", "kind", "remaster"}  # [forms]: Actions that open a modal instead of acting at once.
 
 
-def _duration_text(seconds: int | None) -> str:
-    """@description: Show a known full-video duration the way people read it, or say none is known.
+def _duration_text(seconds: int | None, api_basis: str | None = None) -> str:
+    """@description: Show a known full-video duration the way people read it, or say none is known or only the official conclusion remains.
     @param seconds: Known full-video seconds, or None.
-    @return: Minutes and seconds with the raw seconds, or the missing marker.
+    @param api_basis: "valid" or "expired" when only an official-data conclusion backs the duration.
+    @return: Minutes and seconds with the raw seconds, or the conclusion or missing marker.
     """
+    if seconds is None and api_basis is not None:
+        return "官方資料已驗證在範圍內（不保存秒數）" if api_basis == "valid" else "官方資料已過期，需重新驗證或由你補時長"
     if seconds is None:
         return "尚無"
     return f"{seconds // 60}:{seconds % 60:02d}（{seconds} 秒）"
@@ -73,11 +77,23 @@ def waiting_reason(item) -> str:
     """
     if item.identity_status is VersionIdentityStatus.CONFLICT:
         return f"版本證據衝突：{item.conflict_reason or '待 Owner 處理'}"
+    if item.review_status is ReviewStatus.PENDING_REVIEW and item.api_basis == "expired":
+        return "官方時長資料已過期，等待自動重新驗證，或由 Owner 補時長；在此之前不能核准"
     reasons = {ReviewStatus.PENDING_VALIDATION: "尚無官方時長，等待自動取得或由 Owner 補時長",
                ReviewStatus.VALIDATION_FAILED: "無法取得影片資料（可能已刪除或未公開），待 Owner 處理",
                ReviewStatus.PENDING_REVIEW: "待 Owner 審核歌曲資格",
                ReviewStatus.APPROVED: "歌曲已核准，版本待 Owner 判斷"}
     return reasons.get(item.review_status, "待處理")
+
+
+def _may_enter_duration(item) -> bool:
+    """@description: Offer the duration entry where the duration is missing, or where the only official basis has expired.
+    @param item: Pending row of the card.
+    @return: Whether the Owner may enter a duration for this case.
+    """
+    if item.duration_seconds is not None:
+        return False
+    return item.review_status in DURATION_STATES or (item.review_status is ReviewStatus.PENDING_REVIEW and item.api_basis == "expired")
 
 
 def _card_link(url: str) -> str:
@@ -108,7 +124,7 @@ def render_card(item, versions=None, has_more_versions: bool = False) -> str:
     @param has_more_versions: Whether a further page of known versions exists.
     @return: Card text; an unresolved version also lists the known versions and states what each version button promises.
     """
-    lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{_card_link(item.source_url)}", f"已知時長：{_duration_text(item.duration_seconds)}",
+    lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{_card_link(item.source_url)}", f"已知時長：{_duration_text(item.duration_seconds, item.api_basis)}",
              f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item), f"待處理：{waiting_reason(item)}",
              "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"]
     if versions is not None:
@@ -345,8 +361,8 @@ class OwnerCards:
         @param values: Typed form values.
         @return: Result reply, or the stale reply when the state no longer allows the action.
         """
-        allowed = {"approve": {ReviewStatus.PENDING_REVIEW}, "reject": DECIDABLE_STATES, "duration": DURATION_STATES}[action]
-        if item.review_status not in allowed:
+        allowed = {"approve": {ReviewStatus.PENDING_REVIEW}, "reject": DECIDABLE_STATES, "duration": DURATION_STATES | {ReviewStatus.PENDING_REVIEW}}[action]
+        if item.review_status not in allowed or (action == "duration" and not _may_enter_duration(item)):
             return self._stale_reply(item.accepted_sequence)
         try:
             if action == "duration":
@@ -354,6 +370,8 @@ class OwnerCards:
             return await self._judgement(actor_id, item, action, values)
         except StaleReviewVersion:
             return self._stale_reply(item.accepted_sequence)
+        except DurationEvidenceExpired:
+            return await self._card_reply(actor_id, item, note=EXPIRED_BASIS_TEXT)
 
     async def _version_action(self, actor_id: int, item, action: str, extra: int, values: tuple[str, ...] = ()) -> _Reply:
         """@description: Run a version button only while the system still lacks the version; every other state is a stale card.
@@ -602,8 +620,21 @@ class OwnerCards:
             page = await _call_service(self._service_provider, lambda service: service.list_known_versions(
                 actor_id, after_sequence=versions_after, limit=KNOWN_VERSIONS_PER_CARD))
             versions, next_after = page.items, page.next_after_sequence
-        text = render_card(item, versions, next_after is not None)
+        warning = await self._retention_warning(actor_id)
+        text = warning + render_card(item, versions, next_after is not None)
         return _Reply(f"{text}\n\n{note}" if note else text, self._card_view(item, versions or (), next_after))
+
+    async def _retention_warning(self, actor_id: int) -> str:
+        """@description: Read the retention warning as a courtesy; it can never stop the Owner from working, even before the table exists.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @return: Warning text, or an empty string when nothing is overdue or the status cannot be read.
+        """
+        try:
+            return retention_warning(await _call_service(self._service_provider, lambda service: service.retention_status(actor_id)))
+        except Exception as error:  # [presentation only]: A failed read hides the warning, never the card.
+            _LOGGER.warning("Retention status unavailable for the card: %s", type(error).__name__)
+            return ""
 
     def _stale_reply(self, sequence: int) -> _Reply:
         """@description: Refuse an out-of-date card, saying nothing was done and offering a reload.
@@ -648,9 +679,9 @@ class OwnerCards:
         @return: Card view.
         """
         sequence, revision, status = item.accepted_sequence, item.revision, item.review_status
-        buttons = [self._button("approve", sequence, revision, status is not ReviewStatus.PENDING_REVIEW, row=0),
+        buttons = [self._button("approve", sequence, revision, status is not ReviewStatus.PENDING_REVIEW or item.api_basis == "expired", row=0),
                    self._button("reject", sequence, revision, status not in DECIDABLE_STATES, row=0)]
-        if item.duration_seconds is None and status in DURATION_STATES:
+        if _may_enter_duration(item):
             buttons.append(self._button("duration", sequence, revision, row=0))
         buttons.append(self._button("next", sequence, 0, row=0))
         if item.identity_status is VersionIdentityStatus.UNRESOLVED:

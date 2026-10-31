@@ -39,6 +39,24 @@ PROMISE_LINES = (
 )  # [commitment]: What a press promises, shown before the press because the card is the preview.
 
 
+def retention_warning(status) -> str:
+    """@description: Turn retention debt into the Owner's card warning, escalating with the days the purge has been overdue.
+    @param status: Retention status from the database clock, or None when nothing is kept.
+    @return: Warning lines, or an empty string while nothing is overdue by a day.
+    """
+    if status is None or status.oldest_overdue_days is None or status.oldest_overdue_days < 1:
+        return ""
+    days = int(status.oldest_overdue_days)
+    head = f"⚠ API 資料清除已逾期 {days} 天（{status.overdue_rows} 筆）；這些資料不會被採信，但仍未清除。"
+    if days >= 12:
+        return f"{head}緊急：請停用 JUKEBOX_AUTO_REVIEW，並執行 python -m bot.api_retention purge --apply。\n"
+    if days >= 7:
+        return f"{head}緊急：請手動執行 python -m bot.api_retention purge --apply。\n"
+    if days >= 3:
+        return f"{head}已停止新的官方查詢，新案件改由 Owner 處理。\n"
+    return f"{head}系統會自動重試。\n"
+
+
 def watch_url(video_id: str) -> str:
     """@description: Build the plain watch link of a video from its id.
     @param video_id: Video id.

@@ -39,7 +39,11 @@ from bot.database.review_persistence import (
 )
 from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
 from bot.auto_review import AutoReviewVerdict
-from bot.database.auto_review_store import AutoReviewSubject, apply_verdict, pending_validation_rows, read_reward_state, read_subject, ready_rows
+from bot.database.api_observations import RetentionStatus, purge_preview, retention_status, revalidation_rows
+from bot.database.api_retention_job import run_purge
+from bot.database.auto_review_store import (
+    AutoReviewSubject, apply_verdict, pending_validation_rows, read_reward_state, read_subject, ready_rows, refresh_observation,
+)
 from bot.database.reward_settlement import settle_reward
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
 from bot.database.submission_store import accept_submission
@@ -61,13 +65,14 @@ class SubmissionRepository:
     """Own complete synchronous transactions without changing the existing Discord-facing MusicRepository."""
 
     def __init__(self, connection_factory: Callable[[], Any], owner_discord_user_id: int, *, compensation_enabled: bool = False,
-                 automatic_settlement: bool = False) -> None:
+                 automatic_settlement: bool = False, api_retention: bool = False) -> None:
         """@description: Keep connection creation deferred and Owner identity outside user-controlled requests.
         @param self: New persistent submission boundary.
         @param connection_factory: Existing worker-local PyMySQL creator or offline fake.
         @param owner_discord_user_id: Deployment-configured Owner Discord user ID, not a role or nickname.
             @param compensation_enabled: Feature switch, off by default; when off no compensation table is ever read or written.
             @param automatic_settlement: Deployment mode, off by default; only an exact True lets intake run with the database settlement switch on.
+            @param api_retention: Deployment mode, off by default; only an exact True reads the retention tables for the Owner's warning.
     @return: None.
         """
         if type(owner_discord_user_id) is not int or owner_discord_user_id <= 0:
@@ -76,6 +81,7 @@ class SubmissionRepository:
         self._owner_id = owner_discord_user_id  # [authorization authority]: Must not be taken from command options.
         self._compensation_enabled = compensation_enabled  # [feature switch]: Off by default; when off no compensation table is ever touched.
         self._automatic_settlement = automatic_settlement is True  # [intake policy]: Otherwise an open settlement switch still stops intake.
+        self._api_retention = api_retention is True  # [API data lifecycle]: Off means no retention table is read, so a release can run before its migration.
 
     def accept(self, request: SubmissionRequest) -> SubmissionResult:
         """@description: Accept one share or replay its original receipt without issuing Nickel.
@@ -155,16 +161,63 @@ class SubmissionRepository:
         with submission_transaction(self._factory) as (cursor, _control):
             return read_subject(cursor, operation_id)
 
-    def apply_auto_review(self, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict) -> ReviewSnapshot:
+    def apply_auto_review(self, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict,
+                          retain_api_values: bool = False) -> ReviewSnapshot:
         """@description: Apply one automatic verdict under the system actor; a verdict for an older revision writes nothing.
         @param self: Synchronous repository boundary, not reachable from any user command.
         @param operation_id: Accepted operation.
         @param expected_revision: Revision the lookup was made for.
         @param verdict: Verdict computed outside this transaction.
+        @param retain_api_values: True stores official values only in the short-lived observation table.
         @return: Current review after the call.
         """
         with submission_transaction(self._factory) as (cursor, control):
-            return apply_verdict(cursor, control, operation_id, expected_revision, verdict)
+            return apply_verdict(cursor, control, operation_id, expected_revision, verdict, retain_api_values)
+
+    def refresh_api_observation(self, operation_id: str, verdict: AutoReviewVerdict) -> bool:
+        """@description: Store fresh official values for a pending review whose passing conclusion has expired, without changing the review.
+        @param self: Synchronous repository boundary.
+        @param operation_id: Accepted operation.
+        @param verdict: Fresh verdict from the provider.
+        @return: True when new values were stored.
+        """
+        with submission_transaction(self._factory) as (cursor, _control):
+            return refresh_observation(cursor, operation_id, verdict)
+
+    def revalidation_operations(self, limit: int, excluded_video_ids: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+        """@description: List pending reviews resting only on an expired API conclusion, for the bounded sweep.
+        @param self: Synchronous repository boundary.
+        @param limit: Maximum rows read.
+        @param excluded_video_ids: Videos the sweep is pausing.
+        @return: Pairs of operation and video identifiers in acceptance order.
+        """
+        with submission_transaction(self._factory) as (cursor, _control):
+            return revalidation_rows(cursor, limit, excluded_video_ids)
+
+    def purge_api_observations(self) -> int:
+        """@description: Clear every expired or completed observation in short batches, recording the run, so no API value outlives its window.
+        @param self: Synchronous repository boundary.
+        @return: Number of observations cleared.
+        """
+        return run_purge(self._factory)
+
+    def api_purge_preview(self) -> tuple[int, int]:
+        """@description: Count the observations a purge would clear now, without clearing any.
+        @param self: Synchronous repository boundary.
+        @return: Expired rows and decided-case rows.
+        """
+        with submission_transaction(self._factory) as (cursor, _control):
+            return purge_preview(cursor)
+
+    def api_retention_status(self) -> RetentionStatus:
+        """@description: Read retention health from the database clock without changing anything.
+        @param self: Synchronous repository boundary.
+        @return: Held, overdue and liveness figures, or None while API retention is switched off.
+        """
+        if not self._api_retention:
+            return None
+        with submission_transaction(self._factory) as (cursor, _control):
+            return retention_status(cursor)
 
     def pending_validation_operations(self, limit: int, excluded_video_ids: tuple[str, ...] = ()) -> list[tuple[str, str]]:
         """@description: List operations whose video still waits for first validation, for the bounded sweep.

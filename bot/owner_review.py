@@ -23,7 +23,7 @@ from bot.eligibility import DurationEligibility, DurationEvidence, assess_durati
 from bot.decision_snapshot import DecisionSnapshot
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
 from bot.review import (
-    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, record_validation, reject_review,
+    ApprovalSource, DurationEvidenceExpired, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, approve_review, record_validation, reject_review,
 )
 from bot.review_gate import evaluate_approval_gate
 from bot.song_judgement import ContentJudgement
@@ -277,6 +277,16 @@ class OwnerReviewService:
             raise ValueError("A positive page size is required")
         return self._repository.pending_items(actor_id, after_sequence, min(limit, MAX_PENDING_PAGE))
 
+    def retention_status(self, actor_id: int):
+        """@description: Read API-data retention health for the Owner's card warning, read-only; repositories without the table report nothing.
+        @param self: Owner review coordinator.
+        @param actor_id: Authenticated caller, which must be the Owner before anything is read.
+        @return: Retention status, or None when the repository keeps no API observations.
+        """
+        require_owner(actor_id, self._owner_id, "owner retention status")
+        reader = getattr(self._repository, "api_retention_status", None)
+        return None if reader is None else reader()
+
     def list_known_versions(self, actor_id: int, *, after_sequence: int | None = None, limit: int = MAX_KNOWN_VERSIONS_PAGE) -> KnownVersionPage:
         """@description: Show one keyset page of the recording versions already confirmed, so the Owner can recognize one without typing an id, read-only.
         @param self: Owner review coordinator.
@@ -406,7 +416,10 @@ def _approval_song_eligibility(actor_id: int, projection: ReviewProjection, cont
         raise InvalidReviewTransition("Content judgement must be the Owner's own verdict")
     if projection.identity.status is VersionIdentityStatus.CONFLICT:
         raise InvalidReviewTransition("Version conflict forbids approval; rejection stays allowed and does not clear the conflict")
-    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity)  # [cross-video]: May raise ValueError.
+    if projection.duration_basis_expired:
+        raise DurationEvidenceExpired("官方時長資料已過期：請等待重新驗證，或由 Owner 補人工時長")
+    gate = evaluate_approval_gate(projection.review.duration, content, projection.identity,
+                                  projection.review.duration_verdict)  # [cross-video]: May raise ValueError.
     if not gate.song_eligible:
         raise InvalidReviewTransition(f"Approval refused by the song gate: {gate.reason}")
     return gate.song_eligible

@@ -353,7 +353,8 @@ def main() -> None:
     except ConfigurationError as configuration_error:
         raise SystemExit(str(configuration_error)) from None
     submission_repository = SubmissionRepository(partial(open_connection, database_settings), owner_id,
-                                                 automatic_settlement=auto_settings.settlement_enabled)
+                                                 automatic_settlement=auto_settings.settlement_enabled,
+                                                 api_retention=auto_settings.api_retention)
     pipeline = build_auto_pipeline(submission_repository, auto_settings)
     service = MusicService(MusicRepository(database_settings), submission_repository, formal_exchange=formal_exchange,
                            nickel_claim_enabled=nickel_claim, nickel_connection_factory=partial(open_connection, database_settings), auto_pipeline=pipeline)

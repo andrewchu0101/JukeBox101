@@ -13,7 +13,7 @@ import pytest
 from bot.discord_owner_cards import OwnerCards
 from bot.evidence_record import VersionClaimKind
 from bot.owner_review import ReviewAction, ReviewOutcomeUnknown, ReviewPreview
-from bot.review import ReviewStatus, StaleReviewVersion
+from bot.review import DurationEvidenceExpired, ReviewStatus, StaleReviewVersion
 from bot.song_identity import VideoIdentity
 from bot.version_identity import VersionIdentityStatus
 
@@ -40,7 +40,7 @@ def case(sequence: int = 1, revision: int = 3, review: ReviewStatus = ReviewStat
     """
     return SimpleNamespace(operation_id=f"discord:internal-{sequence}", source_url=VIDEO_URL, accepted_sequence=sequence,
                            review_status=review, identity_status=identity, revision=revision, evidence_count=0,
-                           conflict_reason=conflict, submitter_id=SUBMITTER_ID, duration_seconds=duration)
+                           conflict_reason=conflict, submitter_id=SUBMITTER_ID, duration_seconds=duration, api_basis=None)
 
 
 class CardService:
@@ -59,6 +59,8 @@ class CardService:
         self.versions: list = []  # [known versions]: Rows shaped like the service's KnownVersion, oldest first.
         self.evidence: list = []  # [recorded evidence]: Evidence records handed to version confirmation previews.
         self.version_preview_error: Exception | None = None  # [scripted refusal]: Raised by the next version preview, like the real rules do.
+        self.retention = None  # [scripted retention health]: Returned by retention_status; None means nothing is kept.
+        self.preview_error: Exception | None = None  # [scripted refusal]: Raised by the next approval or rejection preview.
 
     def called(self, name: str) -> list[tuple]:
         """@description: Select recorded calls by method name.
@@ -131,6 +133,8 @@ class CardService:
         @return: Preview.
         """
         self.calls.append(("preview", actor_id, operation_id, action, reason, expected_revision, evidence_reference, content))
+        if self.preview_error is not None:
+            raise self.preview_error
         return self._issue("preview", operation_id, action, expected_revision, evidence_reference)
 
     def preview_duration(self, actor_id, operation_id, seconds, source, reason, expected_revision=None):
@@ -147,6 +151,16 @@ class CardService:
         self.calls.append(("preview_duration", actor_id, operation_id, seconds, source, reason, expected_revision))
         item = next(i for i in self.items.values() if i.operation_id == operation_id)
         return self._issue("preview_duration", operation_id, ReviewAction.DURATION, item.revision if expected_revision is None else expected_revision, source)
+
+    def retention_status(self, actor_id: int):
+        """@description: Return the scripted retention health.
+        @param self: Fake service.
+        @param actor_id: Caller.
+        @return: Scripted status, or None.
+        """
+        if isinstance(self.retention, Exception):
+            raise self.retention
+        return self.retention
 
     def list_known_versions(self, actor_id: int, *, after_sequence=None, limit: int = 5):
         """@description: Return known versions after the keyset position, oldest first, with the next cursor when more follow.
@@ -957,3 +971,58 @@ def test_short_submitted_link_is_shown_unchanged():
     service.items[1].source_url = "https://youtu.be/dQw4w9WgXcQ?t=5"
     text = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0].text
     assert "影片：https://youtu.be/dQw4w9WgXcQ?t=5\n" in text
+
+
+def test_a_case_resting_on_an_expired_api_conclusion_cannot_be_approved_from_the_card():
+    """@description: The card says the official data expired, disables approval, offers the Owner's duration entry, and keeps the case pending when approval is attempted anyway.
+    @param: none
+    @return: None.
+    """
+    item = case(review=ReviewStatus.PENDING_REVIEW, duration=None)
+    item.api_basis = "expired"
+    service = CardService(item)
+    service.preview_error = DurationEvidenceExpired("expired")
+    cards = cards_for(service)
+    first = asyncio.run(cards.first_replies(OWNER_ID))[0]
+    assert "官方資料已過期" in first.text and "不能核准" in first.text
+    shown = labels(first.view)
+    assert shown["確認通過"] is False and shown["補時長"] is True
+    attempted = press(cards, "approve", 1, 3)
+    assert "官方時長資料已過期" in attempted.shown() and not service.called("confirm")
+    assert item.review_status is ReviewStatus.PENDING_REVIEW
+
+
+def test_a_valid_api_conclusion_shows_no_seconds_and_keeps_approval_available():
+    """@description: While the conclusion stands the card shows that the official data passed, without inventing seconds.
+    @param: none
+    @return: None.
+    """
+    item = case(review=ReviewStatus.PENDING_REVIEW, duration=None)
+    item.api_basis = "valid"
+    first = asyncio.run(cards_for(CardService(item)).first_replies(OWNER_ID))[0]
+    assert "官方資料已驗證在範圍內" in first.text and labels(first.view)["確認通過"] is True and "補時長" not in labels(first.view)
+
+
+def test_the_card_warns_when_the_purge_is_overdue_and_escalates_with_the_days():
+    """@description: The warning appears from one day overdue, names the stopped lookups at three, and the manual command at seven and twelve.
+    @param: none
+    @return: None.
+    """
+    texts = {}
+    for days in (0.5, 2, 4, 8, 13):
+        service = CardService(case())
+        service.retention = SimpleNamespace(overdue_rows=3, oldest_overdue_days=days)
+        texts[days] = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0].text
+    assert "逾期" not in texts[0.5] and "系統會自動重試" in texts[2] and "已停止新的官方查詢" in texts[4]
+    assert "purge --apply" in texts[8] and "JUKEBOX_AUTO_REVIEW" in texts[13]
+
+
+def test_an_unreadable_retention_status_never_hides_the_card():
+    """@description: The warning is a courtesy: a failing status read, such as a table that does not exist yet, leaves the card intact.
+    @param: none
+    @return: None.
+    """
+    service = CardService(case())
+    service.retention = RuntimeError("relation does not exist")
+    first = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0]
+    assert "待處理案件" in first.text and "逾期" not in first.text

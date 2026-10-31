@@ -7,10 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from bot.auto_review import AutoReviewKind, AutoReviewVerdict
+from bot.database.api_observations import basis_expired, purge_video, record_observation
+from bot.eligibility import DurationEligibility
+from bot.song_identity import VideoIdentity
 from bot.database.persisted_snapshot import decode_current_review, fetch_all
 from bot.database.review_persistence import ReviewCommand, _current_request, apply_review
 from bot.database.reward_settlement import current_decisions
-from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus, ValidationError
+from bot.review import ApprovalSource, DurationVerdict, ReviewSnapshot, ReviewStatus, ValidationError
 from bot.reward_candidates import RewardCandidateStatus, RewardDecision
 from bot.version_identity import VersionIdentityStatus
 
@@ -45,13 +48,15 @@ def read_subject(cursor: Any, operation_id: str) -> AutoReviewSubject:
     return AutoReviewSubject(review.video.video_id, review.version, _awaits_validation(review))
 
 
-def apply_verdict(cursor: Any, control: dict, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict) -> ReviewSnapshot:
+def apply_verdict(cursor: Any, control: dict, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict,
+                  retain_api_values: bool = False) -> ReviewSnapshot:
     """@description: Write one verdict through the audited review path, or nothing when the review moved during the lookup.
     @param cursor: Cursor holding the writer gate.
     @param control: Locked control row.
     @param operation_id: Accepted operation.
     @param expected_revision: Revision the lookup was made for.
     @param verdict: Verdict computed outside the transaction.
+    @param retain_api_values: True keeps official values only in the short-lived observation table and writes the conclusion everywhere else.
     @return: The review after this call; unchanged for a stale or repeated verdict.
     """
     request = _current_request(cursor, operation_id, expected_revision)
@@ -61,11 +66,65 @@ def apply_verdict(cursor: Any, control: dict, operation_id: str, expected_revisi
     if verdict.kind is AutoReviewKind.UNAVAILABLE and current.status is ReviewStatus.VALIDATION_FAILED:
         return current  # [no churn]: Repeating the same failure adds no audit fact.
     approve = verdict.kind is AutoReviewKind.AUTO_APPROVE and request.identity.status is not VersionIdentityStatus.CONFLICT
+    if retain_api_values:
+        return _apply_retained(cursor, control, operation_id, expected_revision, verdict, approve)
     command = ReviewCommand(f"auto-review:{current.video.video_id}:{expected_revision}", operation_id, SYSTEM_ACTOR_ID, verdict.reason,
                             expected_revision, duration=verdict.duration,
                             validation_error=ValidationError.METADATA_UNAVAILABLE if verdict.kind is AutoReviewKind.UNAVAILABLE else None,
                             approval_source=ApprovalSource.AUTO if approve else None, song_eligible=True if approve else None)
     return apply_review(cursor, control, command)
+
+
+def _conclusion(verdict: AutoReviewVerdict, video_id: str) -> DurationVerdict | None:
+    """@description: Reduce a verdict that measured a duration to its pass or reject conclusion.
+    @param verdict: Verdict computed outside the transaction.
+    @param video_id: Video the conclusion is about.
+    @return: Conclusion, or None for verdicts that measured nothing.
+    """
+    if verdict.duration is None:
+        return None
+    outcome = DurationEligibility.REJECT if verdict.kind is AutoReviewKind.DURATION_REJECT else DurationEligibility.PASS
+    return DurationVerdict(VideoIdentity(video_id), outcome)
+
+
+def _apply_retained(cursor: Any, control: dict, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict,
+                    approve: bool) -> ReviewSnapshot:
+    """@description: Apply a verdict so that official values exist only in the observation table, which is cleared as soon as the case is decided.
+    @param cursor: Cursor holding the writer gate.
+    @param control: Locked control row.
+    @param operation_id: Accepted operation.
+    @param expected_revision: Revision the lookup was made for.
+    @param verdict: Verdict computed outside the transaction.
+    @param approve: Whether this verdict also approves the song.
+    @return: The review after this call.
+    """
+    video_id = _current_request(cursor, operation_id, expected_revision).review.video.video_id
+    conclusion = _conclusion(verdict, video_id)
+    if conclusion is not None and verdict.observation is not None and conclusion.outcome is DurationEligibility.PASS:
+        record_observation(cursor, video_id, verdict.observation.duration_seconds, verdict.observation.channel_id)
+    command = ReviewCommand(f"auto-review:{video_id}:{expected_revision}", operation_id, SYSTEM_ACTOR_ID, verdict.public_reason, expected_revision,
+                            duration_verdict=conclusion,
+                            validation_error=ValidationError.METADATA_UNAVAILABLE if verdict.kind is AutoReviewKind.UNAVAILABLE else None,
+                            approval_source=ApprovalSource.AUTO if approve else None, song_eligible=True if approve else None)
+    review = apply_review(cursor, control, command)
+    if review.status in {ReviewStatus.APPROVED, ReviewStatus.REJECTED}:
+        purge_video(cursor, video_id, "completed")  # [decided]: The conclusion is stored; the values are no longer needed.
+    return review
+
+
+def refresh_observation(cursor: Any, operation_id: str, verdict: AutoReviewVerdict) -> bool:
+    """@description: Replace the expired values behind a pending review's passing conclusion, writing no review revision.
+    @param cursor: Cursor holding the writer gate.
+    @param operation_id: Accepted operation whose review rests only on an expired API conclusion.
+    @param verdict: Fresh verdict from the provider.
+    @return: True when the review is still waiting on an expired conclusion and the provider confirmed a pass, so new values were stored.
+    """
+    review = _current_request(cursor, operation_id, 0).review
+    passes = verdict.observation is not None and verdict.kind in {AutoReviewKind.AUTO_APPROVE, AutoReviewKind.DURATION_ONLY}
+    if not passes or review.status is not ReviewStatus.PENDING_REVIEW or not basis_expired(cursor, review):
+        return False
+    record_observation(cursor, review.video.video_id, verdict.observation.duration_seconds, verdict.observation.channel_id)
+    return True
 
 
 def pending_validation_rows(cursor: Any, limit: int, excluded_video_ids: tuple[str, ...] = ()) -> list[tuple[str, str]]:

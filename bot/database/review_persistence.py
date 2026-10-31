@@ -9,6 +9,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
+from bot.database.api_observations import basis_expired, require_unexpired_basis
 from bot.database.reward_settlement import current_decisions, persist_decisions
 from bot.database.persisted_snapshot import decode_current_identity, decode_current_review, fetch_all
 from bot.database.reward_history import audit_reward_history
@@ -18,7 +19,7 @@ from bot.decision_snapshot import DecisionSnapshot, require_unchanged_snapshot, 
 from bot.eligibility import DurationEvidence
 from bot.evidence_record import EvidenceRecord, EvidenceReliability, assess_evidence
 from bot.review import (
-    ApprovalSource, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
+    ApprovalSource, DurationVerdict, InvalidReviewTransition, ReviewSnapshot, ReviewStatus, StaleReviewVersion, ValidationError,
     reopen_for_reexamination,
 )
 from bot.song_identity import VideoIdentity
@@ -30,7 +31,7 @@ from bot.version_identity import RecordingVersionIdentity, VersionAssignment, Ve
 
 
 # [optional citations]: Unset citations are left out of the digest so decisions recorded before they existed still replay.
-OPTIONAL_CITATION_FIELDS = ("evidence_reference", "content_judgement", "expected_snapshot")
+OPTIONAL_CITATION_FIELDS = ("evidence_reference", "content_judgement", "expected_snapshot", "duration_verdict")
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class ReviewCommand:
     evidence_reference: str | None = None  # [decision citation]: Unset references keep older digests.
     content_judgement: ContentJudgement | None = None  # [content verdict]: Owner's song judgement an approval relied on.
     expected_snapshot: DecisionSnapshot | None = None  # [previewed facts]: Refuse the write when identity, canonical root or evidence moved.
+    duration_verdict: DurationVerdict | None = None  # [API conclusion]: Official-data path only; unset keeps every older digest replayable.
 
     def __post_init__(self) -> None:
         """@description: Reject malformed action identities and mutable-policy switches before persistence.
@@ -754,10 +756,13 @@ def _apply_transitions(cursor: Any, request: SubmissionRequest, command: ReviewC
     @return: Final review with every accepted intermediate revision audited.
     """
     # [validation revision]: Evidence/error transition must pass the original expected version.
-    validated = _review_request(replace(request, duration=command.duration, validation_error=command.validation_error))
+    validated = _review_request(replace(request, duration=command.duration, duration_verdict=command.duration_verdict,
+                                        validation_error=command.validation_error))
     if validated.version == request.review.version and (identity != request.identity or command.clear_conflict_freeze):
         validated = replace(validated, version=validated.version + 1)
     persist_review(cursor, validated, command.actor_id, reason, identity)
+    if command.approval_source is not None:
+        require_unexpired_basis(cursor, validated)  # [expired API basis]: Only a pending review is stopped; an approved one never returns here.
     # [approval revision]: AUTO and OWNER both use the existing hard gates, never direct field assignment.
     reviewed = _review_request(replace(request, review=validated, expected_review_version=validated.version,
                               approval_source=command.approval_source, song_eligible=command.song_eligible))
@@ -806,6 +811,7 @@ class PendingItem:
     conflict_reason: str | None  # [freeze explanation]: Cited contradiction, set only while the identity is CONFLICT.
     submitter_id: int = 0  # [submitter]: Discord user who submitted the operation, shown on the Owner's case card.
     duration_seconds: int | None = None  # [known duration]: Reliable full-video seconds, or None when no trustworthy duration exists.
+    api_basis: str | None = None  # [API duration basis]: "valid" or "expired" when the only duration basis is an official-data conclusion; otherwise None.
 
 
 @dataclass(frozen=True)
@@ -860,7 +866,7 @@ def _pending_item(cursor: Any, row: dict, review: ReviewSnapshot, identity: Vers
     """
     return PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status, review.version,
                        len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity), row["discord_user_id"],
-                       _known_duration_seconds(review))
+                       _known_duration_seconds(review), _api_basis(cursor, review))
 
 
 MAX_KNOWN_VERSIONS_PAGE = 10  # [page size cap]: Keeps the known-version list inside one Discord card.
@@ -904,6 +910,17 @@ def known_versions_page(cursor: Any, after_sequence: int | None, limit: int) -> 
         cursor, "SELECT accepted_sequence, video_id FROM jb2_events WHERE accepted_sequence = ANY(%s)", ([row["first_sequence"] for row in rows[:limit]],))}
     page = tuple(KnownVersion(row["version_id"], row["first_sequence"], first_videos[row["first_sequence"]], row["created_at"]) for row in rows[:limit])
     return KnownVersionPage(page, page[-1].first_sequence if len(rows) > limit else None)
+
+
+def _api_basis(cursor: Any, review: ReviewSnapshot) -> str | None:
+    """@description: Tell the card whether an official-data conclusion still backs the duration, since the seconds themselves are not kept.
+    @param cursor: Transaction-owned cursor.
+    @param review: Current review snapshot of the video.
+    @return: "expired" or "valid" when the review rests only on an API conclusion, otherwise None.
+    """
+    if review.duration is not None or review.duration_verdict is None:
+        return None
+    return "expired" if basis_expired(cursor, review) else "valid"
 
 
 def _known_duration_seconds(review: ReviewSnapshot) -> int | None:
