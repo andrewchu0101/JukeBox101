@@ -125,6 +125,14 @@ def test_an_unknown_settlement_commit_says_unconfirmed_not_paid() -> None:
     assert "未確認" in reply and "+1" not in reply
 
 
+def test_a_ready_candidate_while_settlement_is_on_is_not_described_as_switched_off() -> None:
+    """@description: With settlement enabled, a candidate still READY means its payment has not completed yet, which must not read as a disabled feature.
+    @return: None.
+    """
+    reply = format_share_outcome("discord:1", outcome(RewardCandidateStatus.READY, RewardDecisionReason.FIRST_ELIGIBLE, settlement_enabled=True))
+    assert "尚未開啟" not in reply and "尚未完成發放" in reply and "+1" not in reply
+
+
 def test_unknown_stored_reward_values_are_not_echoed() -> None:
     """@description: /history never prints an unrecognised database value.
     @return: None.

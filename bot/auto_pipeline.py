@@ -34,6 +34,7 @@ class PipelineOutcome:
     decision: RewardDecision  # [reward state]: Recomputed from committed facts.
     retry_later: bool = False  # [automatic retry]: The provider failed and the sweep will ask again.
     settlement_unknown: bool = False  # [uncertain money]: Repeated lost acknowledgements; the receipt decides later.
+    settlement_enabled: bool = False  # [money switch]: Whether this process was allowed to settle, so a READY reply can describe the real cause.
 
 
 class AutoPipeline:
@@ -73,7 +74,8 @@ class AutoPipeline:
         @return: Number of operations whose review step ran.
         """
         reviewed = 0
-        for operation_id, video_id in self._repository.pending_validation_operations(SWEEP_CANDIDATE_LIMIT):
+        paused_video_ids = self._paused_video_ids()
+        for operation_id, video_id in self._repository.pending_validation_operations(SWEEP_CANDIDATE_LIMIT, paused_video_ids):
             if reviewed >= SWEEP_LOOKUP_LIMIT or self._metadata_client is None:
                 break
             if self._monotonic() < self._paused_until.get(video_id, 0.0):
@@ -139,6 +141,14 @@ class AutoPipeline:
         self._replaying(lambda: self._repository.apply_auto_review(operation_id, subject.revision, verdict))
         return False
 
+    def _paused_video_ids(self) -> tuple[str, ...]:
+        """@description: Name the videos still inside their pause, so the sweep's read window only holds videos it can look up.
+        @param self: Pipeline.
+        @return: Paused video identifiers at this moment.
+        """
+        now = self._monotonic()
+        return tuple(video_id for video_id, until in self._paused_until.items() if now < until)
+
     def _pause(self, video_id: str) -> None:
         """@description: Avoid spending quota on the same held video at every sweep, keeping the pause table bounded.
         @param self: Pipeline.
@@ -171,7 +181,8 @@ class AutoPipeline:
         @return: Outcome.
         """
         review_status, decision = self._replaying(lambda: self._repository.reward_state(operation_id))
-        return PipelineOutcome(review_status, decision, retry_later, unknown and decision.status is RewardCandidateStatus.READY)
+        return PipelineOutcome(review_status, decision, retry_later, unknown and decision.status is RewardCandidateStatus.READY,
+                               settlement_enabled=self._settlement_enabled)
 
 
 REVIEW_TEXT = {  # [review line]: Plain language for each review state.
@@ -215,6 +226,8 @@ def _reward_text(outcome: PipelineOutcome, third_person: bool = False) -> str:
     if decision.status is RewardCandidateStatus.AWARDED:
         return "已為投稿者發放 +1 Nickel。" if third_person else "已發放 +1 Nickel。"
     if decision.status is RewardCandidateStatus.READY:
+        if outcome.settlement_enabled:
+            return "符合首次獎勵資格，系統尚未完成發放；目前未發放 Nickel。"
         return "符合首次獎勵資格，但自動發獎尚未開啟；目前未發放 Nickel。"
     return _WAITING_TEXT.get(decision.reason, "本次未發放 Nickel。")
 

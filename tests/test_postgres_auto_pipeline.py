@@ -448,3 +448,27 @@ def test_settlement_switch_off_never_pays_and_says_it_is_pending(world) -> None:
     assert outcome.decision.status is RewardCandidateStatus.READY
     assert "+1" not in format_share_outcome("discord:1", outcome)
     world.assert_books_balance(0)
+
+
+def held_lookup(video_id: str) -> MetadataLookup:
+    """@description: Build a live broadcast lookup, which is held without evidence and retried later.
+    @param video_id: Video identifier.
+    @return: Lookup for a live broadcast.
+    """
+    return MetadataLookup(LookupStatus.FOUND, VideoMetadata(video_id, TRUSTED, "10", "Live", "live", False, "processed", "public", 189, NOW))
+
+
+def test_held_videos_at_the_head_of_the_queue_do_not_starve_later_submissions(world) -> None:
+    """@description: Once the oldest candidates are all paused as held, later submissions still get looked up instead of waiting forever.
+    @param world: Automatic-mode database.
+    @return: None.
+    """
+    held_limit = 200  # [sweep window]: Equal to the pipeline's candidate read bound, so the window is full of paused videos.
+    for number in range(held_limit):
+        video_id = f"HOLD{number:07d}"
+        world.metadata.script[video_id] = held_lookup(video_id)
+        world.repository.accept_pending(ALICE, url(video_id), f"discord:held-{number}")
+    world.repository.accept_pending(BOB, url(VIDEO_A), "discord:later")
+    for _ in range(12):  # [enough sweeps]: Every held video is paused after ten sweeps at twenty lookups each.
+        world.pipeline.sweep()
+    assert world.repository.reward_state("discord:later")[0] is not ReviewStatus.PENDING_VALIDATION

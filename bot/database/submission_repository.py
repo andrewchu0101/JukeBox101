@@ -166,14 +166,15 @@ class SubmissionRepository:
         with submission_transaction(self._factory) as (cursor, control):
             return apply_verdict(cursor, control, operation_id, expected_revision, verdict)
 
-    def pending_validation_operations(self, limit: int) -> list[tuple[str, str]]:
+    def pending_validation_operations(self, limit: int, excluded_video_ids: tuple[str, ...] = ()) -> list[tuple[str, str]]:
         """@description: List operations whose video still waits for first validation, for the bounded sweep.
         @param self: Synchronous repository boundary.
         @param limit: Maximum rows read.
+        @param excluded_video_ids: Videos to leave out because they are paused; they never consume the read window.
         @return: Pairs of operation and video identifiers in acceptance order.
         """
         with submission_transaction(self._factory) as (cursor, _control):
-            return pending_validation_rows(cursor, limit)
+            return pending_validation_rows(cursor, limit, excluded_video_ids)
 
     def ready_operations(self) -> list[str]:
         """@description: Recompute the candidates that may be settled right now.

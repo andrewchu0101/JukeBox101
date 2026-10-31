@@ -68,15 +68,17 @@ def apply_verdict(cursor: Any, control: dict, operation_id: str, expected_revisi
     return apply_review(cursor, control, command)
 
 
-def pending_validation_rows(cursor: Any, limit: int) -> list[tuple[str, str]]:
-    """@description: List the oldest operation of each video still waiting for first validation.
+def pending_validation_rows(cursor: Any, limit: int, excluded_video_ids: tuple[str, ...] = ()) -> list[tuple[str, str]]:
+    """@description: List the oldest operation of each video still waiting for first validation, skipping videos that are paused.
     @param cursor: Cursor holding the writer gate.
     @param limit: Maximum rows read.
+    @param excluded_video_ids: Videos the sweep is pausing; excluded in SQL so they cannot fill the read window.
     @return: Pairs of operation and video identifiers in acceptance order.
     """
     rows = fetch_all(cursor, "SELECT e.operation_id,e.video_id,v.review_json,v.review_revision,v.review_status FROM jb2_events e "
-                             "JOIN jb2_videos v ON v.video_id=e.video_id WHERE v.review_status=%s "
-                             "ORDER BY e.accepted_sequence LIMIT %s", (ReviewStatus.PENDING_VALIDATION.value, limit))
+                             "JOIN jb2_videos v ON v.video_id=e.video_id WHERE v.review_status=%s AND NOT (e.video_id = ANY(%s::text[])) "
+                             "ORDER BY e.accepted_sequence LIMIT %s",
+                     (ReviewStatus.PENDING_VALIDATION.value, list(excluded_video_ids), limit))
     pending: dict[str, str] = {}  # [one lookup per video]: Later submitters of a video share its review.
     for row in rows:
         if _awaits_validation(decode_current_review(row)):
