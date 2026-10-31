@@ -16,7 +16,8 @@ from pathlib import Path
 from scripts.ci.check_junit import summarize
 
 TESTS = ('ci_safety_contract', 'release_request', 'github_notifications',
-         'deploy_controller', 'host_queue', 'cicd_smoke', 'cd_smoke_runner')
+         'deploy_controller', 'host_queue', 'cicd_smoke', 'cd_smoke_runner', 'foundation', 'repository')
+DATABASE_SCOPE = dict(driver_contract='not_run', real_connection='not_run', real_persistence='not_verified')
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -93,7 +94,8 @@ def rehearse(environment: dict, output: Path) -> dict:
     totals = offline(image_id, environment, output)
     subprocess.run([sys.executable, 'scripts/dev/verify-cd-docker.py'], cwd=ROOT,
                    env=dict(environment, TEST_IMAGE=image_id), check=True, timeout=240)
-    return dict(offline=totals, compose=json.loads((output / 'cd-docker.json').read_text()), image_id=image_id)
+    return dict(offline=totals, compose=json.loads((output / 'cd-docker.json').read_text()), image_id=image_id,
+                database=dict(DATABASE_SCOPE, driver_contract='passed_mock_boundary'))
 
 
 def main() -> None:
@@ -106,7 +108,8 @@ def main() -> None:
     for filename in ('cd-smoke.json', 'cd-smoke.xml', 'cd-docker.json'):
         (output / filename).unlink(missing_ok=True)
     started = time.monotonic()
-    receipt = dict(result='failed', scope='isolated deployment E2E simulation / CI/CD smoke test')
+    receipt = dict(result='failed', scope='isolated deployment E2E simulation / CI/CD smoke test',
+                   database=dict(DATABASE_SCOPE))
     try:
         environment = local_docker_environment()
         with tempfile.TemporaryDirectory(prefix='jb-cd-client-') as configuration:

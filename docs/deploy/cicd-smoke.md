@@ -30,6 +30,7 @@ TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke
 | Deploy gate | 使用 workflow 裡真正的 `resolve.if`，以假 context 驗證 CD=false／未設定、fork、失敗／取消的 Release、PR 來源都跳過。只支援目前使用的字串相等與 AND 語法；新語法會使測試失敗，需人工更新 reader |
 | skipped 通知 | 用合成 skipped jobs 經真正 publisher，確認顯示「未執行部署」，不宣稱上線；沒有讀寫 GitHub issue |
 | Release request | 真實 ZIP／JSON 解碼，加上假的 API endpoint；既有案例拒絕過期 source、錯誤 attempt、模糊／過期 artifact、路徑與輸出注入 |
+| DB 參數傳遞契約 | 沿用 `test_foundation.py` 與 `test_repository.py`，在驅動／cursor 邊界攔截呼叫，核對連線參數、TLS、SQL placeholders 與投稿／歷史／偏好資料值；模擬連線、查詢、commit 錯誤須傳回失敗。沒有送出真實 DB 請求，不證明 DB 收到或寫入 |
 | 通知分類 | CI／Release 各種 conclusion、Deploy 成功／skipped／失敗／取消／逾時、缺少／重複／不完整 jobs；既有測試確認通知失敗與去重。不能證明 Email 送達 |
 | 成功切換 | 真實持久 journal、假程序與真實 Compose service，確認 stop-before-start、唯一容器及合成 healthy |
 | 失敗回滾 | candidate unhealthy → rolled_back；舊版也 unhealthy → rollback_failed，後續新請求被鎖住；回滾不等於部署成功 |
@@ -51,6 +52,18 @@ TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke
 - `ci-evidence/cd-docker.json`：三個 Compose 情境、replay／retry／overlap 與 cleanup 證據；任一情境失敗不產生成功報告。
 - `ci-evidence/cd-smoke.json`：整體結果與耗時；即使未完成也記為 failed，程序非零退出。
 
+資料庫驗證另列 `database` 欄位，即使整體模擬為 passed，也不能視為真實 Database 測試通過：
+
+```json
+{
+  "driver_contract": "passed_mock_boundary",
+  "real_connection": "not_run",
+  "real_persistence": "not_verified"
+}
+```
+
+`driver_contract` 只在選定的離線契約測試及演練完成後標為 mock 邊界通過；未完成則維持 `not_run`。它驗證程式送往驅動介面的參數，沒有證明網路傳輸、Database 接收、SQL 在真實 schema 可執行或資料落盤。沒有 Database log／接收端證據的部分，明確保留未驗證；不以「程式呼叫成功」或模擬 commit 冒充實際寫入。
+
 報告不入版控。CI 既有 artifact 步驟保存離線 JUnit 與 Compose JSON。這些結果不能證明實際 GitHub 權限／環境保護、GHCR 簽章、SSH 或 production adapter 可運作，也不代表正式部署已驗收。
 
 同一 checkout 共用報告路徑，請依序執行；不同 checkout 可獨立演練。Compose 情境共用 90 秒 active-work 期限，逾時以取消方式進入清理，不把取消當作 candidate failure 重試。清理暫停這個期限，另以 30 秒 down＋10 秒殘留查核的上限執行，再恢復未用完的期限。SIGKILL、主機斷電或 daemon 無回應仍可能阻斷清理；此時不會宣稱通過，應依日誌中的隨機 project 名稱核對殘留，不執行廣泛 prune。
@@ -65,8 +78,9 @@ TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke
 
 環境：macOS Docker Desktop、本地 Unix socket、Python 3.12 非 root 測試容器。建置使用公開 Python base image 與既有釘選測試依賴；沒有 DB service。
 
-- `TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke`：**153 Passed、零 failure／error／skip，整體 69.04 秒**，不含映像建置。
-- `TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.offline`：最終 **2,142 Passed、108 個 postgres 案例 deselected、零 failure／error／skip，59.65 秒**；沒有執行 DB migration。
+- 初版短入口：153 Passed、零 failure／error／skip，69.04 秒，不含映像建置。
+- 補上 DB 契約與驗證範圍後，`TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.cd_smoke`：**195 Passed、零 failure／error／skip，70.90 秒**，不含映像建置。報告為 `driver_contract=passed_mock_boundary`、`real_connection=not_run`、`real_persistence=not_verified`；不是 DB 收到或寫入成功。
+- 前輪 `TEST_IMAGE=jukebox101-test:cd-smoke-local python3 -m scripts.ci.offline`：**2,142 Passed、108 個 postgres 案例 deselected、零 failure／error／skip，59.65 秒**；沒有執行 DB migration。本次報告分類調整後只重跑受影響的短入口，未重跑完整離線回歸。
 - 真實 Compose：`succeeded`、`rolled_back`、`rollback_failed` 全部符合預期；三個 project 的 `cleanup=verified`，額外掃描 lab 標籤也沒有殘留。
 - 回滾後的新 run 重試成功；回滾失敗後的新 run 被拒絕；重複／衝突／過期／同 run 新 attempt 不改變容器 ID 與 lifecycle events；重疊啟動被拒絕。
 - `git diff --check`、新增／修改函式長度與 docstring 檢查、codebase safety config strict validation 通過。四份 workflow、`deploy/`、Bot、schema／migration、依賴檔均無差異。

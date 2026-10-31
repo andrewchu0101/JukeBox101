@@ -152,7 +152,7 @@ git status
 
 ### CI／CD
 
-想先安全驗證協作流程，可執行 [CI/CD 快速隔離演練](docs/deploy/cicd-smoke.md)：一個短指令測試假 receipt、workflow gate、通知分類與隔離 Compose 切換／回滾，無須正式服務或秘密；這是 deployment E2E simulation，不是 production E2E。
+想先安全驗證協作流程，可執行 [CI/CD 快速隔離演練](docs/deploy/cicd-smoke.md)：一個短指令測試假 receipt、workflow gate、通知分類與隔離 Compose 切換／回滾，無須正式服務或秘密；這是 deployment E2E simulation，不是 production E2E。DB 參數傳遞以既有 mock 契約測試驗證，真實連線／接收／寫入另標為未執行或未驗證。
 
 PR 自動測試；合併 main 後，Release 對同一份 runtime 執行離線、PostgreSQL 18／17 與 TLS 驗證，再發布 GHCR 與來源證明。正式驗收與啟用後，Deploy 在 Release 完成後自動進行受限主機部署，不需逐次人工核准；主機獨立驗證、先停舊版再啟動唯一新版，失敗時嘗試一次回滾。
 

@@ -101,7 +101,8 @@
     ],
     "tests": [
       "pytest offline with no network; opt-in disposable postgres tests",
-      "Focused policy tests use fake CLI and Docker boundaries; these do not prove real signature/daemon acceptance"
+      "Focused policy tests use fake CLI and Docker boundaries; these do not prove real signature/daemon acceptance",
+      "Quick smoke includes existing DB driver/cursor contract tests; report real_connection=not_run and real_persistence=not_verified even when the isolated simulation passes"
     ],
     "notes": ""
   },
@@ -173,6 +174,10 @@
     {
       "fact": "Short isolated deployment simulation with truthful failure evidence, no database or remote Docker",
       "source": "scripts/ci/cd_smoke.py#main"
+    },
+    {
+      "fact": "Mock DB parameter-forwarding proof is separate from unverified live connection and persistence",
+      "source": "scripts/ci/cd_smoke.py#DATABASE_SCOPE"
     }
   ]
 }

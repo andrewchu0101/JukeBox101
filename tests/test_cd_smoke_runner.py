@@ -59,8 +59,26 @@ def test_failed_layer_overwrites_stale_pass_evidence(monkeypatch, tmp_path):
     monkeypatch.setattr(cd_smoke, 'rehearse', Mock(side_effect=RuntimeError('synthetic failure')))
     with pytest.raises(RuntimeError, match='synthetic failure'):
         cd_smoke.main()
-    assert json.loads((output / 'cd-smoke.json').read_text())['result'] == 'failed'
+    receipt = json.loads((output / 'cd-smoke.json').read_text())
+    assert receipt['result'] == 'failed'
+    assert receipt['database'] == dict(driver_contract='not_run', real_connection='not_run', real_persistence='not_verified')
     assert not (output / 'cd-smoke.xml').exists() and not (output / 'cd-docker.json').exists()
+
+
+def test_successful_simulation_does_not_claim_real_database_verification(monkeypatch, tmp_path):
+    """@description: Passing isolated layers proves only the mock driver contract, never real transport or storage.
+    @param monkeypatch: Replace execution boundaries; no daemon or database is contacted.
+    @param tmp_path: Private synthetic Compose evidence directory.
+    @return: None; a green simulation must retain unverified live database fields.
+    """
+    (tmp_path / 'cd-docker.json').write_text('[]')
+    monkeypatch.setattr(cd_smoke.subprocess, 'check_output', Mock(return_value='sha256:' + 'a' * 64))
+    monkeypatch.setattr(cd_smoke.subprocess, 'run', Mock(return_value=subprocess.CompletedProcess([], 0)))
+    monkeypatch.setattr(cd_smoke, 'offline', Mock(return_value={'result': 'passed'}))
+    receipt = cd_smoke.rehearse({}, tmp_path)
+    assert 'foundation' in cd_smoke.TESTS and 'repository' in cd_smoke.TESTS
+    assert receipt['database'] == dict(driver_contract='passed_mock_boundary',
+                                       real_connection='not_run', real_persistence='not_verified')
 
 
 def test_failed_pytest_still_removes_only_its_container(monkeypatch, tmp_path):
