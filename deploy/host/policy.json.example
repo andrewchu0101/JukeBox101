@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "enabled": false,
+  "crypto_acceptance_verified": false,
+  "docker_acceptance_verified": false,
+  "baseline_supports_gateway_health": false,
+  "application_id": "1559751168723521576",
+  "compose_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "env_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "network_names": ["REVIEW_EXISTING_EGRESS", "REVIEW_EXISTING_DATABASE_NETWORK"],
+  "secret_paths": {
+    "discord_bot_token": "/etc/jukebox101/secrets/discord_bot_token.txt",
+    "db_password": "/etc/jukebox101/secrets/db_password.txt",
+    "db_ca.crt": "/etc/jukebox101/db_ca.crt"
+  },
+  "approved_blobs": {}
+}

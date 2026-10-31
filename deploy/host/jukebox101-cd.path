@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch the JukeBox101 durable deployment queue
+
+[Path]
+PathChanged=/var/lib/jukebox101-cd/requests
+Unit=jukebox101-cd.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,164 @@
+{
+  "$schema": "safely-modify-codebase/v1",
+  "status": "ready",
+  "project": {
+    "name": "JukeBox101",
+    "purpose": "Single-instance Discord music submission and Owner review Bot on PostgreSQL",
+    "repo_root": ".",
+    "last_reviewed": "2026-10-31"
+  },
+  "instructions": {
+    "files": [
+      "CLAUDE.md",
+      "CODING_STANDARD.md"
+    ],
+    "precedence_notes": []
+  },
+  "stack": {
+    "languages": [
+      "Python 3.12",
+      "YAML",
+      "SQL"
+    ],
+    "frameworks": [
+      "discord.py",
+      "psycopg 3",
+      "pytest",
+      "Docker Compose",
+      "GitHub Actions"
+    ],
+    "package_managers": [
+      "pip"
+    ]
+  },
+  "commands": {
+    "install": [
+      "python -m pip install -r requirements-test.txt"
+    ],
+    "test": [
+      "docker build -f test.Dockerfile -t jukebox101-test:v7-local .",
+      "python3 -m scripts.ci.offline",
+      "python3 -m scripts.ci.runtime_smoke",
+      "python3 scripts/dev/verify-fresh-postgres.py"
+    ],
+    "lint": [],
+    "typecheck": [],
+    "build": [
+      "docker build --platform linux/amd64 -t jukebox101-runtime:ci ."
+    ],
+    "notes": "Python is constrained to 3.12. No standalone linter/typecheck is configured in pyproject.toml. Tests must run as non-root; Docker test.Dockerfile provides UID 10002."
+  },
+  "architecture": {
+    "entry_points": [
+      "bot/__main__.py#main",
+      ".github/workflows/ci.yml",
+      "deploy/host_ingress.py#main",
+      "deploy/host_worker.py#main"
+    ],
+    "feature_roots": [
+      "bot/",
+      "deploy/",
+      "scripts/ci/"
+    ],
+    "shared_modules": [
+      "bot/config.py",
+      "scripts/ci/runtime_smoke.py#assert_bot_policy",
+      "deploy/controller.py",
+      "deploy/receipt.py"
+    ],
+    "state_and_data": [
+      "bot/database/postgres/",
+      "deploy/journal.py",
+      "deploy/queue.py"
+    ],
+    "external_integrations": [
+      "Discord Gateway",
+      "PostgreSQL with TLS verify-full",
+      "GHCR",
+      "GitHub attestation verification",
+      "Fixed local Docker socket via host worker"
+    ]
+  },
+  "conventions": {
+    "patterns": [
+      "Stop old Gateway and confirm exit before starting candidate or rollback",
+      "Atomic fsync journal and numeric run/attempt idempotency",
+      "Fixed root-owned configuration with default-deny deployment gates"
+    ],
+    "naming": [
+      "snake_case functions, UPPER_SNAKE_CASE constants"
+    ],
+    "error_handling": [
+      "Boundary failures use safe categories without captured credential-bearing output"
+    ],
+    "logging": [
+      "Do not print expanded Compose/environment/secrets"
+    ],
+    "tests": [
+      "pytest offline with no network; opt-in disposable postgres tests",
+      "Focused policy tests use fake CLI and Docker boundaries; these do not prove real signature/daemon acceptance"
+    ],
+    "notes": ""
+  },
+  "protected_areas": [
+    {
+      "path_or_symbol": "bot/database/postgres/",
+      "reason": "Production schema and stored snapshot compatibility",
+      "invariants": [
+        "CD never applies or restores database migrations",
+        "Host pins every schema blob; new migrations require review"
+      ]
+    },
+    {
+      "path_or_symbol": "deploy/",
+      "reason": "Controls live Gateway lifecycle and secret-bearing container",
+      "invariants": [
+        "One Gateway; stop-before-start; bounded rollback",
+        "Formal exchange and claim remain off",
+        "Do not alter Office, DNS, firewall, database containers, or credentials"
+      ]
+    }
+  ],
+  "change_policy": {
+    "prefer_local_changes": true,
+    "require_consumer_search_for_shared_changes": true,
+    "forbid_unrelated_refactors": true,
+    "require_baseline_before_edit": true,
+    "preferred_max_files_per_step": 5
+  },
+  "verification": {
+    "minimum_after_change": [
+      "focused tests for changed behavior",
+      "consumer regression checks for shared changes",
+      "final diff and git status review"
+    ],
+    "manual_checks": [
+      "Inspect production bootstrap compatibility and Gateway inventory before enabling host gates",
+      "Verify real GHCR provenance and isolated Docker deployment/rollback before enabling CD"
+    ],
+    "notes": ""
+  },
+  "known_unknowns": [
+    "Production SSH account currently cannot operate Docker",
+    "Actual production configuration, database target and compatible last-known-good image require current inventory",
+    "GitHub environment reviewers and branch protections require repository administrator permissions"
+  ],
+  "evidence": [
+    {
+      "fact": "Single Gateway entrypoint and shutdown health invalidation",
+      "source": "bot/__main__.py#_run_gateway"
+    },
+    {
+      "fact": "No data migrations in CD; reviewed schema blob set",
+      "source": "deploy/receipt.py#GithubReceiptVerifier._verify_tree"
+    },
+    {
+      "fact": "Combined Gateway/DB Docker healthcheck",
+      "source": "compose.yaml"
+    },
+    {
+      "fact": "Production gates fail closed",
+      "source": "deploy/host_worker.py#require_enabled"
+    }
+  ]
+}

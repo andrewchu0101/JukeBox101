@@ -1,0 +1,10 @@
+[Unit]
+Description=Recover JukeBox101 queued deployments after boot or worker interruption
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+Unit=jukebox101-cd.service
+
+[Install]
+WantedBy=timers.target

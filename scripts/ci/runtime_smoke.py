@@ -51,6 +51,8 @@ def compose_policy() -> None:
         for name in ('discord_bot_token.txt', 'db_password.txt', 'db_migrator_password.txt', 'ca.crt'):
             (root / name).write_text('SYNTHETIC-CI-ONLY')
         environment = {'PATH': os.environ['PATH'], 'HOME': directory,
+                       # Docker Desktop discovers its Compose plugin through this client config path.
+                       'DOCKER_CONFIG': os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker')),
                        'DB_HOST': 'postgres.invalid', 'JB_SECRET_DIR': directory, 'JB_DB_CA_FILE': str(root / 'ca.crt'),
                        'DISCORD_EXPECTED_APPLICATION_ID': '789001', 'DISCORD_OWNER_USER_ID': '123',
                        'JUKEBOX_FORMAL_EXCHANGE': 'off', 'JUKEBOX_NICKEL_CLAIM': 'off',

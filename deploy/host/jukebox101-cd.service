@@ -1,0 +1,20 @@
+[Unit]
+Description=JukeBox101 verified deployment queue worker
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+ConditionPathExists=/etc/jukebox101/cd-policy.json
+ConditionPathExists=/var/lib/jukebox101-cd/journal.json
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/usr/local/lib/jukebox101-cd
+ExecStart=/usr/bin/python3 -B -E -s -m deploy.host_worker
+TimeoutStartSec=20min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/jukebox101-cd
