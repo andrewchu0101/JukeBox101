@@ -74,7 +74,7 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
 | 後備（選用） | 主機的排程執行 `python -m bot.api_retention purge --apply` | 即使 Bot 停止也能清除；是否採用要看夥伴能否設定排程 |
 | 刷新 | 只刷新**仍在等待決定**的案件，第 10 天一次，最多 50 個影片一個請求；已完成案件完成後 1 天內清除、不再呼叫 API | 配額幾乎可忽略 |
 | 時間 | 全部以資料庫時間（`statement_timestamp()`）判斷，不用 VPS 時鐘 | 避免時鐘偏差讓資料多留 |
-| 預設 | CLI 預設預覽，需明確 `--apply` | 與既有 `settlement-switch` 一致 |
+| 預設 | **只有手動 CLI 預設預覽**，需明確 `--apply` 才執行，與既有 `settlement-switch` 一致。**背景清除不是預覽**：Bot 的每日清除與啟動前清除直接執行，因為清除只把已到期的數值設為 NULL（不碰人工資料、帳本、回執），且只在 Bot 開啟 `JUKEBOX_API_RETENTION_PURGE`（草案名稱，尚未存在）時；若要關掉自動清除，到期資料仍會因第 2.2 節的查詢條件被視為不存在 | 預覽是給人工操作的保護，不應讓到期資料因為「只預覽」而留著 |
 
 ### 2.2 失敗時阻止採信過期資料（不改既有 readiness 契約）
 
