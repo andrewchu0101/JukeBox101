@@ -150,6 +150,12 @@ git status
 - **功能旗標**：`JUKEBOX_FORMAL_EXCHANGE`、`JUKEBOX_NICKEL_CLAIM`、`JUKEBOX_AUTO_REVIEW`、`JUKEBOX_AUTO_SETTLEMENT`、`JUKEBOX_API_RETENTION` 預設 off。
 - **部署限制**：只能執行單一 Gateway 實例。
 
+### CI／CD
+
+PR 自動測試；合併 main 後，Release 對同一份 runtime 執行離線、PostgreSQL 18／17 與 TLS 驗證，再發布 GHCR 與來源證明。Deploy 在 Release 完成後才進入 production 審查及受限主機部署；主機獨立驗證、先停舊版再啟動唯一新版，失敗時嘗試一次回滾。
+
+**正式自動部署預設關閉。** 安裝檔、設定位置、首次 baseline、必要權限與驗收步驟見 [持續部署手冊](docs/deploy/continuous-deployment.md)。合併 workflow 不等於主機已安裝或正式 CD 已驗收。CD 不會套用 migration、還原 DB、同步 Discord 指令或開啟交換／領點。
+
 ### 開發與測試
 
 測試在 Python 3.12 容器中執行（`test.Dockerfile`，僅供開發使用）：

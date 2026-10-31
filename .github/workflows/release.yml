@@ -1,0 +1,82 @@
+name: Release
+
+'on':
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  verify:
+    if: github.repository == 'andrewchu0101/JukeBox101'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      export_runtime: true
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/andrewchu0101/jukebox101
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: runtime-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ci-runtime
+      - name: Load and tag the exact tested image without rebuilding
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_id="$(cat ci-runtime/image-id.txt)"
+          [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker load --input ci-runtime/image.tar
+          test "$(docker image inspect --format '{{.Id}}' "$image_id")" = "$image_id"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_id")" = "$GITHUB_SHA"
+          docker tag "$image_id" "$IMAGE:$GITHUB_SHA"
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the tested image and bind its registry digest
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE:$GITHUB_SHA"
+          reference="$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$GITHUB_SHA")"
+          [[ "$reference" == "$IMAGE@"* ]]
+          digest="${reference##*@}"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest the immutable image using GitHub OIDC
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: ghcr.io/andrewchu0101/jukebox101
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+      - name: Write the bounded deployment receipt
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir release-receipt
+          python3 - <<'PY'
+          import json, os, pathlib
+          receipt = dict(version=1, commit=os.environ['GITHUB_SHA'], digest=os.environ['DIGEST'],
+                         run=int(os.environ['GITHUB_RUN_ID']), attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
+          pathlib.Path('release-receipt/release.json').write_text(json.dumps(receipt) + '\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-receipt/release.json
+          if-no-files-found: error
+          retention-days: 30

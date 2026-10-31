@@ -32,9 +32,9 @@ services:
       start_period: 1m
     environment:
       DB_HOST: ${DB_HOST:?root-managed database hostname required}
-      DB_PORT: '5432'
-      DB_NAME: jukebox101
-      DB_USER: jukebox101_app
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-jukebox101}
+      DB_USER: ${DB_USER:-jukebox101_app}
       DB_SSLMODE: verify-full
       DB_SSLROOTCERT: /run/secrets/db_ca.crt
       DB_PASSWORD_FILE: /run/secrets/db_password

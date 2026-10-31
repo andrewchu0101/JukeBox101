@@ -1,0 +1,4 @@
+#!/bin/sh
+# Python ignores caller Python variables and imports only from this root-owned tree.
+cd /usr/local/lib/jukebox101-cd || exit 2
+exec /usr/bin/python3 -B -E -s -m deploy.host_ingress
