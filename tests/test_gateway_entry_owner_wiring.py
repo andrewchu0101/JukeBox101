@@ -204,12 +204,13 @@ def test_non_owner_and_wrong_guild_get_the_same_refusal(wired, user_id, guild_id
 
 
 def test_owner_in_the_private_guild_reaches_the_entry_service(wired):
-    """@description: The Owner in the private guild lists the seeded operation through the production wiring.
+    """@description: The Owner in the private guild opens the seeded case as a card through the production wiring, without seeing its internal id.
     @param wired: Production client and offline collaborators.
     @return: None.
     """
     listing = _list_as(wired.client, int(OWNER_ID), GUILD_ID)
-    assert any(OPERATION_ID in str(call[1]) for call in listing.followup.calls)
+    shown = " ".join(str(call[1]) for call in listing.followup.calls)
+    assert "待處理案件" in shown and "<@" in shown and OPERATION_ID not in shown
 
 
 def test_expired_preview_is_refused_and_writes_nothing(wired):

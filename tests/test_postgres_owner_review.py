@@ -19,7 +19,7 @@ from bot.version_identity import VersionIdentityStatus
 from tests.postgres_support import admin_query
 from tests.test_owner_e2e_acceptance import (CITATION_A, OWNER_ID, SOURCE_INTERACTION_ID, TOKEN_TTL, Clock, approve_through_discord,
                                              command_group, confirm_version_through_discord, owner_command, press_confirm, seed,
-                                             submitter_of)
+                                             seed_metadata_unavailable, submitter_of)
 
 pytestmark = pytest.mark.postgres
 
@@ -124,3 +124,16 @@ def test_owner_reads_pending_operations_through_the_app_role_and_a_non_owner_is_
     assert [item.operation_id for item in page.items] == ["op-1", "op-2"]
     with pytest.raises(PermissionError):
         service.list_pending(OWNER_ID + 1)
+
+
+def test_pending_rows_carry_the_submitter_and_the_known_duration_for_the_case_card(pg_world):
+    """@description: The Owner queue shows who submitted each case and its full-video duration, or none when the duration is unknown.
+    @param pg_world: PostgreSQL repository and service.
+    @return: None.
+    """
+    database, repository, service = pg_world
+    seed(repository, 1, 180)
+    seed_metadata_unavailable(repository, 2)
+    first, second = service.list_pending(OWNER_ID).items
+    assert (first.submitter_id, first.duration_seconds) == (submitter_of(1), 180)
+    assert (second.submitter_id, second.duration_seconds) == (submitter_of(2), None)

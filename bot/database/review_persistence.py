@@ -803,6 +803,8 @@ class PendingItem:
     revision: int  # [expected revision]: The value a later preview and confirmation must present.
     evidence_count: int  # [audit size]: Owner evidence records stored for the video.
     conflict_reason: str | None  # [freeze explanation]: Cited contradiction, set only while the identity is CONFLICT.
+    submitter_id: int = 0  # [submitter]: Discord user who submitted the operation, shown on the Owner's case card.
+    duration_seconds: int | None = None  # [known duration]: Reliable full-video seconds, or None when no trustworthy duration exists.
 
 
 @dataclass(frozen=True)
@@ -818,7 +820,7 @@ def pending_review_items(cursor: Any) -> tuple[PendingItem, ...]:
     @param cursor: Transaction-owned cursor holding the writer gate.
     @return: Pending items with counts and conflict reasons; clean terminal reviews are omitted.
     """
-    rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.video_id,v.identity_json,v.review_json,"
+    rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.discord_user_id,e.video_id,v.identity_json,v.review_json,"
                              "v.review_revision,v.review_status FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
                              "ORDER BY e.accepted_sequence")
     items = []
@@ -828,8 +830,20 @@ def pending_review_items(cursor: Any) -> tuple[PendingItem, ...]:
         if not _awaits_owner(review.status, identity.status):
             continue
         items.append(PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status,
-                                 review.version, len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity)))
+                                 review.version, len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity),
+                                 row["discord_user_id"], _known_duration_seconds(review)))
     return tuple(items)
+
+
+def _known_duration_seconds(review: ReviewSnapshot) -> int | None:
+    """@description: Show a duration on the Owner's card only when it is reliable and covers the full video, so a card never presents a guess.
+    @param review: Current review snapshot of the video.
+    @return: Whole seconds, or None when no trustworthy full-video duration exists.
+    """
+    duration = review.duration
+    if duration is None or not (duration.reliable and duration.full_video) or type(duration.seconds) is not int:
+        return None
+    return duration.seconds
 
 
 def page_pending(items: tuple[PendingItem, ...], after_sequence: int | None, limit: int) -> PendingPage:

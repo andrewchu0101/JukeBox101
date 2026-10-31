@@ -366,13 +366,14 @@ class OwnerReviewGroup(app_commands.Group):
     """Own the guild-scoped Owner command group, routing each subcommand through the gate and worker threads."""
 
     def __init__(self, service_provider: Callable[[], OwnerReviewService], owner_id: int, guild_id: int,
-                 now: Callable[[], datetime]) -> None:
+                 now: Callable[[], datetime], card_presenter=None) -> None:
         """@description: Register the group for one private Guild and bind the Owner, service provider and clock.
         @param self: Command group instance.
         @param service_provider: Returns the review service; called on the event-loop thread, then used on workers.
         @param owner_id: Configured Owner Discord user snowflake.
         @param guild_id: The one private Guild where the group is registered.
         @param now: Clock used to stamp owner judgements and evidence.
+        @param card_presenter: Optional case-card handler that /owner list uses instead of the text list.
         @return: None.
         """
         # [menu visibility]: No member permission by default hides the group from ordinary members; the backend Owner gate still decides.
@@ -381,14 +382,18 @@ class OwnerReviewGroup(app_commands.Group):
         self._gate = OwnerGate(owner_id, guild_id)  # [authorization gate]: Applied before every callback and button press.
         self._service_provider = service_provider  # [service access]: Returns the process-wide review service.
         self._now = now  # [judgement clock]: Stamps content judgements and evidence records.
+        self._card_presenter = card_presenter  # [case cards]: None keeps the compact text list.
 
     @app_commands.command(name="list", description="列出待處理案件")
     async def list_pending(self, interaction: discord.Interaction) -> None:
-        """@description: Show the Owner the accepted operations waiting for review.
+        """@description: Show the Owner the accepted operations waiting for review, as a case card when cards are wired.
         @param self: Command handler.
         @param interaction: Owner's slash-command interaction.
         @return: None.
         """
+        if self._card_presenter is not None:
+            await self._serve(interaction, partial(self._card_presenter.first_replies, interaction.user.id))
+            return
         await self._serve(interaction, partial(_pending_page_replies, self._gate, self._service_provider, interaction.user.id, _PageCursor(None)))
 
     @app_commands.command(name="show", description="查看案件審核與證據")
@@ -573,15 +578,16 @@ class OwnerReviewGroup(app_commands.Group):
 
 
 def build_owner_group(service_provider: Callable[[], OwnerReviewService], owner_id: int, guild_id: int,
-                      now: Callable[[], datetime]) -> app_commands.Group:
+                      now: Callable[[], datetime], card_presenter=None) -> app_commands.Group:
     """@description: Assemble the guild-scoped Owner command group whose callbacks are all gated.
     @param service_provider: Returns the review service; called on the event-loop thread, then used on workers.
     @param owner_id: Configured Owner Discord user snowflake.
     @param guild_id: The one private Guild where the group is registered.
     @param now: Clock for judgement and evidence timestamps.
+    @param card_presenter: Optional case-card handler; when given, /owner list opens a case card instead of the text list.
     @return: Owner command group ready to add to the command tree.
     """
-    return OwnerReviewGroup(service_provider, owner_id, guild_id, now)
+    return OwnerReviewGroup(service_provider, owner_id, guild_id, now, card_presenter)
 
 
 async def _call_service[T](service_provider: Callable[[], OwnerReviewService], operation: Callable[[OwnerReviewService], T]) -> T:

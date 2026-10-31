@@ -87,7 +87,7 @@ Nickel 只因投稿的歌曲資格而發放，與觀看、按讚、訂閱或留�
 
 | 指令 | 用途 | 狀態 |
 |---|---|---|
-| `/owner list` | 列出待處理案件 | 已上線 |
+| `/owner list` | 開啟待處理案件卡片（無參數）：顯示投稿者、影片、時長與狀態，按「確認通過」「拒絕」「下一筆」即可處理，不需要案件編號 | 已開發，待部署 |
 | `/owner show operation:<案件>` | 查看案件證據與歷程 | 已上線 |
 | `/owner approve operation:<案件> citation:<引用> reason:<理由>` | 核准為歌曲 | 已上線 |
 | `/owner reject operation:<案件> citation:<引用> reason:<理由>` | 拒絕 | 已上線 |
@@ -97,7 +97,7 @@ Nickel 只因投稿的歌曲資格而發放，與觀看、按讚、訂閱或留�
 
 待部署且開啟發獎模式後，確認會在回覆中說明結算結果或尚待條件；Owner 不需操作 ledger 或輸入內部狀態。
 
-Owner 最短流程與啟用步驟見 [自動審核與發獎部署](docs/deploy/auto-review-nickel-enable.md)。
+Owner 最短流程與啟用步驟見 [自動審核與發獎部署](docs/deploy/auto-review-nickel-enable.md)；案件卡片的規格與限制見 [Owner 待審案件卡片](docs/owner-case-cards.md)。
 
 ## 開發者說明（dev）
 

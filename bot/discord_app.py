@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable
 import discord
 from discord import app_commands
 
+from bot.discord_owner_cards import OwnerCards
 from bot.discord_owner_review import build_owner_group
 from bot.owner_review import OwnerReviewService
 from bot.discord_exchange import DiscordDirectMessageSender, DiscordEphemeralReplier
@@ -77,8 +78,10 @@ class JukeBoxClient(discord.Client):
         self.handlers = CommandHandlers(service)
         register_commands(self.tree, self.handlers, include_claim=getattr(service, "nickel_claim_enabled", False) is True)
         if owner_review is not None:
+            owner_cards = OwnerCards(owner_review.service_provider, owner_review.owner_id, owner_review.guild_id, owner_review.now)
+            self.add_dynamic_items(owner_cards.button_class)  # [restart-safe cards]: Registers the button class only; no login, sync or scheduling happens here.
             self.tree.add_command(build_owner_group(owner_review.service_provider, owner_review.owner_id,
-                                                    owner_review.guild_id, owner_review.now))
+                                                    owner_review.guild_id, owner_review.now, owner_cards))
 
 
 @dataclass(frozen=True)
