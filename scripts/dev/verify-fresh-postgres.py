@@ -49,8 +49,19 @@ class DockerLab:
         result = subprocess.run([self.docker, *arguments], input=source, text=True,
                                 capture_output=True, timeout=900)
         if check and result.returncode:
+            print(f'Docker step {arguments[0]!r} failed with exit code {result.returncode}', file=sys.stderr)
+            print('stdout (redacted tail):\n' + self.redact(result.stdout), file=sys.stderr)
+            print('stderr (redacted tail):\n' + self.redact(result.stderr), file=sys.stderr)
             raise RuntimeError(f'Docker {arguments[0]} failed ({result.returncode})')
         return result
+
+    def redact(self, text):
+        """@description: Hide the lab password in captured Docker output and keep only its last 2000 characters for evidence.
+        @param self: Disposable lab.
+        @param text: Raw stdout or stderr text.
+        @return: Redacted tail safe to print.
+        """
+        return text.replace(self.password, '<redacted>')[-2000:]
 
     def create(self):
         """@description: Start one marked test database with no host ports or Internet route.
@@ -84,7 +95,8 @@ class DockerLab:
         @return: Shared Docker network and environment arguments.
         """
         return ['--network', self.network, '-e', 'JB_PG_TEST_HOST=postgres',
-                '-e', 'JB_PG_TEST_ADMIN_USER=postgres', '-e', 'JB_PG_TEST_ADMIN_PASSWORD=' + self.password]
+                '-e', 'JB_PG_TEST_ADMIN_USER=postgres', '-e', 'JB_PG_TEST_ADMIN_PASSWORD=' + self.password,
+                '-e', 'JB_EXPECTED_SERVER_VERSION_NUM=' + self.expected_version_num]
 
     def postgres_tests(self, output):
         """@description: Preserve JUnit even when pytest fails, with a non-decreasing coverage floor.
