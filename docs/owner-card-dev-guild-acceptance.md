@@ -23,7 +23,7 @@
 
 ## 二、最短驗收清單（開發伺服器）
 
-前置：開發應用程式與開發伺服器、可丟棄資料庫（不是正式的）、`DISCORD_OWNER_GUILD_ID` 指向開發伺服器、自動審核與發獎開關維持預設或僅在可丟棄資料庫開啟。**指令同步由 Owner 親自執行**（`python -m bot.command_sync preview`，再 `apply --target owner-guild`），本文件不代為操作。準備至少 3 筆案件：一筆歌曲待審核、一筆已核准但版本未確認、一筆缺時長。
+前置：開發應用程式與開發伺服器、可丟棄資料庫（不是正式的）、`DISCORD_OWNER_GUILD_ID` 指向開發伺服器、自動審核與發獎開關維持預設或僅在可丟棄資料庫開啟。**指令同步由 Owner 親自執行**（`python -m bot.command_sync preview`，再依第 4.4 節 `apply` **兩個範圍**：`global` 與 `owner-guild`），本文件不代為操作。準備至少 3 筆案件：一筆歌曲待審核、一筆已核准但版本未確認、一筆缺時長。
 
 | # | 動作 | 預期結果 | 通過 |
 | --- | --- | --- | --- |
@@ -77,7 +77,7 @@
 | --- | --- | --- | --- |
 | 0 | **我（授權後）** | 建立可丟棄資料庫、套用 migration、執行資料庫端的離線驗證 | — |
 | 1 | **Owner（一次性）** | 建立開發應用程式與 Bot、邀請進開發 Guild、把 token 放進本機秘密檔 | 前置 |
-| 2 | **Owner 或夥伴** | `python -m bot.command_sync preview`，確認目標是開發 Guild，再 `apply --target owner-guild`；啟動開發 Bot | 前置 |
+| 2 | **Owner 或夥伴** | 依第 4.4 節預覽並同步**兩個範圍**（開發應用程式的全域指令＋開發 Guild 的 Owner 指令），再啟動開發 Bot | 前置 |
 | 3 | B 點擊 | `/share` 投稿 5 支不同影片（其中 1 支網址含超長參數）；再多 6 支以上已知版本可由前幾筆確認後產生 | 16 的準備 |
 | 4 | A 點擊 | `/owner list`：確認私密、版面；補時長（6）→ 確認通過（2）→ 新版本（7）→ 另一支同錄音（8）→ 其他情況（10–13）→ 拒絕（5） | 1、2、5–13、16 |
 | 5 | A 點擊 | 同一張舊卡片再按（3）；快速連按兩次（4） | 3、4 |
@@ -93,6 +93,33 @@ Owner 的操作只有第 1、2 步（一次性）與第 4 到 7 步的點擊；�
 | --- | --- |
 | 在 Discord Developer Portal 建立新的開發應用程式與 Bot（Owner 操作） | 只產生新的 token 與應用程式 ID；不影響正式 Bot |
 | 以 `bot` 與 `applications.commands` 範圍邀請至開發 Guild | 只加入開發 Guild |
-| `command_sync apply --target owner-guild` | 只在開發 Guild 註冊指令；因為使用**開發**應用程式 ID 與 Guild ID，正式指令不會被改動。執行前以 `preview` 確認目標 |
+| `command_sync apply`（`global` 與 `owner-guild` 各一次，見 4.4） | 兩次都只作用於**開發**應用程式：全域指令是該應用程式的，Owner 指令只在開發 Guild；正式指令不會被改動。每次執行前以 `preview` 的 digest 確認 |
 | 設 `DISCORD_EXPECTED_APPLICATION_ID` 為開發應用程式 ID | 若誤用正式 token，同步會因 ID 不符而拒絕 |
 | 可丟棄資料庫開啟結算（僅驗證 +1） | 只影響可丟棄資料庫；驗收完成即丟棄 |
+
+### 4.4 開發 Guild 如何同時取得一般指令與 Owner 指令（離線核對 `bot/command_sync.py`，未連線）
+
+**先前清單只寫 `apply --target owner-guild` 是錯的：** 該目標只發布 Owner 群組，**不包含 `/share`**。三個目標的實際範圍：
+
+| 目標 | 發布內容 | 作用範圍 | 備註 |
+| --- | --- | --- | --- |
+| `global` | `balance`、`daily`、`exchange`、`history`、`share`（`JUKEBOX_NICKEL_CLAIM=on` 時再加 `claim`） | 該應用程式的全域指令 | 全域更新可能需要時間才出現在用戶端 |
+| `owner-guild` | 只有 `owner`（子指令 `list`、`show`、`duration`、`approve`、`reject`、`confirm_version`、`reexamine`） | 僅 `DISCORD_OWNER_GUILD_ID` | 全域同步不會包含它 |
+| `dev-guild`（`--guild-id`） | 與 `global` 相同的指令集，複製為該 Guild 的指令 | 單一 Guild | **不含 Owner 群組** |
+
+兩個結論：
+1. **Discord 的同步是整批覆寫（bulk overwrite）。** `dev-guild` 與 `owner-guild` 若指向同一個 Guild，後執行者會覆蓋前者：先 `dev-guild` 再 `owner-guild` 會讓 `/share` 等從該 Guild 消失，反之會讓 `/owner` 消失。**不要對同一個 Guild 同時使用這兩個目標。**
+2. **可行的組合：`global`（開發應用程式）＋ `owner-guild`（開發 Guild）。** 兩者作用範圍不同（全域 vs. Guild），互不覆蓋，開發 Guild 因此同時有 `/share` 與 `/owner`。因為使用開發應用程式的 token 與 `DISCORD_EXPECTED_APPLICATION_ID`，正式應用程式的指令不受影響。代價：全域指令出現的時間不受控。以上覆蓋行為是依程式註解載明的 Discord 整批覆寫語意推論，**未實測**。
+
+**離線預覽結果**（以虛構的 ID 執行 `python -m bot.command_sync preview`，未連線、無 token；摘要與 ID 無關，因為 digest 只含指令契約）：
+
+| 項目 | `JUKEBOX_NICKEL_CLAIM` 關 | `JUKEBOX_NICKEL_CLAIM` 開 |
+| --- | --- | --- |
+| 全域指令 | `balance daily exchange history share` | 加上 `claim` |
+| 全域 `local_digest` | `119c5bc1a3b0999c9dca4649704c221fc179d4f5b19b9ca2989abc2dd9f24c86` | `7fae610e58e21dbe041ce75f69ac06dd15f1ec87d6f13bc78828a02009f4d9d5` |
+| Owner Guild 指令 | `owner` | `owner` |
+| Owner Guild digest | `26a2d81480daffe0a5ff0dc6f9d631a4eefbf5f831c802eb5178ea989f0d4dcf` | 同左 |
+
+驗收建議 `JUKEBOX_NICKEL_CLAIM` 保持關閉（用左欄 digest）。實際同步時 `apply` 的 `--expected-digest` 必須取自**當時**重新執行的 `preview`；這些 digest 只用來事先審查指令集合。`apply` 還需要 `--i-understand-this-calls-discord` 與 `--confirm-overwrite-remote-commands`。
+
+**尚未驗證：** 實際同步後 Discord 的呈現、全域指令出現的延遲、`/share` 在開發應用程式下能否使用。

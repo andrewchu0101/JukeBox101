@@ -1,6 +1,6 @@
 # API 資料保存：可審查的 migration 與實作草稿
 
-狀態：**草稿，等 Owner 核准。** 沒有任何 migration 檔案、沒有程式變更、沒有碰正式資料。草稿 SQL 刻意放在本文件內的程式碼區塊，**不**放在 `bot/database/postgres/`：遷移探索規則要求該目錄只有連號的 `NNNN_name.sql`，放進去就會被自動套用。
+狀態：**草稿，等 Owner 核准。** 沒有任何 migration 檔案、沒有程式變更、沒有碰正式資料。**新增兩張表只是第四節的步驟 S2，不等於完成**；完整的可審查步驟見 4.1。草稿 SQL 刻意放在本文件內的程式碼區塊，**不**放在 `bot/database/postgres/`：遷移探索規則要求該目錄只有連號的 `NNNN_name.sql`，放進去就會被自動套用。
 
 設計背景、保存位置清單與政策原文位置見 [API 資料生命週期設計](api-data-lifecycle-design.md)。本文件只集中「要核准什麼」。
 
@@ -74,9 +74,9 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
 | 已完成案件 | 完成後 **1 天內**清除，不為保留歷史而刷新 | 少打 API |
 | 清除頻率 | Bot 每日一次，另在啟動接受工作前先清 | 見 2.1 |
 | 逾期警示 | 逾期（超過 `expires_at` 仍未清除）**1／3／7／12 天** | 12 天逾期＝取得後第 26 天，距 30 天上限剩 4 天 |
-| 手動 dump 保留 `R` | **≤ 14 天** | 最壞：14（保存）＋1（清除延遲）＋14（dump）＝**29 天 ≤ 30** |
+| 手動 dump 保留 `R` | **≤ 14 天** | 正常清除成功且已知副本都納入時的估算：14＋1＋14＝29 天。**不是硬性保證**：清除失敗、長期停機或未知副本會超過 |
 
-先前文件出現的「14 天」是預設保存天數，「30 天」是 `CHECK` 護欄與政策上限，兩者並不矛盾；若核准時改變預設天數，只改 `RETENTION_DAYS`，其餘由上表推得。這些天數是安全估算，**不是官方認可**。
+先前文件出現的「14 天」是預設保存天數，「30 天」是 `CHECK` 護欄與政策上限，兩者並不矛盾；若核准時改變預設天數，只改 `RETENTION_DAYS`，其餘由上表推得。這些天數是安全估算，**不是官方認可**，也不是硬性上限；硬性機制只有第 2.0 節的 ①② 兩層。
 
 ## 二、清除與刷新如何自動執行、失敗時如何阻止採信
 
@@ -104,7 +104,7 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
 1. **採信條件寫進查詢**：所有讀取觀測值的地方都帶 `purged_at IS NULL AND expires_at > statement_timestamp()`。過期或已清除的列視為「不存在」，不會被當成依據，**即使清除工作沒有成功**。
 2. **只有「缺乏有效 API 證據」的待處理案件受影響**（預設嚴格，等政策答覆；需要你核准，**本輪不實作**）：
    - 受影響：處於 `PENDING_REVIEW`、**唯一**的時長依據是已過期的 API 結論的案件。核准前必須重新驗證（第 10 天已嘗試刷新）；API 取不到時，Owner 可用卡片的「補時長」補人工證據。
-   - **不受影響**：Owner 自述的時長證據（`DurationEvidence`，含秒數與來源）永遠有效，不因任何到期而失效；已核准（`APPROVED`）及之後的決定、已發放的獎勵、帳本、回執與冪等紀錄**不會被自動撤銷、降級或補發**。
+   - **不受 API 保存期限影響**：Owner 自述的時長證據（`DurationEvidence`，含秒數與來源）不因 API 保存期限而失效或被清除；它仍適用**既有**的重審、衝突與修訂規則（例如較新的證據、與 API 結論衝突時的處理照舊，本草稿不改）。已核准（`APPROVED`）及之後的決定、已發放的獎勵、帳本、回執與冪等紀錄**不會被自動撤銷、降級或補發**。
    - 沒有新增狀態：「等待重新驗證」沿用既有的 `PENDING_VALIDATION` 與重新檢查機制（`reexamination_pending`）。
 
    **與現有狀態機的具體差異**（若核准才實作，目前程式未動）：
@@ -141,7 +141,26 @@ GRANT SELECT ON jb2_api_observations, jb2_retention_runs TO jukebox101_readonly_
 | 人工來源 | `origin = owner` 的列與所有 `DurationEvidence` 原樣保留；來源分類看快照內的 `source`，**不看歷史列的 actor**（Owner 的後續決定會把含 API 時長的快照再寫一次） | 保留標籤規則防止誤分類 |
 | 帳務 | 帳本、請求、結算、餘額不含 API 資料，**完全不動**；不新增自動撤獎或補發 | 測試：遷移前後逐列比對 |
 
-## 四、分階段上線（每階段都需要你明確核准）
+## 四、實作步驟與分階段上線
+
+### 4.1 實作拆成可審查步驟（每步一個獨立變更集，各自有測試；依序，前一步通過才進下一步）
+
+「兩張表建好」只是 S2。以下全部完成才算實作完成。預期涉及的檔案是依現有結構的推估，實作時以實際為準。
+
+| 步驟 | 內容 | 預期涉及 | 必備測試（可丟棄 PG17／18） | 依賴 |
+| --- | --- | --- | --- | --- |
+| S1 | 契約與編解碼：新增 `DurationVerdict`、`ReviewSnapshot.duration_verdict`（選填）；編解碼器能讀新舊兩種格式；**寫入旗標關閉** | `bot/review.py`、`bot/database/submission_codec.py`、契約註冊表 | 新舊快照都可解碼；舊程式讀新欄位會失敗的事實用測試記錄（確認需分階段）；重播遷移前的決定回傳原結果 | 無 |
+| S2 | Migration：`jb2_api_observations`、`jb2_retention_runs`、`CHECK`、權限（App 無 `DELETE`、無歷史表 `UPDATE`） | `bot/database/postgres/0004_*.sql`（需 Owner 核准才放入） | 四種違規寫入被拒；到期列仍在表中；權限矩陣；全新資料庫與升級路徑都能套用 | S1 部署 |
+| S3 | 寫入路徑：自動審核把 API 原始值只寫觀測表，快照／證據／決定／回執／理由文字只存結論；Owner 自述時長路徑不變 | `bot/auto_pipeline.py`、`bot/database/auto_review_store.py`、`submission_*` | **掃描所有表的 JSON 與文字欄位**，頻道 ID、秒數、取得時間只出現在觀測表（涵蓋設計文件第三節的 #1–#6）；`_append_review_revision` 比對不誤判 | S2 套用、寫入旗標 |
+| S4 | 讀取拒絕過期值：所有讀取觀測值的查詢帶 `purged_at IS NULL AND expires_at > statement_timestamp()` | 同 S3 的讀取點 | 把 `expires_at` 設為過去、清除工作**未執行**，確認拒絕採信（證明不依賴清除成功） | S3 |
+| S5 | 背景清除：Bot 啟動接受工作前先清；巡檢迴圈每日清；手動 `python -m bot.api_retention purge`（預設預覽，`--apply` 才執行）與唯讀 `status` | 新模組 `bot/api_retention.py`、`bot/auto_pipeline.py` | 清除冪等；與管線、結算並行不死鎖不重發；清除途中失敗可重跑；`retention_runs` 紀錄 | S4 |
+| S6 | 重啟與長期停機恢復：重啟後先清除再接工作；還原含過期列的傾印後，未清除前拒絕採信，清除後恢復；逾期警示與 `status` 逾期列數 | `bot/__main__.py`（啟動順序）、`bot/discord_owner_cards.py`（警示） | 模擬重啟中斷於清除中途；模擬還原；逾期 1／3／7／12 天的行為 | S5 |
+| S7 | 到期案件處理（**需 Owner 核准的產品規則，見 2.2**）：進入待審／已核准才檢查期限；已核准案件的後續操作不受影響 | `bot/review.py`、`bot/owner_review.py` | 已核准且 API 結論過期的案件仍可版本確認與結算；只有 API 結論的待審案件被擋並提示補證據；人工時長仍適用既有重審與衝突規則 | S1、S3 |
+| S8 | 既有資料整理（**僅在唯讀查詢證明正式庫已有 API 資料時**）：分批、預覽 digest、可重跑；需臨時 `UPDATE` 權限 | 一次性腳本 | 前後帳本逐列比對；`evaluate_ledger_integrity` 通過 | S3 上線、Owner 授權 |
+
+回滾：S1 之後新格式一旦寫入，不能只退回舊二進位；關閉寫入旗標即可停止新寫入，而新程式仍可讀所有資料。
+
+### 4.2 分階段上線（每階段都需要你明確核准）
 
 | 階段 | 內容 | 可逆性 |
 | --- | --- | --- |
@@ -172,7 +191,7 @@ SELECT count(*) FROM jb2_review_history WHERE review_json::text LIKE '%youtube-d
 - VPS 或任何主機是否有 `pg_dump` 排程或手動 dump？Hostinger 是否啟用快照，且 dump 是否存放在上面？
 - Owner 本機或雲端是否有資料庫匯出？
 - Docker 日誌保留天數。
-- 建議：dump 保留 ≤ 14 天，或 dump 時排除觀測表資料（`--exclude-table-data=jb2_api_observations`）；後者只在舊格式資料整理完成或確認從未存在之後才成立。這些天數是安全估算，**不是官方認可**。
+- 建議：dump 保留 ≤ 14 天（29 天估算只在清除成功且已知副本都納入時成立，見 1.3 節），或 dump 時排除觀測表資料（`--exclude-table-data=jb2_api_observations`）；後者只在舊格式資料整理完成或確認從未存在之後才成立。這些天數是安全估算，**不是官方認可**。
 
 **產品與營運決定**
 - 結論過期是否阻擋核准（第 2.2 節第 2 點）。
