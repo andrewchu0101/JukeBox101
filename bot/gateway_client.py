@@ -5,8 +5,13 @@ The pinned discord.py raw event is opt-in and only its heartbeat opcode is inspe
 
 import asyncio
 import json
+import logging
 
 from bot.discord_app import JukeBoxClient
+
+
+LOGGER = logging.getLogger(__name__)
+AUTO_SWEEP_INTERVAL_SECONDS = 300  # [resume cadence]: Unfinished lookups and settlements are resumed this often and once at startup.
 
 
 class ProductionGatewayClient(JukeBoxClient):
@@ -22,6 +27,7 @@ class ProductionGatewayClient(JukeBoxClient):
         super().__init__(service, **kwargs)
         self._enable_debug_events = True  # [pinned adapter]: discord.py 2.7.1 gates raw receive dispatch here.
         self.gateway_health = None
+        self._auto_sweep_task = None  # [automatic resume]: Created only when the service has a pipeline.
 
     async def setup_hook(self) -> None:
         """@description: Start health sampling on the Gateway's own event loop before connecting.
@@ -30,6 +36,22 @@ class ProductionGatewayClient(JukeBoxClient):
         """
         if self.gateway_health is not None:
             self.gateway_health.task = asyncio.create_task(self.gateway_health.monitor(self), name='gateway-health')
+        pipeline = getattr(self.handlers.service, 'auto_pipeline', None)
+        if pipeline is not None:
+            self._auto_sweep_task = asyncio.create_task(self._auto_sweep(pipeline), name='auto-review-sweep')
+
+    async def _auto_sweep(self, pipeline) -> None:
+        """@description: Resume unfinished automatic work at startup and periodically, off the event loop; one failed round never ends the loop.
+        @param self: Client owned by the main process.
+        @param pipeline: Automatic pipeline.
+        @return: None; runs until cancelled at close.
+        """
+        while True:
+            try:
+                await asyncio.to_thread(pipeline.sweep)
+            except Exception as error:  # [scheduled-job boundary]: Class name only; the next round retries from durable state.
+                LOGGER.error('Automatic sweep round failed: %s', type(error).__name__)
+            await asyncio.sleep(AUTO_SWEEP_INTERVAL_SECONDS)
 
     async def on_ready(self) -> None:
         """@description: Record READY only for the configured application identity.
@@ -74,6 +96,8 @@ class ProductionGatewayClient(JukeBoxClient):
                 self.gateway_health.mark('stopping')
         finally:
             await self._stop_health_writer()
+            if self._auto_sweep_task is not None:
+                self._auto_sweep_task.cancel()
             await super().close()
 
     async def _stop_health_writer(self) -> None:

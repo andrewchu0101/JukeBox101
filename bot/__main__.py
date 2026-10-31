@@ -18,6 +18,7 @@ from typing import Callable
 
 import discord
 
+from bot.auto_startup import AutoSettings, build_auto_pipeline, load_auto_settings
 from bot.config import (SECRET_FILE_SUFFIX, ConfigurationError, load_database_settings, load_formal_exchange_enabled,
                         load_nickel_claim_enabled)
 from bot.database.repository import MusicRepository
@@ -35,7 +36,7 @@ from bot.secret_file_policy import (ContainerMountedFile, ContainerProcess, Moun
 from bot.services import MusicService
 
 
-MOUNTED_SECRET_SETTINGS = ("DISCORD_BOT_TOKEN", "DB_PASSWORD")  # [file-mode secrets]: Settings whose _FILE pointer is judged before login.
+MOUNTED_SECRET_SETTINGS = ("DISCORD_BOT_TOKEN", "DB_PASSWORD", "YOUTUBE_API_KEY")  # [file-mode secrets]: Settings whose _FILE pointer is judged before login.
 EXPECTED_UID_ENV = "SECRET_EXPECTED_UID"  # [expected owner]: Numeric uid the mounted secret must carry; never defaulted.
 EXPECTED_GID_ENV = "SECRET_EXPECTED_GID"  # [expected group]: Numeric gid the mounted secret must carry; never defaulted.
 
@@ -48,14 +49,15 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def build_owner_review_wiring(repository: SubmissionRepository, owner_id: int, guild_id: int) -> OwnerReviewWiring:
+def build_owner_review_wiring(repository: SubmissionRepository, owner_id: int, guild_id: int, settlement_followup=None) -> OwnerReviewWiring:
     """@description: Build the Owner review collaborators over the same repository type the Owner CLI uses, keeping one preview store for the process.
     @param repository: Submission repository shared with the rest of the entry, so no second write path exists.
     @param owner_id: Configured Owner Discord user id, read once by the entry.
     @param guild_id: Owner management guild where the owner group is registered and admitted.
+    @param settlement_followup: Automatic settlement run after a committed decision, or None while that mode is off.
     @return: Wiring whose provider always returns the single service built here.
     """
-    review_service = OwnerReviewService(repository, owner_id, _utc_now, token_ttl=TOKEN_TTL)  # [single preview store]: Tokens live only in this instance.
+    review_service = OwnerReviewService(repository, owner_id, _utc_now, token_ttl=TOKEN_TTL, settlement_followup=settlement_followup)  # [single preview store]: Tokens live only in this instance.
     return OwnerReviewWiring(lambda: review_service, owner_id, guild_id, _utc_now)
 
 
@@ -347,12 +349,15 @@ def main() -> None:
         formal_exchange = load_formal_exchange_enabled()  # [formal /exchange]: Off unless the setting is explicitly enabled.
         nickel_claim = load_nickel_claim_enabled()  # [/claim]: Off unless the setting is explicitly enabled.
         verify_mounted_secrets()
+        auto_settings = load_auto_settings()  # [automatic modes]: Off unless explicitly enabled; invalid settings refuse startup.
     except ConfigurationError as configuration_error:
         raise SystemExit(str(configuration_error)) from None
-    submission_repository = SubmissionRepository(partial(open_connection, database_settings), owner_id)
+    submission_repository = SubmissionRepository(partial(open_connection, database_settings), owner_id,
+                                                 automatic_settlement=auto_settings.settlement_enabled)
+    pipeline = build_auto_pipeline(submission_repository, auto_settings)
     service = MusicService(MusicRepository(database_settings), submission_repository, formal_exchange=formal_exchange,
-                           nickel_claim_enabled=nickel_claim, nickel_connection_factory=partial(open_connection, database_settings))
-    owner_review = _optional_owner_review(submission_repository, discord_settings)
+                           nickel_claim_enabled=nickel_claim, nickel_connection_factory=partial(open_connection, database_settings), auto_pipeline=pipeline)
+    owner_review = _optional_owner_review(submission_repository, discord_settings, pipeline, auto_settings)
     gate = ShutdownGate(MultiGuildInteractionGuard(discord_settings.application_id))
     client = JukeBoxClient(service, interaction_guard=gate, owner_review=owner_review)
     _run_gateway(client, gate, discord_settings)
@@ -374,16 +379,20 @@ def _run_gateway(client: JukeBoxClient, gate: ShutdownGate, settings: Production
         raise SystemExit('Discord startup failed: ' + type(startup_error).__name__) from None
 
 
-def _optional_owner_review(repository: SubmissionRepository, settings: ProductionDiscordSettings) -> OwnerReviewWiring | None:
+def _optional_owner_review(repository: SubmissionRepository, settings: ProductionDiscordSettings, pipeline=None,
+                           auto_settings: AutoSettings | None = None) -> OwnerReviewWiring | None:
     """@description: Wire Owner review commands only into the configured Owner management guild, never globally.
     @param repository: Shared submission repository.
     @param settings: Production Discord settings.
+    @param pipeline: Automatic pipeline, or None when every automatic mode is off.
+    @param auto_settings: Automatic modes; settlement follow-up runs only when that mode is on.
     @return: Wiring, or None when no Owner management guild is configured (Owner uses the CLI instead).
     """
     if settings.owner_guild_id is None:
         LOGGER.info("Owner commands are not registered: DISCORD_OWNER_GUILD_ID is not set")
         return None
-    return build_owner_review_wiring(repository, settings.owner_id, settings.owner_guild_id)
+    followup = pipeline.owner_settlement_note if pipeline is not None and auto_settings.settlement_enabled else None
+    return build_owner_review_wiring(repository, settings.owner_id, settings.owner_guild_id, followup)
 
 
 if __name__ == "__main__":

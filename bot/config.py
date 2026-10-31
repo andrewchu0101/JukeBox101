@@ -4,6 +4,7 @@ Validated settings feed explicit application boundaries without exposing credent
 """
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -201,3 +202,61 @@ def load_nickel_claim_enabled(environ: Mapping[str, str] | None = None) -> bool:
     if value in _DISABLING_VALUES:
         return False
     raise ConfigurationError(f"{NICKEL_CLAIM_ENV} must be one of 1, true, yes, on, 0, false, no, off")
+
+
+AUTO_REVIEW_ENV = "JUKEBOX_AUTO_REVIEW"  # [automatic review switch]: Absent or disabling keeps every lookup off.
+AUTO_SETTLEMENT_ENV = "JUKEBOX_AUTO_SETTLEMENT"  # [automatic settlement switch]: Must agree with the database settlement flag.
+TRUSTED_CHANNELS_ENV = "YOUTUBE_TRUSTED_CHANNEL_IDS"  # [Owner allowlist]: Comma-separated stable channel IDs; empty approves nothing.
+YOUTUBE_API_KEY_SETTING = "YOUTUBE_API_KEY"  # [API credential]: Environment value or the file named by its _FILE setting.
+_CHANNEL_ID_PATTERN = re.compile(r"UC[0-9A-Za-z_-]{22}")  # [stable channel ID]: Handles and display names are refused.
+
+
+def _strict_switch(setting_name: str, environ: Mapping[str, str] | None) -> bool:
+    """@description: Read an on/off switch so an unrecognised value refuses startup instead of opening a route.
+    @param setting_name: Environment key.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: True only for an explicit enabling value.
+    """
+    source = os.environ if environ is None else environ
+    value = source.get(setting_name, "off").strip().lower()
+    if value in _ENABLING_VALUES:
+        return True
+    if value in _DISABLING_VALUES:
+        return False
+    raise ConfigurationError(f"{setting_name} must be one of 1, true, yes, on, 0, false, no, off")
+
+
+def load_auto_settlement_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """@description: Read the automatic settlement mode, closed unless explicitly enabled.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: Whether a committed qualification may pay automatically.
+    """
+    return _strict_switch(AUTO_SETTLEMENT_ENV, environ)
+
+
+def load_auto_review_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """@description: Read the automatic review switch, closed unless explicitly enabled.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: Whether official metadata lookups may run.
+    """
+    return _strict_switch(AUTO_REVIEW_ENV, environ)
+
+
+def load_trusted_channel_ids(environ: Mapping[str, str] | None = None) -> frozenset[str]:
+    """@description: Parse the Owner's channel allowlist, refusing anything that is not a stable channel ID.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: Allowlist; empty when unset, which automatically approves nothing.
+    """
+    source = os.environ if environ is None else environ
+    entries = [entry.strip() for entry in source.get(TRUSTED_CHANNELS_ENV, "").split(",") if entry.strip()]
+    if any(_CHANNEL_ID_PATTERN.fullmatch(entry) is None for entry in entries):
+        raise ConfigurationError(f"{TRUSTED_CHANNELS_ENV} must list YouTube channel IDs starting with UC")
+    return frozenset(entries)
+
+
+def load_youtube_api_key(environ: Mapping[str, str] | None = None) -> str:
+    """@description: Require the API credential only when automatic review is on, from exactly one source.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: API key, never included in any message.
+    """
+    return required_secret_value(YOUTUBE_API_KEY_SETTING, environ)

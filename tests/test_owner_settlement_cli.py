@@ -281,3 +281,19 @@ def test_settlement_operations_must_be_distinct_and_present(approved_operation, 
     _, repository, _ = approved_operation
     code, output = run(["settle", "preview", "--operation", "op-1", "--operation", "op-1"], capsys, lambda s, o: repository)
     assert code == 1 and "SETTLEMENT_OPERATIONS_INVALID" in output
+
+
+def test_the_settlement_switch_needs_its_previewed_digest_and_reads_back(approved_operation, capsys) -> None:
+    """@description: Entering automatic mode is an explicit Owner step: a preview writes nothing, a wrong digest refuses, the right one writes and reads back.
+    @param approved_operation: Offline world with an approved operation.
+    @param capsys: Output capture.
+    @return: None.
+    """
+    _database, repository, _service = approved_operation
+    factory = lambda _settings, _owner: repository  # noqa: E731
+    code, output = run(["settlement-switch", "preview", "--enabled", "on"], capsys, factory)
+    assert code == 0 and "writes: none" in output and repository.settlement_enabled(OWNER_ID) is False
+    code, output_refused = run(["settlement-switch", "write", "--enabled", "on", "--digest", "0" * 64], capsys, factory)
+    assert code == 1 and repository.settlement_enabled(OWNER_ID) is False
+    code, output_written = run(["settlement-switch", "write", "--enabled", "on", "--digest", digest_of(output)], capsys, factory)
+    assert code == 0 and "True" in output_written and repository.settlement_enabled(OWNER_ID) is True

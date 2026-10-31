@@ -292,12 +292,12 @@ def _publish_owner_approved_link(cursor: Any, command: ReviewCommand, video: Vid
     @param review: Review revision produced by this transaction.
     @return: None; a song that cannot take the link refuses the approval and the transaction rolls back.
     """
-    if command.approval_source is not ApprovalSource.OWNER or review.status is not ReviewStatus.APPROVED:
+    if command.approval_source is None or review.status is not ReviewStatus.APPROVED:
         return  # [no publication]: Rejections, pending validation and duration-only revisions never publish a link.
     link = canonical_watch_url(video.video_id)
     cursor.execute("UPDATE songs SET resolution_status=%s, youtube_url=%s, verification_provenance=%s "
                    "WHERE platform_track_id=%s AND platform=%s AND resolution_status='pending' AND youtube_url IS NULL",
-                   ("verified", link, f"owner_approval:{command.decision_id}", video.video_id, "youtube"))
+                   ("verified", link, f"{command.approval_source.value}_approval:{command.decision_id}", video.video_id, "youtube"))
     if cursor.rowcount == 1:
         return  # [single publication]: Exactly one song row changed from pending and unlinked to the approved link.
     cursor.execute("SELECT resolution_status,youtube_url FROM songs WHERE platform_track_id=%s AND platform=%s",

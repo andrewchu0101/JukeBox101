@@ -85,7 +85,7 @@ def wired(monkeypatch):
     class RecordingService(OwnerReviewService):
         """Keep a handle on the service the entry builds so the test can drive the same instance."""
 
-        def __init__(self, repository, owner_id, clock_source, token_ttl=timedelta(minutes=5)):
+        def __init__(self, repository, owner_id, clock_source, token_ttl=timedelta(minutes=5), settlement_followup=None):
             """@description: Build the real service and remember it.
             @param repository: Repository the entry supplied.
             @param owner_id: Configured Owner identifier.
@@ -93,12 +93,12 @@ def wired(monkeypatch):
             @param token_ttl: Preview lifetime the entry supplied.
             @return: None.
             """
-            super().__init__(repository, owner_id, clock_source, token_ttl=token_ttl)
+            super().__init__(repository, owner_id, clock_source, token_ttl=token_ttl, settlement_followup=settlement_followup)
             created_services.append(self)
 
     monkeypatch.setattr(discord.Client, "run", fake_run)
     monkeypatch.setattr("psycopg.connect", lambda *args, **kwargs: database.connect())
-    monkeypatch.setattr(entry, "SubmissionRepository", lambda _factory, owner_id: SubmissionRepository(database.connect, owner_id))
+    monkeypatch.setattr(entry, "SubmissionRepository", lambda _factory, owner_id, **_modes: SubmissionRepository(database.connect, owner_id))
     monkeypatch.setattr(entry, "OwnerReviewService", RecordingService)
     monkeypatch.setattr(entry, "_utc_now", clock)
     entry.main()
