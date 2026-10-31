@@ -13,7 +13,7 @@ from bot.database.connection import open_connection
 from bot.database.submission_repository import SubmissionRepository
 from bot.ledger_integrity import STATUS_PASS, evaluate_ledger_integrity
 from bot.owner_review import OwnerReviewService
-from bot.review import ReviewStatus
+from bot.review import ReviewStatus, StaleReviewVersion
 from bot.reward_candidates import RewardCandidateStatus
 from bot.version_identity import VersionIdentityStatus
 from tests.postgres_support import admin_query
@@ -137,3 +137,65 @@ def test_pending_rows_carry_the_submitter_and_the_known_duration_for_the_case_ca
     first, second = service.list_pending(OWNER_ID).items
     assert (first.submitter_id, first.duration_seconds) == (submitter_of(1), 180)
     assert (second.submitter_id, second.duration_seconds) == (submitter_of(2), None)
+
+
+def test_a_duration_confirmation_is_checked_against_its_revision_inside_the_transaction(pg_world):
+    """@description: Two duration previews bound to the same revision cannot both apply: the second confirmation meets the advanced revision in the database transaction.
+    @param pg_world: PostgreSQL repository and service.
+    @return: None.
+    """
+    database, repository, service = pg_world
+    seed_metadata_unavailable(repository, 1)
+    item = service.list_pending(OWNER_ID).items[0]
+    first = service.preview_duration(OWNER_ID, item.operation_id, 120, "https://example.test/a", "first", expected_revision=item.revision)
+    second = service.preview_duration(OWNER_ID, item.operation_id, 130, "https://example.test/b", "second", expected_revision=item.revision)
+    service.confirm(OWNER_ID, first.token_id)
+    with pytest.raises(StaleReviewVersion):
+        service.confirm(OWNER_ID, second.token_id)
+
+
+def test_a_duration_preview_for_the_displayed_revision_is_refused_once_the_case_moved_on(pg_world):
+    """@description: A card that displayed an older revision cannot obtain a duration preview, because the service binds the preview to the revision it is given.
+    @param pg_world: PostgreSQL repository and service.
+    @return: None.
+    """
+    database, repository, service = pg_world
+    seed_metadata_unavailable(repository, 1)
+    item = service.list_pending(OWNER_ID).items[0]
+    done = service.preview_duration(OWNER_ID, item.operation_id, 120, "https://example.test/a", "first", expected_revision=item.revision)
+    service.confirm(OWNER_ID, done.token_id)
+    with pytest.raises(StaleReviewVersion):
+        service.preview_duration(OWNER_ID, item.operation_id, 130, "https://example.test/b", "late", expected_revision=item.revision)
+
+
+def test_the_pending_page_reads_only_the_rows_it_returns(pg_world, monkeypatch):
+    """@description: A one-row page transfers at most one row more than it shows, however many cases wait, and keeps acceptance order and cursors.
+    @param pg_world: PostgreSQL repository and service.
+    @param monkeypatch: Spy on the queue query.
+    @return: None.
+    """
+    from bot.database import review_persistence
+    database, repository, service = pg_world
+    for number in range(1, 41):
+        seed(repository, number)
+    transferred = []
+    original = review_persistence.fetch_all
+
+    def spy(cursor, sql, parameters=()):
+        """@description: Record how many rows the queue query hands back.
+        @param cursor: Transaction cursor.
+        @param sql: Statement.
+        @param parameters: Bound values.
+        @return: The rows, unchanged.
+        """
+        rows = original(cursor, sql, parameters)
+        if "FROM jb2_events e JOIN jb2_videos" in sql:
+            transferred.append(len(rows))
+        return rows
+
+    monkeypatch.setattr(review_persistence, "fetch_all", spy)
+    first = service.list_pending(OWNER_ID, limit=1)
+    second = service.list_pending(OWNER_ID, after_sequence=first.next_after_sequence, limit=1)
+    assert [item.operation_id for item in (*first.items, *second.items)] == ["op-1", "op-2"]
+    assert first.next_after_sequence == first.items[0].accepted_sequence
+    assert max(transferred) <= 2

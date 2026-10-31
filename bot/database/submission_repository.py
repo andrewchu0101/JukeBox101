@@ -34,7 +34,7 @@ from bot.database.pending_review import owner_stranded_rows
 from bot.database.persisted_snapshot import decode_current_identity, load_snapshot
 from bot.database.review_persistence import (
     PendingPage, ReexaminationCommand, ReexaminationPlan, ReviewCommand, VersionConfirmationCommand, VersionConfirmationPlan,
-    apply_reexamination, apply_review, apply_version_confirmation, page_pending, pending_review_items, plan_reexamination,
+    apply_reexamination, apply_review, apply_version_confirmation, pending_review_page, plan_reexamination,
     plan_version_confirmation, require_owner, stored_evidence_record,
 )
 from bot.database.review_projection import ReviewProjection, append_evidence, review_projection
@@ -553,7 +553,7 @@ class SubmissionRepository:
         """
         require_owner(actor_id, self._owner_id, "owner pending list")
         with submission_transaction(self._factory) as (cursor, _control):
-            return page_pending(pending_review_items(cursor), after_sequence, limit)
+            return pending_review_page(cursor, after_sequence, limit)
 
     def stored_evidence(self, actor_id: int, operation_id: str, evidence_id: str) -> EvidenceRecord:
         """@description: Return a stored Owner evidence record of the operation's video so the Owner can cite it again without retyping.

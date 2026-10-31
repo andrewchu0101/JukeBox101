@@ -193,7 +193,8 @@ class OwnerReviewService:
                              expires_at, content_digest=content_judgement_digest(content) if content is not None else None,
                              reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
 
-    def preview_duration(self, actor_id: int, operation_id: str, seconds: int, source: str, reason: str) -> ReviewPreview:
+    def preview_duration(self, actor_id: int, operation_id: str, seconds: int, source: str, reason: str,
+                         expected_revision: int | None = None) -> ReviewPreview:
         """@description: Let the Owner supply a full-video duration from Discord, sharing the same gates and audited write as the operator CLI.
         @param self: Owner review coordinator.
         @param actor_id: Authenticated caller, which must be the Owner.
@@ -201,24 +202,26 @@ class OwnerReviewService:
         @param seconds: Owner-stated full-video seconds.
         @param source: Traceable source of the observation.
         @param reason: Audit explanation.
+        @param expected_revision: Revision the Owner examined, bound into the token and rechecked inside the confirmation transaction; None means the current revision.
         @return: Preview with the projected status and any rejection warning.
         """
         require_owner(actor_id, self._owner_id, reason)
         require_traceable_source(source)
         projection = self._repository.review_view(actor_id, operation_id)
+        revision = projection.review.version if expected_revision is None else expected_revision  # [examined revision]: A stale value is refused below.
         evidence = DurationEvidence(projection.review.video, seconds, source, True, True)
         verdict = assess_duration(evidence)
         if verdict is DurationEligibility.PENDING_VALIDATION:
             raise ValueError("時長必須是非負整數秒。")
-        projected = record_validation(projection.review, evidence, projection.review.version)  # [hard gates]: Terminal reviews refuse here.
+        projected = record_validation(projection.review, evidence, revision)  # [hard gates]: Terminal reviews and stale revisions refuse here.
         token_id = secrets.token_urlsafe(24)
         expires_at = self._clock() + self._token_ttl
-        issued = _IssuedToken(actor_id, operation_id, ReviewAction.DURATION, reason, projection.review.version, source,
+        issued = _IssuedToken(actor_id, operation_id, ReviewAction.DURATION, reason, revision, source,
                               uuid.uuid4().hex, expires_at, expected_snapshot=projection.snapshot, duration=evidence)
         with self._token_lock:
             self._tokens[token_id] = issued
         warning = DURATION_REJECT_NOTE if verdict is DurationEligibility.REJECT else ""
-        return ReviewPreview(token_id, operation_id, ReviewAction.DURATION, projection.review.version, source,
+        return ReviewPreview(token_id, operation_id, ReviewAction.DURATION, revision, source,
                              projection.review.status, projected.status, f"時長 {seconds} 秒。{DURATION_STATEMENT}{warning}{NO_AWARD_EFFECT}", expires_at,
                              source_reference=source, reason=reason, current_identity=projection.identity, projected_identity=projection.identity)
 

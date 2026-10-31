@@ -128,19 +128,20 @@ class CardService:
         self.calls.append(("preview", actor_id, operation_id, action, reason, expected_revision, evidence_reference, content))
         return self._issue("preview", operation_id, action, expected_revision, evidence_reference)
 
-    def preview_duration(self, actor_id, operation_id, seconds, source, reason):
-        """@description: Issue a duration token against the case's current revision, as the real service does.
+    def preview_duration(self, actor_id, operation_id, seconds, source, reason, expected_revision=None):
+        """@description: Issue a duration token bound to the given revision, or to the current one when none is given, as the real service does.
         @param self: Fake service.
         @param actor_id: Caller.
         @param operation_id: Case.
         @param seconds: Stated duration.
         @param source: Traceable source.
         @param reason: Audit reason.
+        @param expected_revision: Revision the caller examined, if any.
         @return: Preview.
         """
-        self.calls.append(("preview_duration", actor_id, operation_id, seconds, source, reason))
+        self.calls.append(("preview_duration", actor_id, operation_id, seconds, source, reason, expected_revision))
         item = next(i for i in self.items.values() if i.operation_id == operation_id)
-        return self._issue("preview_duration", operation_id, ReviewAction.DURATION, item.revision, source)
+        return self._issue("preview_duration", operation_id, ReviewAction.DURATION, item.revision if expected_revision is None else expected_revision, source)
 
     def confirm(self, actor_id: int, token_id: str):
         """@description: Apply the previewed decision once, or raise the scripted failure.
@@ -515,3 +516,31 @@ def test_the_registered_button_pattern_rebuilds_a_button_from_its_custom_id_afte
     foreign = Press()
     asyncio.run(rebuilt.callback(foreign))
     assert "重新載入" in foreign.shown() and not service.called("confirm")
+
+
+def test_the_displayed_revision_reaches_the_duration_preview_so_a_late_change_is_refused():
+    """@description: The duration preview is bound to the revision the card showed, so a change made after the card's own check is refused by the service.
+    @param: none
+    @return: None.
+    """
+    service = CardService(case(review=ReviewStatus.PENDING_VALIDATION, duration=None, revision=2))
+    original_list = service.list_pending
+
+    def list_then_change(actor_id, *, after_sequence=None, limit=20):
+        """@description: Return the row as displayed, then move the stored case to a newer revision.
+        @param actor_id: Caller.
+        @param after_sequence: Position already seen.
+        @param limit: Maximum rows.
+        @return: Page as it was before the change.
+        """
+        page = original_list(actor_id, after_sequence=after_sequence, limit=limit)
+        service.items[1].revision = 3
+        return page
+
+    modal = press(cards_for(service), "duration", 1, 2).response.modals[0]
+    modal.seconds._value, modal.source._value = "120", "https://example.test/check"
+    service.list_pending = list_then_change
+    submitted = Press()
+    asyncio.run(modal.on_submit(submitted))
+    assert service.called("preview_duration")[0][6] == 2
+    assert not service.called("confirm") and "重新載入" in submitted.shown()

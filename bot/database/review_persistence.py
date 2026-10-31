@@ -815,24 +815,45 @@ class PendingPage:
     next_after_sequence: int | None  # [keyset cursor]: Pass back as the after-sequence; None when no later pending item exists.
 
 
-def pending_review_items(cursor: Any) -> tuple[PendingItem, ...]:
-    """@description: List operations whose review is still open, whose approval awaits a version, or whose identity is frozen, in acceptance order.
+AWAITS_OWNER_SQL = (  # [queue predicate]: SQL mirror of _awaits_owner, so the database limits what it hands back; Python rechecks every row.
+    f"(v.review_status IN ('{ReviewStatus.PENDING_VALIDATION.value}','{ReviewStatus.PENDING_REVIEW.value}','{ReviewStatus.VALIDATION_FAILED.value}') "
+    f"OR (v.review_status = '{ReviewStatus.APPROVED.value}' AND (v.identity_json::jsonb #>> '{{value,fields,status,value}}') = '{VersionIdentityStatus.UNRESOLVED.value}') "
+    f"OR (v.identity_json::jsonb #>> '{{value,fields,status,value}}') = '{VersionIdentityStatus.CONFLICT.value}')")
+
+
+def pending_review_page(cursor: Any, after_sequence: int | None, limit: int) -> PendingPage:
+    """@description: Read one keyset page of operations that still need the Owner, transferring at most one row more than the page, in acceptance order.
     @param cursor: Transaction-owned cursor holding the writer gate.
-    @return: Pending items with counts and conflict reasons; clean terminal reviews are omitted.
+    @param after_sequence: Last accepted sequence already shown, or None for the first page.
+    @param limit: Page size already capped by the service.
+    @return: Page of pending items; the next cursor is set only when a further pending item exists.
     """
+    after = 0 if after_sequence is None else after_sequence
     rows = fetch_all(cursor, "SELECT e.operation_id,e.source_url,e.accepted_sequence,e.discord_user_id,e.video_id,v.identity_json,v.review_json,"
                              "v.review_revision,v.review_status FROM jb2_events e JOIN jb2_videos v ON v.video_id=e.video_id "
-                             "ORDER BY e.accepted_sequence")
-    items = []
-    for row in rows:
-        review = decode_current_review(row)
-        identity = decode_current_identity(row)
-        if not _awaits_owner(review.status, identity.status):
-            continue
-        items.append(PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status,
-                                 review.version, len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity),
-                                 row["discord_user_id"], _known_duration_seconds(review)))
-    return tuple(items)
+                             f"WHERE e.accepted_sequence > %s AND {AWAITS_OWNER_SQL} ORDER BY e.accepted_sequence LIMIT %s", (after, limit + 1))
+    wanted = []  # [one extra row]: The row after the page only proves that a next page exists.
+    for row in sorted(rows, key=lambda candidate: candidate["accepted_sequence"]):
+        review, identity = decode_current_review(row), decode_current_identity(row)
+        if row["accepted_sequence"] > after and _awaits_owner(review.status, identity.status):
+            wanted.append((row, review, identity))
+        if len(wanted) > limit:
+            break
+    page = tuple(_pending_item(cursor, row, review, identity) for row, review, identity in wanted[:limit])
+    return PendingPage(page, page[-1].accepted_sequence if len(wanted) > limit else None)
+
+
+def _pending_item(cursor: Any, row: dict, review: ReviewSnapshot, identity: VersionAssignment) -> PendingItem:
+    """@description: Summarize one queue row for the Owner, counting its stored evidence.
+    @param cursor: Transaction-owned cursor.
+    @param row: Joined event and video row.
+    @param review: Decoded current review of the video.
+    @param identity: Decoded current identity of the video.
+    @return: Pending item with submitter and known duration.
+    """
+    return PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status, review.version,
+                       len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity), row["discord_user_id"],
+                       _known_duration_seconds(review))
 
 
 def _known_duration_seconds(review: ReviewSnapshot) -> int | None:
@@ -844,19 +865,6 @@ def _known_duration_seconds(review: ReviewSnapshot) -> int | None:
     if duration is None or not (duration.reliable and duration.full_video) or type(duration.seconds) is not int:
         return None
     return duration.seconds
-
-
-def page_pending(items: tuple[PendingItem, ...], after_sequence: int | None, limit: int) -> PendingPage:
-    """@description: Cut one keyset page from the acceptance-ordered queue, so items never shift when earlier ones leave the queue.
-    @param items: Complete pending queue in acceptance order.
-    @param after_sequence: Last accepted sequence the Owner already saw, or None for the first page.
-    @param limit: Page size already capped by the service.
-    @return: Page of items after the cursor, with the next cursor when more items remain.
-    """
-    remaining = tuple(item for item in items if after_sequence is None or item.accepted_sequence > after_sequence)
-    page = remaining[:limit]
-    more_follow = len(remaining) > limit
-    return PendingPage(page, page[-1].accepted_sequence if more_follow else None)
 
 
 def _awaits_owner(review_status: ReviewStatus, identity_status: VersionIdentityStatus) -> bool:

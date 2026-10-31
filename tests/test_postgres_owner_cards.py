@@ -144,3 +144,59 @@ def test_next_shows_the_following_case_without_changing_anything(card_world):
     shown = press(cards, "next", item)
     assert facts(database) == before and [c.custom_id for c in shown.edits[-1]["view"].children][0].startswith("ocard:approve:2:")
     assert [row.operation_id for row in service.list_pending(OWNER_ID).items] == ["op-1", "op-2"]
+
+
+@pytest.fixture
+def paying_world(pg_database):
+    """@description: Build the automatic-mode world with one untrusted-channel case whose version the Owner already confirmed, so a card approval pays exactly one Nickel.
+    @param pg_database: Disposable database.
+    @return: The world and the pending row shown on the card.
+    """
+    from tests.test_postgres_auto_pipeline import ALICE, OWNER_ID as WORLD_OWNER, VIDEO_B, World, found
+    world = World(pg_database)
+    world.metadata.script[VIDEO_B] = found(VIDEO_B, channel="UC" + "b" * 22)  # [untrusted channel]: Duration is recorded, approval waits for the Owner.
+    world.share(ALICE, VIDEO_B, "discord:b")
+    world.confirm_version("discord:b", "recording-b")
+    return world, world.owner.list_pending(WORLD_OWNER, after_sequence=None, limit=1).items[0]
+
+
+def test_two_handlers_without_a_shared_lock_pay_one_nickel_once(paying_world):
+    """@description: The in-memory lock is only a courtesy: two handlers that share nothing still produce one decision and one award, because the database transaction decides.
+    @param paying_world: Automatic-mode world and the card row.
+    @return: None.
+    """
+    from tests.test_postgres_auto_pipeline import OWNER_ID as WORLD_OWNER
+    world, item = paying_world
+    clock = Clock()
+    handlers = [OwnerCards(lambda: world.owner, WORLD_OWNER, GUILD_ID, clock) for _ in range(2)]
+    presses = [Press(WORLD_OWNER), Press(WORLD_OWNER)]
+
+    async def both():
+        """@description: Press the same approval through two independent handlers at the same moment.
+        @param: none
+        @return: None.
+        """
+        await asyncio.gather(*(handler.button_class("approve", item.accepted_sequence, item.revision).callback(shown)
+                               for handler, shown in zip(handlers, presses)))
+
+    asyncio.run(both())
+    world.assert_books_balance(1)
+    assert sorted("已確認" in shown.shown() for shown in presses) == [False, True]
+
+
+def test_after_a_restart_the_old_approval_button_cannot_pay_again(paying_world):
+    """@description: A fresh process has a new service, token store and handler; the old button still meets the advanced revision and writes nothing.
+    @param paying_world: Automatic-mode world and the card row.
+    @return: None.
+    """
+    from tests.test_postgres_auto_pipeline import OWNER_ID as WORLD_OWNER
+    world, item = paying_world
+    first = Press(WORLD_OWNER)
+    asyncio.run(OwnerCards(lambda: world.owner, WORLD_OWNER, GUILD_ID, Clock()).button_class("approve", item.accepted_sequence, item.revision).callback(first))
+    world.assert_books_balance(1)
+    restarted_service = OwnerReviewService(world.repository, WORLD_OWNER, Clock(), token_ttl=TOKEN_TTL,
+                                           settlement_followup=world.new_pipeline().owner_settlement_note)
+    again = Press(WORLD_OWNER)
+    asyncio.run(OwnerCards(lambda: restarted_service, WORLD_OWNER, GUILD_ID, Clock()).button_class("approve", item.accepted_sequence, item.revision).callback(again))
+    world.assert_books_balance(1)
+    assert "重新載入" in again.shown()

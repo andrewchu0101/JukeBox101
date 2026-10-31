@@ -313,7 +313,7 @@ class OwnerCards:
         if not (seconds_text.isascii() and seconds_text.isdecimal()) or int(seconds_text) > MAX_DURATION_OPTION_SECONDS:
             return _Reply(DURATION_FORMAT_TEXT, self._view([self._button("reload", item.accepted_sequence, 0)]))
         return await self._confirm(actor_id, item, "duration", lambda service: service.preview_duration(
-            actor_id, item.operation_id, int(seconds_text), source, DURATION_REASON))
+            actor_id, item.operation_id, int(seconds_text), source, DURATION_REASON, expected_revision=item.revision))
 
     async def _confirm(self, actor_id: int, item, action: str, preview_call: Callable[[OwnerReviewService], object]) -> _Reply:
         """@description: Preview once, confirm immediately, and keep the token if the outcome is unknown so a retry replays the same decision.
