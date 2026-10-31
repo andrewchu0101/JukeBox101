@@ -19,11 +19,12 @@ from bot.discord_owner_review import (
 from bot.owner_card_versions import (
     CATEGORY_BY_ORDINAL, INSUFFICIENT_TEXT, KNOWN_VERSIONS_PER_CARD, NEW_HEADLINE, NEW_REASON, NO_VERSION_ERROR, OTHER_MENU_TEXT, PROMISE_LINES,
     REMASTER_LABEL, REMASTER_REASON, SAME_HEADLINE, SAME_REASON, SOURCE_REQUIRED_TEXT, category_headline, category_reason, manual_check_source,
-    new_version_identity, render_known_versions, version_evidence,
+    new_version_identity, render_known_versions, version_evidence, watch_url,
 )
 from bot.evidence_record import VersionClaimKind
 from bot.owner_review import OwnerReviewService, ReviewAction, ReviewOutcomeUnknown, require_traceable_source
 from bot.review import ReviewStatus, StaleReviewVersion
+from bot.song_identity import video_identity_from_url
 from bot.song_judgement import ContentJudgement
 from bot.version_identity import RecordingVersionIdentity, VersionIdentityStatus
 
@@ -51,7 +52,7 @@ NO_MORE_TEXT = "目前沒有更多待處理案件。"
 STALE_CARD_TEXT = "此案件已變更或已處理，這張卡片已失效，沒有執行任何操作。請按「重新載入」。"  # [stale card]: Never claims a decision.
 UNKNOWN_OUTCOME_TEXT = "結果未知（連線中斷，決定可能已儲存）。請再按一次同一個按鈕，系統會以原決定查回結果，不會重複執行。"
 DURATION_FORMAT_TEXT = "秒數必須是整數（0 到 86400）。"
-MAX_LINK_CHARS = 300  # [message budget]: A long submitted link is clipped on the card so the message stays under Discord's 2000-character limit.
+MAX_LINK_CHARS = 300  # [message budget]: A longer submitted link is shown as its canonical watch link so the message stays under Discord's 2000-character limit.
 FORM_ACTIONS = {"reject", "duration", "kind", "remaster"}  # [forms]: Actions that open a modal instead of acting at once.
 
 
@@ -79,12 +80,14 @@ def waiting_reason(item) -> str:
     return reasons.get(item.review_status, "待處理")
 
 
-def _clip_link(url: str) -> str:
-    """@description: Keep a very long submitted link from pushing the card past Discord's message limit.
+def _card_link(url: str) -> str:
+    """@description: Keep a very long submitted link from pushing the card past Discord's message limit without breaking it.
     @param url: Link exactly as submitted.
-    @return: The link, ellipsized beyond the card's link budget.
+    @return: The link as submitted within the card's budget, otherwise the canonical watch link of the same video.
     """
-    return url if len(url) <= MAX_LINK_CHARS else url[:MAX_LINK_CHARS - 1] + "…"
+    if len(url) <= MAX_LINK_CHARS:
+        return url
+    return watch_url(video_identity_from_url(url).video_id)
 
 
 def _version_line(item) -> str:
@@ -105,7 +108,7 @@ def render_card(item, versions=None, has_more_versions: bool = False) -> str:
     @param has_more_versions: Whether a further page of known versions exists.
     @return: Card text; an unresolved version also lists the known versions and states what each version button promises.
     """
-    lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{_clip_link(item.source_url)}", f"已知時長：{_duration_text(item.duration_seconds)}",
+    lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{_card_link(item.source_url)}", f"已知時長：{_duration_text(item.duration_seconds)}",
              f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item), f"待處理：{waiting_reason(item)}",
              "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"]
     if versions is not None:
@@ -120,7 +123,7 @@ def render_result(item, confirmed_text: str, reward_note: str) -> str:
     @param reward_note: Reward and version state after the decision, or an empty string.
     @return: Result text.
     """
-    lines = ["案件處理結果", f"投稿者：<@{item.submitter_id}>", f"影片：{_clip_link(item.source_url)}", confirmed_text]
+    lines = ["案件處理結果", f"投稿者：<@{item.submitter_id}>", f"影片：{_card_link(item.source_url)}", confirmed_text]
     return "\n".join(lines + ([reward_note] if reward_note else []))
 
 

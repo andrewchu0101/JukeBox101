@@ -933,3 +933,27 @@ def test_every_card_variant_fits_discord_component_and_message_limits():
             rows[child.row] = rows.get(child.row, 0) + 1
             assert len(child.custom_id) <= 100 and len(child.item.label) <= 80
         assert len(rows) <= 5 and max(rows.values()) <= 5 and len(shot.text) <= 2000
+
+
+def test_long_submitted_link_is_shown_as_the_canonical_watch_link_never_a_cut_url():
+    """@description: A link too long for the message is replaced by its canonical watch link, which still opens the same video, instead of being cut.
+    @param: none
+    @return: None.
+    """
+    long_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&" + "t=1&" * 500
+    service = version_service(known(1000000000, "V0000000000", "rv-0"))
+    service.items[1].source_url = long_url
+    text = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0].text
+    assert "影片：https://www.youtube.com/watch?v=dQw4w9WgXcQ\n" in text
+    assert "…" not in text and "t=1" not in text
+
+
+def test_short_submitted_link_is_shown_unchanged():
+    """@description: A link within the budget is displayed exactly as submitted.
+    @param: none
+    @return: None.
+    """
+    service = version_service(known(1000000000, "V0000000000", "rv-0"))
+    service.items[1].source_url = "https://youtu.be/dQw4w9WgXcQ?t=5"
+    text = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0].text
+    assert "影片：https://youtu.be/dQw4w9WgXcQ?t=5\n" in text
