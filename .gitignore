@@ -29,3 +29,16 @@ db_password.txt
 # Local Docker delivery images, test evidence and extracted verification artifacts
 /artifacts/
 /ci-evidence/
+
+# Deployment bundles and exported container/disk images; keep outside Git
+*.tar
+*.tar.gz
+*.tar.zst
+*.tgz
+*.oci
+*.img
+*.iso
+*.qcow2
+*.vhd
+*.vhdx
+jukebox101-delivery*.zip
