@@ -70,9 +70,12 @@ Deploy 的訊息讀取實際 `deploy` job 結果；被跳過時明確顯示未�
 - 要停止未來部署，先把 repository variable `CD_ENABLED` 改為 false，再將 root policy `enabled` 設為 false；保留正在執行 transaction 的 journal，先查狀態再決定維護操作。不要直接中斷正在切換的 worker。
 - 查看 Actions 的 Release／Deploy 結果及 root journal 的安全狀態欄位。查詢 `status-v1 <release-run> <attempt>` 只回一個狀態字，不回秘密或完整 journal。
 - GitHub timeout 不代表主機停止處理；先查 receipt，不能因此手動啟動第二個 Gateway。
+- ingress 的 `rejected` 會搭配 exit code 2；這是明確拒絕，不是 SSH transport 的 exit code 255。Actions 須保留拒絕結果並立即失敗，不能將所有非零退出碼都改成 unreachable 後等到逾時。
 - worker `rollback_failed` 時不再自動重試部署或反覆回滾。由維運核對實際唯一容器、資料相容性與健康，再另行復原，不改寫 journal 來偽裝成功。
 - Queue／journal 有 128 requests 上限；目前沒有自動清理歷史。接近上限時須在 worker 閒置、保留安全稽核紀錄與 highwater 的前提下另行維護，不執行廣泛 Docker 清理。
 
-## 本次交付狀態（2026-10-31）
+## 最近一次故障盤點（2026-11-01）
 
-本文件與 workflow 是可執行的設定與首次安裝包。測試證據另記本次 PR；未完成的 GHCR／主機／真實 Discord 驗收不算通過。現有管理連線 `neighbor-vps` 可 SSH，但無 Docker 管理權；連線帳號名稱與 sudo 拒絕已核對，未取得或變更正式秘密。Repo 連線有 push、無 admin，不能替管理員設定 branch protection 或 Environment。
+main 已有完整 CI／Release／Deploy／Notify。Release `41284353385/1` 成功，Deploy `41285228656/1` 收到 rejected 後逾時。本輪透過已登入的 Hostinger Web console 唯讀核對：入口為新 `deploy.host_ingress`；四 gate 均 false、LKG journal 與該 run queue 回執不存在、path／timer 停用。主機尚未完成首次初始化與驗收，不能用直接開 gate 代替。
+
+本輪僅修正 Actions 將 rejected/exit-2 誤當 unreachable 的判讀，未重試部署、未更動主機設定。詳見 [拒絕原因、修正與剩餘條件](cd-rejected-2026-11-01.md)。
