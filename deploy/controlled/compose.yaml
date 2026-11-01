@@ -33,8 +33,8 @@ services:
     environment:
       DB_HOST: ${DB_HOST:?root-managed database hostname required}
       DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-jukebox101}
-      DB_USER: ${DB_USER:-jukebox101_app}
+      DB_NAME: ${DB_NAME:?root-managed database name required}
+      DB_USER: ${DB_USER:?root-managed application role required}
       DB_SSLMODE: verify-full
       DB_SSLROOTCERT: /run/secrets/db_ca.crt
       DB_PASSWORD_FILE: /run/secrets/db_password
@@ -54,11 +54,11 @@ secrets:
   db_password:
     file: /etc/jukebox101/secrets/db_password.txt
   db_ca.crt:
-    file: /etc/jukebox101/db_ca.crt
+    file: ${JB_DB_CA_FILE:-/etc/jukebox101/supabase-ca-2021.crt}
 networks:
   egress:
     external: true
-    name: ${JB_EGRESS_NETWORK:?administrator must review existing egress network}
+    name: ${JB_EGRESS_NETWORK:-jukebox101_egress}
   database:
     external: true
-    name: ${JB_DATABASE_NETWORK:?administrator must review existing private database network}
+    name: ${JB_DATABASE_NETWORK:-jukebox101_database}

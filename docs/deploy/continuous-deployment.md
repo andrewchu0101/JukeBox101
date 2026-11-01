@@ -15,7 +15,7 @@ CD 不執行 migration、資料還原、command sync、補償或業務指令，�
 | 元件 | 權限與用途 |
 |---|---|
 | `.github/workflows/ci.yml` | PR／main／reusable CI，只有 contents:read。只有 release caller 要求時，輸出該 run/attempt 的已測映像 artifact |
-| `.github/workflows/release.yml` | main push；測試 job 無秘密，publish job 才有 packages／attestations／id-token:write。GHCR 初次發布預設私有；不得自行改為公開 |
+| `.github/workflows/release.yml` | main push；測試 job 無秘密，publish job 才有 packages／attestations／id-token:write。保留既有 package visibility；2026-11-01 已實測固定 public digest 匿名可 pull，本輪未變更可見性 |
 | `.github/workflows/deploy.yml` | 成功 Release 的 workflow_run；resolve 只有 contents/actions:read。SSH job 使用 production Environment、同 repo 固定併發鎖，不取消進行中的部署 |
 | `deploy/release_request.py` | 嚴格核對 receipt/run/attempt，拒絕過期版本、fork、PR、模糊或過期 artifact、ZIP 路徑與輸出注入；不把 artifact 當成主機授權 |
 | `deploy/host_ingress.py` | root 固定 stdin 協定、有界持久佇列。SSH 中斷不會取消已受理的工作 |
@@ -41,7 +41,7 @@ GitHub `workflow_run` 有獨立的權限邊界，不能接受 PR artifacts。來
 
    `authorized_keys` 與父目錄必須是 root 所有且 deploy 帳號可讀／可通行（例如目錄 0755、檔案 0644；公鑰不是秘密）；帳號不能修改它們。停用該帳號的密碼登入，且不可另放未受限 key。不要重用 Office／root／個人 SSH key。私鑰只放 GitHub production Environment。
 6. 解開審查包，先執行 `sh scripts/deploy/install-cd-host.sh` 看計畫，再以 root 執行 `sh scripts/deploy/install-cd-host.sh --apply`。安裝器只接受首次安裝，拒絕覆寫既有 controller／policy／Compose／journal。它不安裝帳號/key、啟動 units、啟停 Bot 或讀取秘密。安裝後所有 gate 維持 false。
-7. 把 root Compose 與既有實際設定比對，保留已核准業務行為與網路。把實際非秘密 `/etc/jukebox101/compose.cd.yaml`、`/etc/jukebox101/bot.env` 的 SHA-256、metadata 與 approved blob 清單填入 policy；填入固定 Application ID、network names、秘密檔路徑。不要把展開的 env/config 或秘密印到日誌。GHCR 私有拉取與 gh 驗證使用主機端獨立唯讀機器帳號憑證，分別存在 `/etc/jukebox101/docker`、`/etc/jukebox101/gh`，不使用個人全權 PAT。
+7. 把 root Compose 與既有實際設定比對，保留已核准業務行為與網路。把實際非秘密 `/etc/jukebox101/compose.cd.yaml`、`/etc/jukebox101/bot.env` 的 SHA-256、metadata 與 approved blob 清單填入 policy；填入固定 Application ID、network names、秘密檔路徑。不要把展開的 env/config 或秘密印到日誌。目前 GHCR 為 public，本機已用空白 Docker credential config 匿名 pull 成功；主機也須另驗此路徑，不因此替本機 token 增加 read:packages 或建立不必要的 registry 認證。固定 `/etc/jukebox101/gh` 的 GitHub API／來源驗證認證仍須由管理者選定專用最小權限身分，不使用個人全權 PAT；認證檔建立或權限變更必須另行批准。
 8. **人工 bootstrap**：先保存當前真正 image ID／相容設定及復原入口。舊 local v7 不能冒充 GHCR digest，也可能不支援新 `bot.healthcheck`。取得一份經驗證、與現有資料／設定相容且支援 Gateway health 的 GHCR baseline，依既有維護手冊手動完成 stop-before-start 切換及完整健康觀察。需要寫入新資料格式的版本，其回滾最低版本以 `api-retention-release.md` 為準；不要還原資料庫來完成 Bot 回滾。
 9. baseline 真實健康後，才以 root 建立 `/var/lib/jukebox101-cd/journal.json`（0600），內容如下；digest 必須是實測的 registry digest，不能是 local config/image ID。
 
@@ -70,9 +70,14 @@ Deploy 的訊息讀取實際 `deploy` job 結果；被跳過時明確顯示未�
 - 要停止未來部署，先把 repository variable `CD_ENABLED` 改為 false，再將 root policy `enabled` 設為 false；保留正在執行 transaction 的 journal，先查狀態再決定維護操作。不要直接中斷正在切換的 worker。
 - 查看 Actions 的 Release／Deploy 結果及 root journal 的安全狀態欄位。查詢 `status-v1 <release-run> <attempt>` 只回一個狀態字，不回秘密或完整 journal。
 - GitHub timeout 不代表主機停止處理；先查 receipt，不能因此手動啟動第二個 Gateway。
+- ingress 的 `rejected` 會搭配 exit code 2；這是明確拒絕，不是 SSH transport 的 exit code 255。Actions 須保留拒絕結果並立即失敗，不能將所有非零退出碼都改成 unreachable 後等到逾時。
 - worker `rollback_failed` 時不再自動重試部署或反覆回滾。由維運核對實際唯一容器、資料相容性與健康，再另行復原，不改寫 journal 來偽裝成功。
 - Queue／journal 有 128 requests 上限；目前沒有自動清理歷史。接近上限時須在 worker 閒置、保留安全稽核紀錄與 highwater 的前提下另行維護，不執行廣泛 Docker 清理。
 
-## 本次交付狀態（2026-10-31）
+## 最近一次故障盤點（2026-11-01）
 
-本文件與 workflow 是可執行的設定與首次安裝包。測試證據另記本次 PR；未完成的 GHCR／主機／真實 Discord 驗收不算通過。現有管理連線 `neighbor-vps` 可 SSH，但無 Docker 管理權；連線帳號名稱與 sudo 拒絕已核對，未取得或變更正式秘密。Repo 連線有 push、無 admin，不能替管理員設定 branch protection 或 Environment。
+main 已有完整 CI／Release／Deploy／Notify。Release `41284353385/1` 成功，Deploy `41285228656/1` 收到 rejected 後逾時。本輪透過已登入的 Hostinger Web console 唯讀核對：入口為新 `deploy.host_ingress`；四 gate 均 false、LKG journal 與該 run queue 回執不存在、path／timer 停用。主機尚未完成首次初始化與驗收，不能用直接開 gate 代替。
+
+本輪僅修正 Actions 將 rejected/exit-2 誤當 unreachable 的判讀，未重試部署、未更動主機設定。詳見 [拒絕原因、修正與剩餘條件](cd-rejected-2026-11-01.md)。
+
+後續準備已調整本機 controlled 範本的預設網路／CA 路徑，DB_NAME／DB_USER 改為明確必填；保留 combined health 與所有既有安全檢查。設定草稿僅放本機 `configuration-drafts/`，四 gate 均 false，未安裝；PR 說明與 [首次 bootstrap 檢查表](first-bootstrap-checklist.md) 已備妥，仍不代表正式 CD 通過。

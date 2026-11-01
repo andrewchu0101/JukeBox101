@@ -5,7 +5,7 @@
     "name": "JukeBox101",
     "purpose": "Single-instance Discord music submission and Owner review Bot on PostgreSQL",
     "repo_root": ".",
-    "last_reviewed": "2026-10-31"
+    "last_reviewed": "2026-11-01"
   },
   "instructions": {
     "files": [
@@ -142,12 +142,21 @@
     "notes": ""
   },
   "known_unknowns": [
-    "Production SSH account currently cannot operate Docker",
-    "Actual production configuration, database target and compatible last-known-good image require current inventory",
-    "GitHub environment configuration and branch protections require repository administrator permissions",
+    "Local controlled Compose defaults are reviewed, but production configuration hashes and GitHub verifier machine identity still require owner acceptance; public GHCR pull does not itself require registry credentials",
+    "A compatible verified registry baseline, real Gateway health and first bootstrap remain required before creating the production journal",
+    "Systemd path/timer and production Docker adapter recovery require integrated acceptance before host gates are enabled",
+    "Reviewed host blobs must be regenerated from the final merged workflow/schema content; local worktree drafts are not production policy",
     "Each maintainer must subscribe to Issue #7 and enable their own verified email; notification delivery cannot be configured for another account"
   ],
   "evidence": [
+    {
+      "fact": "Controlled Compose requires explicit DB identity and validates actual-host defaults plus reviewed network/CA overrides without weakening combined health or isolation",
+      "source": "scripts/ci/runtime_smoke.py#assert_controlled_policy"
+    },
+    {
+      "fact": "The actual deployment shell distinguishes rejected/exit-2 from transport exit-255 and never resubmits after a lost response",
+      "source": "tests/test_deploy_workflow_polling.py"
+    },
     {
       "fact": "Single Gateway entrypoint and shutdown health invalidation",
       "source": "bot/__main__.py#_run_gateway"

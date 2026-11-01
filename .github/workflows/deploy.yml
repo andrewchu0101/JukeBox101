@@ -80,8 +80,16 @@ jobs:
           printf 'deploy-v1 %s %s %s %s\n' "$COMMIT" "$DIGEST" "$RELEASE_RUN" "$RELEASE_ATTEMPT" |
             "${remote[@]}" || true
           for poll in {1..120}; do
+            ssh_status=0
             status="$(printf 'status-v1 %s %s\n' "$RELEASE_RUN" "$RELEASE_ATTEMPT" |
-              "${remote[@]}")" || status=unreachable
+              "${remote[@]}")" || ssh_status=$?
+            # Ingress uses exit 2 for rejected; SSH transport failures use 255.
+            if [[ "$ssh_status" == 255 ]]; then
+              status=unreachable
+            elif [[ "$ssh_status" != 0 && "$ssh_status:$status" != '2:rejected' ]]; then
+              printf 'Invalid host response\n'
+              exit 1
+            fi
             case "$status" in
               succeeded) printf 'Deployment succeeded\n'; exit 0 ;;
               pending|running|unreachable) sleep 5 ;;
