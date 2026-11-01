@@ -6,6 +6,8 @@
 
 Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**。自動整合測試使用 PostgreSQL 18.6；目前 Supabase PostgreSQL 17.11 已完成首筆指定投稿落盤驗證，尚非完整版本相容性驗收。
 
+> 部署現況（2026-11-02，Asia/Taipei）：借用的 Hostinger VPS 已停止提供 JukeBox101 服務，Bot／專用 PostgreSQL 已停止，專用 SSH 與 sudo 授權已撤銷。舊的 repository secret `HOSTINGER_SSH_KEY` 已移除，`CD_ENABLED` 目前為 `false`；另一部署目標與既有 CI／Release 流程保留。資料與受限備存檔仍保留。詳見 [VPS 停用與權限撤銷紀錄](docs/deploy/vps-retirement-2026-11-02.md)。以下較早的上線／驗收敘述為歷史狀態，不代表目前仍有 VPS 服務。
+
 > 狀態（2026-10-31）：PR #2 已合併，CI 已啟用；首筆 Discord 投稿已查證寫入 Supabase，使用者確認完成時長補登與歌曲核准，版本仍未確認、Nickel 0。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。CD 尚未啟用；下一個 [自動審核與發獎 MVP](docs/mvp-auto-review-nickel.md) 尚未實作，不能據此視為已自動發獎或完整部署驗收。
 
 ## 使用者說明（user）
@@ -20,7 +22,7 @@ Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord �
 
 ### 版本狀態：先看這裡
 
-| | 目前正式版本（VPS 上線中） | 本 PR 新增、待部署功能 |
+| | 停用前的 VPS 版本（歷史行為） | 待部署功能 |
 |---|---|---|
 | 時長驗證 | Owner 手動補 | 自動向 YouTube 官方 API 取得；失敗時 Owner 可在 Discord 補 |
 | 歌曲審核 | Owner 手動核准 | 認可頻道且符合全部條件時自動核准，其餘待 Owner 審核 |
@@ -154,7 +156,7 @@ git status
 
 PR 自動測試；合併 main 後，Release 對同一份 runtime 執行離線、PostgreSQL 18／17 與 TLS 驗證，再發布 GHCR 與來源證明。正式驗收與啟用後，Deploy 在 Release 完成後自動進行受限主機部署，不需逐次人工核准；主機獨立驗證、先停舊版再啟動唯一新版，失敗時嘗試一次回滾。
 
-**正式自動部署預設關閉。** 安裝檔、設定位置、首次 baseline、必要權限與驗收步驟見 [持續部署手冊](docs/deploy/continuous-deployment.md)。合併 workflow 不等於主機已安裝或正式 CD 已驗收。CD 不會套用 migration、還原 DB、同步 Discord 指令或開啟交換／領點。
+**原 Hostinger VPS 已退役，專用權限及舊 repository secret 已撤銷。** [撤銷紀錄](docs/deploy/vps-retirement-2026-11-02.md) 說明驗證範圍與保留資料；另一部署目標與既有流水線由專案維護者管理，見 [持續部署手冊](docs/deploy/continuous-deployment.md)。合併 workflow 不等於主機已安裝或正式 CD 已驗收。CD 不會套用 migration、還原 DB、同步 Discord 指令或開啟交換／領點。
 
 兩位維護者各自訂閱 [CI/CD 通知 Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7)，再開啟個人 GitHub／Email 通知，即可收到 CI、Release 與 Deploy 的結果。通知 workflow 合併到 main 後才生效。
 
