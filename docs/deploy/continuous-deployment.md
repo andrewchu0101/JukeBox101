@@ -80,7 +80,8 @@ awk -v h=<DEPLOY_HOST 的值> '{print h, $1, $2}' /etc/ssh/ssh_host_ed25519_key.
 **4. 設定 GitHub**
 
 - Environment `production`（限制只有 main 可部署）→ Secrets：`DEPLOY_SSH_KEY`（私鑰全文）、`DEPLOY_KNOWN_HOSTS`（上一步那行）。
-- Repository variables：`DEPLOY_HOST`（主機名稱或 IP）、`CD_ENABLED=true`（總開關）。
+- production Environment 的 Variable：`DEPLOY_HOST`（主機名稱或 IP；必須與 `DEPLOY_KNOWN_HOSTS` 那一行的 IP 相同）。Environment 的同名變數會蓋過 Repository 的，所以只在一處設定。
+- **Repository** 層級的 Variable：`CD_ENABLED=true`（總開關）。必須放在 Repository 層，因為 job 的 `if` 在套用 Environment 之前就會判斷，Environment 層的值看不到。
 - 設完後刪掉本機的私鑰檔：`shred -u jukebox101-deploy-key` 或安全刪除。
 
 **5. 放好設定與秘密（第一次部署前）**
