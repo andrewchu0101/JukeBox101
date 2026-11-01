@@ -1,5 +1,7 @@
 # Release 41284353385/1 部署拒絕診斷與修正
 
+> **2026-11-01 後續**：此診斷所描述的 queue／worker／四 gate 架構已被取代，現行做法見 [continuous-deployment.md](continuous-deployment.md)。以下保留作為歷史紀錄。
+
 日期：2026-11-01，Asia/Taipei。基準 main：`7a8435f4360b2e9ce007ba0745a7909fc64cd151`。獨立分支：`work/cd-rejected-fix-20261101`。先前 worktrees 與未提交工作保留；本次交付依後續授權 commit／push 此獨立分支，不包含 main merge 或正式部署重試。
 
 ## 根因

@@ -19,6 +19,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
     permissions:
       contents: read
       packages: write
@@ -63,20 +65,68 @@ jobs:
           subject-name: ghcr.io/andrewchu0101/jukebox101
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true
-      - name: Write the bounded deployment receipt
-        env:
-          DIGEST: ${{ steps.image.outputs.digest }}
+
+  deploy:
+    # Kill switch: set repository variable CD_ENABLED=false to stop deploying without touching code.
+    needs: publish
+    if: vars.CD_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions: {}
+    environment: production
+    concurrency:
+      group: jukebox101-production
+      cancel-in-progress: false
+    env:
+      COMMIT: ${{ github.sha }}
+      DIGEST: ${{ needs.publish.outputs.digest }}
+      RELEASE_RUN: ${{ github.run_id }}
+      RELEASE_ATTEMPT: ${{ github.run_attempt }}
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+    steps:
+      - name: Ask the host to switch to this exact image and wait for its answer
+        shell: bash
         run: |
-          mkdir release-receipt
-          python3 - <<'PY'
-          import json, os, pathlib
-          receipt = dict(version=1, commit=os.environ['GITHUB_SHA'], digest=os.environ['DIGEST'],
-                         run=int(os.environ['GITHUB_RUN_ID']), attempt=int(os.environ['GITHUB_RUN_ATTEMPT']))
-          pathlib.Path('release-receipt/release.json').write_text(json.dumps(receipt) + '\n')
-          PY
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: release-receipt-${{ github.run_id }}-${{ github.run_attempt }}
-          path: release-receipt/release.json
-          if-no-files-found: error
-          retention-days: 30
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$RELEASE_RUN" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$RELEASE_ATTEMPT" =~ ^[1-9][0-9]{0,5}$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$ ]] || { echo '::error::Repository variable DEPLOY_HOST is missing or invalid'; exit 1; }
+          test -n "$DEPLOY_SSH_KEY" || { echo '::error::Environment secret DEPLOY_SSH_KEY is missing'; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo '::error::Environment secret DEPLOY_KNOWN_HOSTS is missing'; exit 1; }
+          ssh_dir="$(mktemp -d "$RUNNER_TEMP/jukebox-ssh.XXXXXX")"
+          trap 'rm -rf -- "$ssh_dir"' EXIT
+          chmod 700 "$ssh_dir"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          chmod 600 "$ssh_dir/key" "$ssh_dir/known_hosts"
+          unset DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS
+          remote=(ssh -T -p 22 -i "$ssh_dir/key" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$ssh_dir/known_hosts"
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4
+            "jukebox-deploy@$DEPLOY_HOST")
+          # The same request is idempotent on the host, so a lost connection is answered by asking again.
+          for attempt in {1..60}; do
+            ssh_status=0
+            status="$(printf 'deploy-v2 %s %s %s %s\n' "$COMMIT" "$DIGEST" "$RELEASE_RUN" "$RELEASE_ATTEMPT" |
+              "${remote[@]}")" || ssh_status=$?
+            # The host uses exit 2 for a refusal; ssh itself uses 255 for transport failures.
+            if [[ "$ssh_status" == 255 ]]; then
+              status=unreachable
+            elif [[ "$ssh_status" != 0 && "$ssh_status:$status" != '2:rejected' ]]; then
+              status=invalid
+            fi
+            case "$status" in
+              succeeded) echo 'Deployment succeeded'; exit 0 ;;
+              running|unreachable) echo "Host answer: $status; asking again in 10s"; sleep 10 ;;
+              rolled_back) echo '::error::New image was unhealthy; the previous image was restored'; exit 1 ;;
+              rollback_failed) echo '::error::Rollback failed; the host is locked until a maintainer checks it'; exit 1 ;;
+              rejected) echo '::error::Host refused the request (stale run, bad image labels, locked, or bad host config)'; exit 1 ;;
+              *) echo '::error::Unexpected host response'; exit 1 ;;
+            esac
+          done
+          echo '::error::No final answer from the host; check the host before retrying.'
+          exit 1

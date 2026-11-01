@@ -10,14 +10,13 @@ import re
 import subprocess
 from pathlib import Path
 
-from deploy.receipt import REPOSITORY, REPOSITORY_ID
-
+REPOSITORY = 'andrewchu0101/JukeBox101'
+REPOSITORY_ID = 1430572666
 NOTIFICATION_ISSUE = 7
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 WORKFLOWS = {
     '.github/workflows/ci.yml': ('CI', {'push', 'pull_request'}),
     '.github/workflows/release.yml': ('Release', {'push'}),
-    '.github/workflows/deploy.yml': ('Deploy', {'workflow_run'}),
 }
 RESULTS = {'success': '通過', 'failure': '失敗', 'cancelled': '已取消',
            'timed_out': '逾時', 'action_required': '需要處理', 'neutral': '中立結果',
@@ -78,7 +77,7 @@ def verified_run(event: dict, api) -> dict:
 
 def deployment_result(run: dict, api) -> str:
     """@description: Distinguish a real successful host deployment from skipped jobs or failed orchestration.
-    @param run: Validated Deploy run.
+    @param run: Validated Release run, whose last job is the deployment.
     @param api: GitHub jobs lookup boundary.
     @return: Truthful deployment summary without inventing rollback or active-host state.
     """
@@ -117,7 +116,9 @@ def publish(event: dict, api=github_api) -> bool:
     @return: True when posted, False for an already-published bot result; failures raise.
     """
     run = verified_run(event, api)
-    result = deployment_result(run, api) if run['name'] == 'Deploy' else RESULTS[run['conclusion']]
+    result = RESULTS[run['conclusion']]
+    if run['name'] == 'Release':
+        result = f'{result}；{deployment_result(run, api)}'
     body = comment_body(run, result)
     marker = body.split('\n', 1)[0]
     endpoint = f'repos/{REPOSITORY}/issues/{NOTIFICATION_ISSUE}'

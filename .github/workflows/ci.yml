@@ -45,8 +45,6 @@ jobs:
           printf 'RUNTIME_IMAGE=%s\n' "$image_id" >> "$GITHUB_ENV"
       - name: Exact-runtime offline smoke and Compose policy
         run: python3 -m scripts.ci.runtime_smoke
-      - name: Real isolated Compose switching and rollback with synthetic health
-        run: python3 scripts/dev/verify-cd-docker.py
       - name: Disposable PostgreSQL 18.6, TLS and exact-runtime DB contract
         run: |
           python3 scripts/dev/verify-fresh-postgres.py

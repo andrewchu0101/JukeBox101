@@ -1,14 +1,11 @@
 """Protect CI publication boundaries and closed runtime routes without credentials.
 
-The SSH helper is tested as a subprocess, while runtime policy stays offline.
+Workflow text contracts and closed runtime routes are checked offline.
 """
 
 import asyncio
-import subprocess
-import sys
+import re
 from pathlib import Path
-
-import pytest
 
 from bot.runtime_policy import check_policy
 
@@ -32,29 +29,25 @@ def test_ci_has_no_publication_or_production_secret():
             assert re.search(r'@[a-f0-9]{40}$', line)
 
 
-def test_release_and_deploy_have_separate_trust_boundaries():
-    """@description: Keep publishing behind verification and SSH behind a completed release plus host gates.
+def test_release_deploys_only_the_published_digest_behind_the_production_environment():
+    """@description: Keep publishing behind verification and SSH behind a successful publish plus the kill switch.
     @param: none
     @return: None.
     """
-    workflows = ROOT / '.github' / 'workflows'
-    release = (workflows / 'release.yml').read_text()
-    deploy = (workflows / 'deploy.yml').read_text()
+    release = (ROOT / '.github' / 'workflows' / 'release.yml').read_text()
     assert 'uses: ./.github/workflows/ci.yml' in release and 'needs: verify' in release
     assert 'docker load' in release and 'docker build' not in release
     assert 'subject-digest: ${{ steps.image.outputs.digest }}' in release
-    assert 'workflow_run:' in deploy and 'workflows: [Release]' in deploy
-    assert "vars.CD_ENABLED == 'true'" in deploy and 'environment: production' in deploy
-    assert 'cancel-in-progress: false' in deploy and 'StrictHostKeyChecking=yes' in deploy
-    secret_job = deploy.split('\n  deploy:', 1)[1]
-    assert 'checkout@' not in secret_job and 'GH_TOKEN' not in secret_job
-    assert 'rolled_back|rollback_failed|rejected)' in secret_job
-    for source in (release, deploy):
-        assert 'pull_request_target' not in source and 'self-hosted' not in source
-        for line in source.splitlines():
-            if 'uses:' in line and '@' in line:
-                import re
-                assert re.search(r'@[a-f0-9]{40}$', line)
+    assert not (ROOT / '.github' / 'workflows' / 'deploy.yml').exists()
+    secret_job = release.split('\n  deploy:', 1)[1]
+    assert 'needs: publish' in secret_job and "vars.CD_ENABLED == 'true'" in secret_job
+    assert 'environment: production' in secret_job and 'cancel-in-progress: false' in secret_job
+    assert 'StrictHostKeyChecking=yes' in secret_job and 'DIGEST: ${{ needs.publish.outputs.digest }}' in secret_job
+    assert 'checkout@' not in secret_job and 'GH_TOKEN' not in secret_job and 'permissions: {}' in secret_job
+    assert 'pull_request_target' not in release and 'self-hosted' not in release
+    for line in release.splitlines():
+        if 'uses:' in line and '@' in line:
+            assert re.search(r'@[a-f0-9]{40}$', line)
 
 
 def test_notifications_do_not_execute_triggering_pr_code_or_hold_deployment_secrets():
@@ -63,28 +56,12 @@ def test_notifications_do_not_execute_triggering_pr_code_or_hold_deployment_secr
     @return: None.
     """
     source = (ROOT / '.github' / 'workflows' / 'notify.yml').read_text()
-    assert 'workflows: [CI, Release, Deploy]' in source
+    assert 'workflows: [CI, Release]' in source
     assert 'ref: ${{ github.sha }}' in source and 'persist-credentials: false' in source
     assert 'issues: write' in source and 'actions: read' in source
     assert 'github.event.workflow_run.head_sha' not in source
     assert all(forbidden not in source for forbidden in ('secrets.', 'packages: write', 'id-token: write',
                                                         'pull_request_target', 'download-artifact', 'ssh '))
-    deploy = (ROOT / '.github' / 'workflows' / 'deploy.yml').read_text()
-    assert 'needs: notify' not in deploy
-
-
-@pytest.mark.parametrize('request_line', [
-    f'deploy-v1 {"a"*40} sha256:{"b"*64} 10 1\n',
-    'status-v1 10 1\n', 'status-v1 10 1\nextra', 'x' * 258,
-])
-def test_host_helper_always_refuses_unverified_deployment(request_line):
-    """@description: No env switch or syntactically valid request enables missing receipt verification.
-    @param request_line: Synthetic SSH input.
-    @return: None.
-    """
-    result = subprocess.run([sys.executable, '-m', 'deploy.ssh_request'], input=request_line,
-                            text=True, capture_output=True, timeout=5)
-    assert result.returncode == 2 and result.stdout == 'rejected\n'
 
 
 def test_runtime_closed_contract(monkeypatch):

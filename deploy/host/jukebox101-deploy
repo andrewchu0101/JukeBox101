@@ -1,0 +1,131 @@
+#!/bin/bash
+# JukeBox101 host deploy: the only command the restricted SSH key can run (via sudo -n, no arguments).
+# stdin, one line:  deploy-v2 <commit> <image digest> <run id> <run attempt>
+# stdout, one word: succeeded | rolled_back | rollback_failed | rejected | running
+# Same run+attempt is idempotent, so the workflow may simply send it again after a dropped connection.
+# JB_* variables exist for tests only; sudo clears the caller's environment, so SSH cannot set them.
+set -euo pipefail
+export PATH=/usr/bin:/bin DOCKER_HOST=unix:///var/run/docker.sock
+umask 077
+
+STATE=${JB_STATE_DIR:-/var/lib/jukebox101-deploy}
+COMPOSE=${JB_COMPOSE_FILE:-/etc/jukebox101/compose.cd.yaml}
+ENVFILE=${JB_ENV_FILE:-/etc/jukebox101/bot.env}
+CONF=${JB_CONF_FILE:-/etc/jukebox101/deploy.conf}
+DOCKER=${JB_DOCKER:-/usr/bin/docker}
+OWNER_UID=${JB_OWNER_UID:-0}
+START_TIMEOUT=${JB_START_TIMEOUT:-180}
+SOAK_SECONDS=${JB_SOAK_SECONDS:-60}
+SOAK_STEP=${JB_SOAK_STEP:-5}
+FLOCK=${JB_FLOCK:-/usr/bin/flock}
+IMAGE=ghcr.io/andrewchu0101/jukebox101
+SOURCE=https://github.com/andrewchu0101/JukeBox101
+ROLLBACK_TAG=jukebox101-rollback:previous
+export DOCKER_CONFIG="$STATE/docker"
+trap '' HUP PIPE # a dropped SSH session must never interrupt a half-finished switch
+
+commit= digest= run= attempt= emitted= disrupted=
+
+say() { printf '%s\n' "$1" || true; }
+
+emit() { # record the terminal result durably, then print it
+  emitted=1
+  if [ -n "$commit" ]; then
+    printf '%s %s %s\n' "$1" "$commit" "$digest" > "$STATE/results/$run-$attempt.tmp"
+    mv "$STATE/results/$run-$attempt.tmp" "$STATE/results/$run-$attempt"
+  fi
+  say "$1"
+  [ "$1" != rejected ] || exit 2
+  exit 0
+}
+
+on_exit() { # an unexpected crash is reported honestly: after the old Bot was stopped it needs a human
+  [ -n "$emitted" ] || { [ -n "$disrupted" ] && touch "$STATE/locked"; emit "$([ -n "$disrupted" ] && echo rollback_failed || echo rejected)"; }
+}
+trap on_exit EXIT
+
+setting() { { sed -n "s/^$1=//p" "$2" 2> /dev/null || true; } | head -n 1 | tr -d "\"'"; } # missing file = empty
+
+owned() { # root-owned and not writable by group/others
+  [ -f "$1" ] && [ -z "$(find "$1" -maxdepth 0 \( ! -user "$OWNER_UID" -o -perm -g+w -o -perm -o+w \))" ]
+}
+
+gateways() { # running containers of this Discord application (plus the optional legacy container)
+  { "$DOCKER" ps -q --filter "label=com.jukebox101.gateway.application=$app_id"
+    [ -z "$legacy" ] || "$DOCKER" ps -q --filter "name=^/${legacy}\$"
+  } | sort -u
+}
+
+compose_run() { # $1 image ref, then compose arguments
+  local image=$1; shift
+  env JB_IMAGE="$image" "$DOCKER" compose --project-name jukebox101 --env-file "$ENVFILE" --file "$COMPOSE" "$@"
+}
+
+stop_all() {
+  local ids; ids=$(gateways)
+  [ -z "$ids" ] || "$DOCKER" stop --time 30 $ids > /dev/null
+  compose_run "$ref" stop --timeout 30 bot > /dev/null 2>&1 || true
+  [ -z "$(gateways)" ]
+}
+
+stable() { # one Gateway, healthy, and the same container with no restarts for the whole soak window
+  local id first now i
+  id=$(gateways); [ "$(printf '%s' "$id" | wc -w)" -eq 1 ] || return 1
+  first=$("$DOCKER" inspect --format '{{.Id}} {{.State.Running}} {{.State.Health.Status}} {{.RestartCount}}' "$id")
+  [[ $first == *' true healthy '* ]] || return 1
+  for ((i = 0; i < SOAK_SECONDS / SOAK_STEP; i++)); do
+    sleep "$SOAK_STEP"
+    now=$("$DOCKER" inspect --format '{{.Id}} {{.State.Running}} {{.State.Health.Status}} {{.RestartCount}}' "$id") || return 1
+    [ "$now" = "$first" ] || return 1
+  done
+}
+
+start_release() {
+  compose_run "$1" up --detach --no-deps --no-build --pull never --wait --wait-timeout "$START_TIMEOUT" bot > /dev/null 2>&1 &&
+    stable
+}
+
+admit() { # every check here runs before anything is stopped
+  [ ! -e "$STATE/locked" ] && owned "$COMPOSE" && owned "$ENVFILE" || return 1
+  [[ $app_id =~ ^[0-9]+$ ]] || return 1
+  [ "$run" -gt "$(cat "$STATE/highwater" 2>/dev/null || echo 0)" ] || return 1
+  "$DOCKER" pull "$ref" > /dev/null 2>&1 || return 1
+  [ "$("$DOCKER" image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.opencontainers.image.source"}} {{.Config.User}}' "$ref")" = "$commit $SOURCE 10001:10001" ] || return 1
+  [ "$(gateways | wc -l)" -le 1 ]
+}
+
+main() {
+  local line request_pattern='^deploy-v2 ([a-f0-9]{40}) (sha256:[a-f0-9]{64}) ([1-9][0-9]{0,19}) ([1-9][0-9]{0,5})$'
+  IFS= read -r -t 5 -n 257 line || true
+  [[ ${#line} -le 256 && $line =~ $request_pattern ]] || emit rejected
+  commit=${BASH_REMATCH[1]} digest=${BASH_REMATCH[2]} run=${BASH_REMATCH[3]} attempt=${BASH_REMATCH[4]}
+  ref=$IMAGE@$digest
+  mkdir -p "$STATE/results" "$DOCKER_CONFIG"
+  exec 9> "$STATE/lock"
+  "$FLOCK" -n 9 || { emitted=1; say running; exit 0; }
+  if [ -f "$STATE/results/$run-$attempt" ]; then
+    read -r saved_status saved_commit saved_digest < "$STATE/results/$run-$attempt"
+    emitted=1; [ "$saved_commit $saved_digest" = "$commit $digest" ] && say "$saved_status" || say rejected; exit 0
+  fi
+  app_id=$(setting DISCORD_EXPECTED_APPLICATION_ID "$ENVFILE") legacy=$(setting LEGACY_CONTAINER "$CONF")
+  [[ -z $legacy || $legacy =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]] || emit rejected
+  admit || emit rejected
+  ls -1t "$STATE/results" | tail -n +201 | while read -r old; do rm -f -- "$STATE/results/$old"; done
+  switch_release
+}
+
+switch_release() {
+  local ids rollback_ready=
+  ids=$(gateways)
+  # Keep the exact image that is running now: it is the rollback target, even if it was never in the registry.
+  [ -z "$ids" ] || "$DOCKER" tag "$("$DOCKER" inspect --format '{{.Image}}' $ids)" "$ROLLBACK_TAG"
+  ! "$DOCKER" image inspect "$ROLLBACK_TAG" > /dev/null 2>&1 || rollback_ready=1
+  echo "$run" > "$STATE/highwater"
+  disrupted=1
+  if stop_all && start_release "$ref"; then echo "$digest" > "$STATE/current"; emit succeeded; fi
+  if [ -n "$rollback_ready" ] && stop_all && start_release "$ROLLBACK_TAG"; then emit rolled_back; fi
+  touch "$STATE/locked" # a failed rollback needs a person; no further deploy until they remove this file
+  emit rollback_failed
+}
+
+main

@@ -1,83 +1,128 @@
-# JukeBox101 持續部署
+# JukeBox101 持續部署（2026-11-01 精簡版）
 
-## 執行後會發生什麼
+> 取代先前的 queue／worker／journal／四道 gate 架構。舊架構的診斷留在 [cd-rejected-2026-11-01.md](cd-rejected-2026-11-01.md) 供追溯，不再是現行做法。
 
-PR 只測試，不取用部署秘密。合併 main 後，`Release` 呼叫同一個 CI，建立一次 runtime，對同一 image ID 執行離線、Compose、PostgreSQL 18.6／17.11 與 TLS 驗證。成功後才把這個映像推送 GHCR，產生 GitHub OIDC 來源證明與 `release.json`。不在測試後重建部署映像。
+## 合併 main 之後會發生什麼
 
-`Release` 完成成功後，另一個 `Deploy` workflow 才可能執行。它要求 repo variable `CD_ENABLED=true`，先核對目前 main、固定 repo、成功的 push run／attempt，再讀取該次唯一的 receipt。依 2026-10-31 使用者選擇，正式驗收與 CD 啟用後採全自動部署；`production` Environment 保留 main 限制及專用 secrets，日常部署不設 required reviewers／wait timer。首次主機安裝、baseline 與來源證明仍須完成實際驗收，不能跳過驗收直接開 gate。部署 job 不 checkout、不持有 GitHub Token，只能用專用 SSH key 送固定協定。
+```
+push main → CI 測試 → 發布同一個已測映像到 GHCR（附 GitHub 來源證明）
+          → deploy job：SSH 登入主機，送出一行「請換成這個 digest」
+          → 主機腳本：拉映像 → 核對標籤 → 停舊 Bot → 啟動新 Bot → 健康觀察
+          → 成功：Actions 綠燈　失敗：自動換回舊映像，Actions 紅燈
+```
 
-主機獨立驗證來源證明、核准的 workflow／schema blob、固定設定雜湊與秘密檔 metadata。先下載新版，確認上一穩定版健康，再停舊 Bot、確認退出、啟動唯一新版。啟動上限 180 秒，再連續觀察 120 秒。Discord 有短暫維護中斷。新版失敗只嘗試回滾一次；`rolled_back` 也會讓 Actions 失敗，`rollback_failed` 鎖住後續部署並要求維運介入。
+全部在 `.github/workflows/release.yml`（一條流水線，不再有獨立的 Deploy workflow，也不靠 artifact 傳遞 digest）。主機端只有一支腳本：`deploy/host/jukebox101-deploy`。
 
-CD 不執行 migration、資料還原、command sync、補償或業務指令，不管理 PostgreSQL／Office／Caddy／DNS／防火牆。formal exchange 與 claim 固定 off。自動審核／API 保存及其他新功能的現行設定，須在 bootstrap 前逐項盤點，不能用範本默默覆寫。
+## 主機腳本做的事（與不做的事）
 
-## 元件與權限
+**接受的唯一輸入**：`deploy-v2 <commit> <digest> <run> <attempt>`，一行，其他一律 `rejected`。
 
-| 元件 | 權限與用途 |
+**停任何東西之前，先全部檢查**：
+
+| 檢查 | 目的 |
 |---|---|
-| `.github/workflows/ci.yml` | PR／main／reusable CI，只有 contents:read。只有 release caller 要求時，輸出該 run/attempt 的已測映像 artifact |
-| `.github/workflows/release.yml` | main push；測試 job 無秘密，publish job 才有 packages／attestations／id-token:write。保留既有 package visibility；2026-11-01 已實測固定 public digest 匿名可 pull，本輪未變更可見性 |
-| `.github/workflows/deploy.yml` | 成功 Release 的 workflow_run；resolve 只有 contents/actions:read。SSH job 使用 production Environment、同 repo 固定併發鎖，不取消進行中的部署 |
-| `deploy/release_request.py` | 嚴格核對 receipt/run/attempt，拒絕過期版本、fork、PR、模糊或過期 artifact、ZIP 路徑與輸出注入；不把 artifact 當成主機授權 |
-| `deploy/host_ingress.py` | root 固定 stdin 協定、有界持久佇列。SSH 中斷不會取消已受理的工作 |
-| `deploy/host_worker.py` | systemd 執行的獨立 root worker，使用固定 Docker socket／Compose／project，驗證簽章與 journal，再執行部署／回滾 |
+| 沒有 `locked` 檔 | 上次回滾失敗時，要有人看過才能再部署 |
+| compose／bot.env 為 root 擁有、群組與其他人不可寫 | 不信任別人改得動的設定 |
+| run 編號大於已部署過的最高值 | 舊的 workflow 不能把主機倒退成舊版本 |
+| 映像只來自 `ghcr.io/andrewchu0101/jukebox101@sha256:…` | 金鑰外洩時，只能部署我們自己命名空間的映像 |
+| 映像標籤 `revision` = 請求的 commit、`source` = 本 repo、使用者 = 10001 | 把 digest 綁回 CI 測過的那個 commit |
+| 同一個 Discord 應用程式最多只有一個 Bot 在跑 | 避免兩個 Gateway 同時連線 |
 
-CI 另執行 `scripts/dev/verify-cd-docker.py`：用隨機 project、無網路、無秘密的真實 Compose 容器，演練成功、回滾及回滾失敗；health 與 release identity 是 synthetic。此演練不能取代正式 adapter、真實 Gateway、GHCR 簽章或 SSH/systemd 驗收。
+**切換**：記下目前執行中的映像並標為 `jukebox101-rollback:previous`（即使它從未進過 registry，例如本機 v7）→ 停舊 Bot 並確認已停 → 啟動新 Bot，等 Docker healthcheck 通過（最多 180 秒）→ 再觀察 60 秒，同一個容器、不重啟、持續 healthy。失敗只回滾一次；回滾也失敗就建立 `locked`。
 
-GitHub `workflow_run` 有獨立的權限邊界，不能接受 PR artifacts。來源查核與環境 gate 是必要條件。來源：[GitHub workflow_run](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run)、[gh attestation verify](https://cli.github.com/manual/gh_attestation_verify)。
+**回覆**：`succeeded`、`rolled_back`（新版不健康，已換回舊版，Actions 仍然紅燈）、`rollback_failed`、`rejected`、`running`。同一個 run／attempt 重送會得到同一個答案，不會重複部署，所以 SSH 斷線後 workflow 只是再問一次。
 
-## 首次安裝與啟用
+**不做**：不執行資料庫 migration、不還原資料、不同步指令、不管理 PostgreSQL／Caddy／DNS、不讀取或印出秘密。formal exchange 與 claim 由 compose 固定 off。
 
-這是分開的階段；合併 workflow 不代表正式 CD 已啟用。沒有完成的驗收不得透過把 policy boolean 設為 true 來代替。
+## 主機需要的東西
 
-1. Repo 管理員保護 main：要求 PR、必要 CI、審查，禁止 force push／刪除。建立 `production` Environment，限制 main 並保存專用 secrets；確認 release job 的 GHCR／OIDC／attestation 權限。依已選定的全自動模式，驗收完成啟用時不設定 required reviewers 或 wait timer。main 的 PR／CI／審查保護仍保留；合併後不再逐次核准部署。
-2. 先在隔離環境驗證 Release 的實際映像、GHCR push、`gh attestation verify` 真實輸出與 verifier 的精確欄位契約。目前 verifier 的單元測試使用 synthetic fixture，不能當作密碼學驗收。主機需要固定 `/usr/bin/gh`、`/usr/bin/docker`、`/usr/bin/python3`；controller 僅用標準庫及包內 runtime policy helper。
-3. 重新盤點正式環境：Bot image ID／command／labels、實際 Compose/env、功能開關、秘密檔 uid/gid/mode、TLS CA、database 名稱／使用者／埠、網路及所有相同 Application 的 Gateway。Supabase 可能使用 `postgres` 與帶專案 suffix 的角色，不能沿用歷史 `jukebox101` 假設。root Compose 的 DB_NAME／DB_USER／DB_PORT 由核准的 env 提供。
-4. 在 repo 根目錄執行 `sh scripts/deploy/package-cd.sh`，產生 `artifacts/cd-host.<random>.tar.gz` 與 SHA-256。包內只有明列的 controller、policy helper、units、Compose 及文件；不含 secrets、映像、測試資料。`approved_blobs` 由目前工作樹計算，須確認與實際合併 commit 相同；若合併時有修改，重新封裝與審查。
-5. 管理員建立專用 `jukebox-deploy` 系統帳號，不給 Docker group 或一般 sudo。在 root 管理且 deploy 帳號不可寫的 home／`.ssh`／`authorized_keys` 安裝專用公鑰。SSH 登入只使用這一行格式：
+| 路徑 | 內容 | 誰準備 |
+|---|---|---|
+| `/usr/local/libexec/jukebox101-deploy` | 部署腳本 | `install-host.sh` |
+| `/etc/sudoers.d/jukebox101-deploy` | 只允許 `jukebox-deploy` 無參數執行上面那支腳本 | `install-host.sh` |
+| `/etc/ssh/authorized_keys/jukebox-deploy` | 一行受限公鑰（`restrict,command="sudo -n …"`） | `install-host.sh` |
+| `/etc/jukebox101/compose.cd.yaml` | 單一 `bot` 服務；已存在就保留，不覆寫 | 既有或安裝器放範本 |
+| `/etc/jukebox101/bot.env` | `DB_HOST`、`DB_NAME`、`DB_USER`、`DISCORD_EXPECTED_APPLICATION_ID`、`DISCORD_OWNER_USER_ID` 等 | 管理者（既有） |
+| `/etc/jukebox101/secrets/*.txt`、CA 檔 | Discord token、DB 密碼、TLS CA（0400，uid/gid 10001） | 管理者（既有） |
+| `/etc/jukebox101/deploy.conf`（選用） | 只有一行 `LEGACY_CONTAINER=<容器名稱>`：第一次接手一個沒有 application 標籤的舊 Bot 時使用 | 管理者 |
+| `/var/lib/jukebox101-deploy/` | 腳本自己的狀態（最高 run、結果、`locked`） | 腳本 |
 
-   ```text
-   restrict,command="/usr/local/libexec/jukebox101-cd-ssh" ssh-ed25519 <專用公鑰>
-   ```
+沒有 policy 雜湊、`approved_blobs`、journal、systemd unit、gate 或 GitHub 機器身分。修改 compose 不需要重算任何雜湊。
 
-   `authorized_keys` 與父目錄必須是 root 所有且 deploy 帳號可讀／可通行（例如目錄 0755、檔案 0644；公鑰不是秘密）；帳號不能修改它們。停用該帳號的密碼登入，且不可另放未受限 key。不要重用 Office／root／個人 SSH key。私鑰只放 GitHub production Environment。
-6. 解開審查包，先執行 `sh scripts/deploy/install-cd-host.sh` 看計畫，再以 root 執行 `sh scripts/deploy/install-cd-host.sh --apply`。安裝器只接受首次安裝，拒絕覆寫既有 controller／policy／Compose／journal。它不安裝帳號/key、啟動 units、啟停 Bot 或讀取秘密。安裝後所有 gate 維持 false。
-7. 把 root Compose 與既有實際設定比對，保留已核准業務行為與網路。把實際非秘密 `/etc/jukebox101/compose.cd.yaml`、`/etc/jukebox101/bot.env` 的 SHA-256、metadata 與 approved blob 清單填入 policy；填入固定 Application ID、network names、秘密檔路徑。不要把展開的 env/config 或秘密印到日誌。目前 GHCR 為 public，本機已用空白 Docker credential config 匿名 pull 成功；主機也須另驗此路徑，不因此替本機 token 增加 read:packages 或建立不必要的 registry 認證。固定 `/etc/jukebox101/gh` 的 GitHub API／來源驗證認證仍須由管理者選定專用最小權限身分，不使用個人全權 PAT；認證檔建立或權限變更必須另行批准。
-8. **人工 bootstrap**：先保存當前真正 image ID／相容設定及復原入口。舊 local v7 不能冒充 GHCR digest，也可能不支援新 `bot.healthcheck`。取得一份經驗證、與現有資料／設定相容且支援 Gateway health 的 GHCR baseline，依既有維護手冊手動完成 stop-before-start 切換及完整健康觀察。需要寫入新資料格式的版本，其回滾最低版本以 `api-retention-release.md` 為準；不要還原資料庫來完成 Bot 回滾。
-9. baseline 真實健康後，才以 root 建立 `/var/lib/jukebox101-cd/journal.json`（0600），內容如下；digest 必須是實測的 registry digest，不能是 local config/image ID。
+## 一次性設定（維護者一個人，約 15 分鐘）
 
-   ```json
-   {"version":1,"last_known_good":"sha256:<已驗證 baseline registry digest>","highwater":0,"requests":{}}
-   ```
+**1. 產生新的專用 SSH key（在你自己的電腦，不是主機；私鑰不要傳給任何人，包括 Claude）**
 
-10. 在隔離 Docker 與 SSH/systemd 環境實測成功、新版失聯回滾、SSH 中斷、worker 中斷、重啟恢復與回滾失敗；核對受限帳號不能取得 shell／執行任意 sudo、舊版健康訊號相容且無雙 Gateway。真實 CLI provenance、Docker 與 baseline 接受後，才把四個 gate（`enabled`、`crypto_acceptance_verified`、`docker_acceptance_verified`、`baseline_supports_gateway_health`）設為 true。
-11. `systemctl daemon-reload`，再 `systemctl enable --now jukebox101-cd.path jukebox101-cd.timer`。path 接收新 request，timer 在開機或 worker 退出後重新處理未完成 journal；不依賴 SSH session 存活。這兩個 unit 只啟動 JukeBox worker。
-12. 設 GitHub Environment secrets `DEPLOY_SSH_KEY`、`DEPLOY_KNOWN_HOSTS`（透過可信既有通道核對 host key，不能臨場 ssh-keyscan 後直接信任），以及 Environment variable `DEPLOY_HOST`。最後設定 **repository variable** `CD_ENABLED=true`；它必須在 repo 層，resolve job 才看得到。之後一次 main push 會進入 Release → Deploy 自動部署。尚未完成或已過期的先前 release 不會因開 gate 自動補部署。
+```sh
+ssh-keygen -t ed25519 -N '' -C jukebox101-deploy-2026-11 -f ./jukebox101-deploy-key
+```
 
-## 兩位維護者的 GitHub／Email 通知
+得到 `jukebox101-deploy-key`（私鑰）與 `jukebox101-deploy-key.pub`（公鑰）。不要重用個人、Office 或 root 的 key。
 
-通知集中在 [CI/CD 執行通知 Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7)。兩人各用自己的帳號按 **Subscribe（訂閱）**，再到 [個人通知設定](https://github.com/settings/notifications) 開啟參與／訂閱對話的 **On GitHub** 與 **Email**，並確認接收地址已驗證。這些是每人帳號的個別設定，專案無法替另一個帳號開啟或確認 Email 送達。
+**2. 在主機安裝（以 root；只需要公鑰檔）。Google Cloud 的 Debian／Ubuntu 映像已有 `sudo`、`useradd`、`flock`**
 
-原生 Actions 通知主要發送給觸發該 run 的使用者；只開啟個人 Actions 通知，無法保證兩位每次都收到。`Notify` 改用 `workflow_run`，在 CI、Release、Deploy 完成後向固定 Issue 新增結果。通知 workflow 必須先合併到 main 才會生效；本次首次建立 Issue 不等於通知已自動啟用。
+```sh
+git clone https://github.com/andrewchu0101/JukeBox101.git && cd JukeBox101   # 或更新既有 clone 到 main
+sh scripts/deploy/install-host.sh --pubkey /path/to/jukebox101-deploy-key.pub            # 先看計畫
+sh scripts/deploy/install-host.sh --pubkey /path/to/jukebox101-deploy-key.pub --apply    # 實際安裝
+```
 
-通知程式只 checkout 通知 workflow 本身的可信預設分支 snapshot，不 checkout 觸發的 PR、不下載 PR artifacts、不讀取部署 secrets。每次重新查核固定 repo／workflow／run／attempt，只張貼固定狀態、commit 與 Actions 連結，沒有 PR 標題、日誌、秘密或使用者內容。GitHub Actions bot 的同一 run／attempt 不重複貼文，不同 run 不共用會取代排隊工作的 concurrency group。
+可重複執行；**輪替金鑰就是用新公鑰再跑一次 `--apply`**，舊 key 立刻失效。安裝器不會動執行中的 Bot、秘密、bot.env 或既有的 compose.cd.yaml，結尾會印出新 key 的指紋，請與你產生的核對。
 
-Deploy 的訊息讀取實際 `deploy` job 結果；被跳過時明確顯示未部署，不會因其他 job 綠燈宣稱上線。失敗／中斷時請到該 Actions 連結確認主機狀態與回滾結果。通知與部署獨立：Email 的傳遞或 Notify job 的失敗都不會觸發、阻止或重跑 CD。關閉 Issue #7 會讓後續通知 job 拒絕寫入。
+**3. 取得主機指紋（在主機上執行）**
 
-官方說明：[Actions 通知對象](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs)、[通知與訂閱](https://docs.github.com/en/subscriptions-and-notifications/concepts/about-notifications)、[個人通知設定](https://docs.github.com/en/subscriptions-and-notifications/get-started/configuring-notifications)。
+```sh
+awk -v h=<DEPLOY_HOST 的值> '{print h, $1, $2}' /etc/ssh/ssh_host_ed25519_key.pub
+```
 
-## 停用與故障
+輸出一行即為 `DEPLOY_KNOWN_HOSTS`。不要在 Actions 裡臨時 `ssh-keyscan`。
 
-- 要停止未來部署，先把 repository variable `CD_ENABLED` 改為 false，再將 root policy `enabled` 設為 false；保留正在執行 transaction 的 journal，先查狀態再決定維護操作。不要直接中斷正在切換的 worker。
-- 查看 Actions 的 Release／Deploy 結果及 root journal 的安全狀態欄位。查詢 `status-v1 <release-run> <attempt>` 只回一個狀態字，不回秘密或完整 journal。
-- GitHub timeout 不代表主機停止處理；先查 receipt，不能因此手動啟動第二個 Gateway。
-- ingress 的 `rejected` 會搭配 exit code 2；這是明確拒絕，不是 SSH transport 的 exit code 255。Actions 須保留拒絕結果並立即失敗，不能將所有非零退出碼都改成 unreachable 後等到逾時。
-- worker `rollback_failed` 時不再自動重試部署或反覆回滾。由維運核對實際唯一容器、資料相容性與健康，再另行復原，不改寫 journal 來偽裝成功。
-- Queue／journal 有 128 requests 上限；目前沒有自動清理歷史。接近上限時須在 worker 閒置、保留安全稽核紀錄與 highwater 的前提下另行維護，不執行廣泛 Docker 清理。
+**4. 設定 GitHub**
 
-## 最近一次故障盤點（2026-11-01）
+- Environment `production`（限制只有 main 可部署）→ Secrets：`DEPLOY_SSH_KEY`（私鑰全文）、`DEPLOY_KNOWN_HOSTS`（上一步那行）。
+- Repository variables：`DEPLOY_HOST`（主機名稱或 IP）、`CD_ENABLED=true`（總開關）。
+- 設完後刪掉本機的私鑰檔：`shred -u jukebox101-deploy-key` 或安全刪除。
 
-main 已有完整 CI／Release／Deploy／Notify。Release `41284353385/1` 成功，Deploy `41285228656/1` 收到 rejected 後逾時。本輪透過已登入的 Hostinger Web console 唯讀核對：入口為新 `deploy.host_ingress`；四 gate 均 false、LKG journal 與該 run queue 回執不存在、path／timer 停用。主機尚未完成首次初始化與驗收，不能用直接開 gate 代替。
+**5. 放好設定與秘密（第一次部署前）**
 
-本輪僅修正 Actions 將 rejected/exit-2 誤當 unreachable 的判讀，未重試部署、未更動主機設定。詳見 [拒絕原因、修正與剩餘條件](cd-rejected-2026-11-01.md)。
+- `/etc/jukebox101/bot.env`：root 擁有、0600 或 0644，群組與其他人不可寫。至少含 `DB_HOST`、`DB_NAME`、`DB_USER`、`DISCORD_EXPECTED_APPLICATION_ID`、`DISCORD_OWNER_USER_ID`。
+- 秘密檔放 `/etc/jukebox101/secrets/`（安裝器已建好目錄）：`discord_bot_token.txt`、`db_password.txt`，**擁有者 `10001:10001`、權限 `0400`**。Bot 自己的檢查只接受這個組合，`chmod 600` 或 andrew 擁有都會被拒絕。
+  ```sh
+  sudo install -o 10001 -g 10001 -m 0400 /dev/stdin /etc/jukebox101/secrets/discord_bot_token.txt   # 貼上後按 Ctrl-D
+  ```
+- Supabase CA 檔放 `/etc/jukebox101/supabase-ca-2021.crt`（compose 預設路徑；放別處就設 `JB_DB_CA_FILE`）。
+- 這是全新主機、沒有舊 Bot，所以不需要 `deploy.conf`，第一次部署也沒有回滾目標：失敗時回報 `rollback_failed` 並鎖住，代表主機上沒有任何 Bot 在跑，修好後刪除 `locked` 再重推即可。
+- **先停掉其他地方的 Bot**（例如舊的 Hostinger）。同一個 Discord token 不能兩處同時連線。
 
-後續準備已調整本機 controlled 範本的預設網路／CA 路徑，DB_NAME／DB_USER 改為明確必填；保留 combined health 與所有既有安全檢查。設定草稿僅放本機 `configuration-drafts/`，四 gate 均 false，未安裝；PR 說明與 [首次 bootstrap 檢查表](first-bootstrap-checklist.md) 已備妥，仍不代表正式 CD 通過。
+## Google Cloud 注意事項
+
+| 項目 | 做法 |
+|---|---|
+| VM | e2-micro（1GB、amd64）可跑；compose 上限 512MB，建議保留 2GB swap。映像為 linux/amd64，**不要選 ARM 機型** |
+| 外部 IP | 預設是暫時 IP，VM 停機再開機可能變，`DEPLOY_HOST` 一變部署就失敗。請保留靜態 IP 或使用網域；外部 IPv4 是否收費請看帳單頁與預算警示 |
+| 防火牆 | GitHub Actions 的來源 IP 不固定，port 22 必須允許任意來源。安全性靠「只有受限的專用 key 能登入、不能開 shell」，個人登入用的 key 請另外保管，並關閉密碼登入 |
+| SSH key | 用途分開，各一把：登入 VM、VM 讀 GitHub（唯讀 deploy key，只在 clone repo 跑 `install-host.sh` 時用）、CD（`DEPLOY_SSH_KEY`）。**CD 這把不要與前兩把共用** |
+| 映像來源 | 部署不需要在 VM 上 clone repo，Docker 直接從 GHCR 拉映像（package 為 public 時免認證；改為 private 時把憑證放在 `/var/lib/jukebox101-deploy/docker/config.json`） |
+| Bot 網路 | 安裝器會建立 `jukebox101_egress`、`jukebox101_database`（兩個一般 bridge 網路，沒有額外限制）；日後想收緊出站規則再另行設計 |
+
+## 日常操作
+
+| 想做的事 | 做法 |
+|---|---|
+| 暫停自動部署 | Repository variable `CD_ENABLED` 改為 `false`（程式不用動） |
+| 看結果 | Actions 的 `Release` run；`Notify` 會把結果（含部署 job）貼到 [Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7) |
+| `rolled_back` | 新版在主機上不健康、已換回舊版。看 `docker logs` 找原因，修正後再 push |
+| `rollback_failed` | 主機鎖住。確認 Bot 只有一個容器且健康後，刪除 `/var/lib/jukebox101-deploy/locked` |
+| `rejected` | 見 Actions 日誌的說明：常見原因是 run 編號過舊、映像標籤不符、`locked` 存在、compose／bot.env 權限被改動 |
+| 看主機最後狀態 | `cat /var/lib/jukebox101-deploy/{current,highwater}`、`ls /var/lib/jukebox101-deploy/results` |
+| 換 SSH key | 步驟 1、2、4 重做一次 |
+
+## 通知
+
+在 Issue #7 按 **Subscribe**，並到 [個人通知設定](https://github.com/settings/notifications) 開啟 **On GitHub** 與 **Email**。`Notify` 只讀取固定 repo／workflow／run，張貼狀態、commit 與連結，不含日誌或秘密；通知失敗不影響部署。
+
+## 驗證與限制
+
+- 自動測試：主機腳本以假 Docker 驗證成功、回滾、回滾失敗鎖定、首次安裝、標籤不符、過期 run、冪等重送、格式錯誤、雙 Gateway、舊容器接手、設定檔權限（`tests/test_deploy_host_script.py`）；workflow 的 Bash 以假 SSH 驗證輪詢與結果判讀（`tests/test_deploy_workflow_polling.py`）；workflow 邊界與通知有文字契約測試。
+- **尚未驗證**：真實 Docker／Compose 在主機上的切換、真實 SSH／sudo 路徑、真實 GHCR 拉取、`bot.healthcheck` 對真實 Gateway 的結果。這些要等第一次實際部署（建議在維護時段自己盯著）才算驗收。
+- 取捨：主機不再自行重驗 GitHub 簽章。防護來自：受限 key 只能觸發此腳本、映像限定在本 repo 的 GHCR 命名空間、標籤須符合請求的 commit、run 單調遞增、`production` Environment 限制 main。若 GitHub 帳號或 main 本身被入侵，攻擊者能改 workflow，這個風險與舊架構相同。
