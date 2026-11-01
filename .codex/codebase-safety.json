@@ -5,7 +5,7 @@
     "name": "JukeBox101",
     "purpose": "Single-instance Discord music submission and Owner review Bot on PostgreSQL",
     "repo_root": ".",
-    "last_reviewed": "2026-11-01"
+    "last_reviewed": "2026-11-02"
   },
   "instructions": {
     "files": [
@@ -176,6 +176,10 @@
     {
       "fact": "Shared notifications validate actual deploy job and never gate the CD workflow",
       "source": "deploy/github_notifications.py#publish"
+    },
+    {
+      "fact": "Borrowed Hostinger VPS service and project-specific access were retired, and its legacy repository SSH secret was removed. A different production deployment target, its environment secrets and the existing CI/Release workflow are preserved; CD_ENABLED was observed false. External credentials and retained data have separate ownership.",
+      "source": "docs/deploy/vps-retirement-2026-11-02.md"
     }
   ]
 }

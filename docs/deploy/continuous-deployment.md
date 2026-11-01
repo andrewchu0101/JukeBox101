@@ -1,5 +1,7 @@
 # JukeBox101 持續部署（2026-11-01 精簡版）
 
+> 原 Hostinger VPS 狀態（2026-11-02）：已停止 JukeBox101 服務並撤銷專用帳號存取，舊的 repository secret `HOSTINGER_SSH_KEY` 也已移除。GitHub 實際設定的 `CD_ENABLED` 目前為 `false`，Production 已配置另一個部署目標；該目標、環境憑證與本文件的部署流程保留，由專案維護者管理。此手冊不構成重新連回原 VPS 的授權。驗證與交接見 [VPS 停用紀錄](vps-retirement-2026-11-02.md)。
+
 > 取代先前的 queue／worker／journal／四道 gate 架構。舊架構的診斷留在 [cd-rejected-2026-11-01.md](cd-rejected-2026-11-01.md) 供追溯，不再是現行做法。
 
 ## 合併 main 之後會發生什麼
