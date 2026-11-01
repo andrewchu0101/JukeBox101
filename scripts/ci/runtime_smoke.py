@@ -41,30 +41,67 @@ def assert_bot_policy(bot: dict) -> None:
     assert secrets == {'discord_bot_token', 'db_password', 'db_ca.crt'}
 
 
+def assert_controlled_policy(config: dict, environment: dict) -> None:
+    """@description: Bind rendered host paths and identities while retaining every runtime safety check.
+    @param config: Rendered controlled Compose document containing synthetic settings only.
+    @param environment: Explicit expected settings used to render this isolated profile.
+    @return: None; unexpected host paths, services or database identities fail verification.
+    """
+    assert set(config['services']) == {'bot'}
+    bot = config['services']['bot']
+    assert_bot_policy(bot)
+    assert 'build' not in bot and not bot.get('command') and not bot.get('entrypoint')
+    assert not bot.get('volumes')
+    assert bot['image'] == environment['JB_IMAGE']
+    expected = {environment.get('JB_EGRESS_NETWORK') or 'jukebox101_egress',
+                environment.get('JB_DATABASE_NETWORK') or 'jukebox101_database'}
+    assert len(expected) == 2
+    assert {item['name'] for item in config['networks'].values()} == expected
+    assert all(item.get('external') is True for item in config['networks'].values())
+    assert config['secrets']['db_ca.crt']['file'] == (
+        environment.get('JB_DB_CA_FILE') or '/etc/jukebox101/supabase-ca-2021.crt')
+    for name in ('DB_NAME', 'DB_USER'):
+        assert environment[name] and bot['environment'][name] == environment[name]
+
+
+def synthetic_compose_environment(directory: str) -> dict:
+    """@description: Create only disposable fake secrets and settings for Compose rendering.
+    @param directory: Private temporary scope, never a production configuration directory.
+    @return: Explicit synthetic environment with Docker client discovery preserved.
+    """
+    root = Path(directory)
+    for name in ('discord_bot_token.txt', 'db_password.txt', 'db_migrator_password.txt', 'ca.crt'):
+        (root / name).write_text('SYNTHETIC-CI-ONLY')
+    return {'PATH': os.environ['PATH'], 'HOME': directory,
+            'DOCKER_CONFIG': os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker')),
+            'COMPOSE_DISABLE_ENV_FILE': '1', 'DB_HOST': 'postgres.invalid',
+            'DB_NAME': 'synthetic_database', 'DB_USER': 'synthetic_app',
+            'JB_SECRET_DIR': directory, 'JB_DB_CA_FILE': str(root / 'ca.crt'),
+            'DISCORD_EXPECTED_APPLICATION_ID': '789001', 'DISCORD_OWNER_USER_ID': '123',
+            'JUKEBOX_FORMAL_EXCHANGE': 'off', 'JUKEBOX_NICKEL_CLAIM': 'off',
+            'JB_IMAGE': 'ghcr.io/andrewchu0101/jukebox101@sha256:' + 'a' * 64,
+            'JB_EGRESS_NETWORK': 'ci-egress', 'JB_DATABASE_NETWORK': 'ci-database'}
+
+
 def compose_policy() -> None:
-    """@description: Render only fake metadata and assert both base and review-host policies.
+    """@description: Render base, controlled override and actual-host-default profiles with fake settings.
     @param: none
-    @return: None; no real env file or secret is loaded.
+    @return: None; no real env file, secret, Gateway or database is used.
     """
     with tempfile.TemporaryDirectory(prefix='jb-compose-') as directory:
-        root = Path(directory)
-        for name in ('discord_bot_token.txt', 'db_password.txt', 'db_migrator_password.txt', 'ca.crt'):
-            (root / name).write_text('SYNTHETIC-CI-ONLY')
-        environment = {'PATH': os.environ['PATH'], 'HOME': directory,
-                       # Docker Desktop discovers its Compose plugin through this client config path.
-                       'DOCKER_CONFIG': os.environ.get('DOCKER_CONFIG', str(Path.home() / '.docker')),
-                       'DB_HOST': 'postgres.invalid', 'JB_SECRET_DIR': directory, 'JB_DB_CA_FILE': str(root / 'ca.crt'),
-                       'DISCORD_EXPECTED_APPLICATION_ID': '789001', 'DISCORD_OWNER_USER_ID': '123',
-                       'JUKEBOX_FORMAL_EXCHANGE': 'off', 'JUKEBOX_NICKEL_CLAIM': 'off',
-                       'JB_IMAGE': 'ghcr.io/andrewchu0101/jukebox101@sha256:' + 'a' * 64,
-                       'JB_EGRESS_NETWORK': 'ci-egress', 'JB_DATABASE_NETWORK': 'ci-database'}
-        for filename in ('compose.yaml', 'deploy/controlled/compose.yaml'):
+        environment = synthetic_compose_environment(directory)
+        excluded = {'JB_EGRESS_NETWORK', 'JB_DATABASE_NETWORK', 'JB_DB_CA_FILE'}
+        defaults = {name: value for name, value in environment.items() if name not in excluded}
+        profiles = [('compose.yaml', environment), ('deploy/controlled/compose.yaml', environment),
+                    ('deploy/controlled/compose.yaml', defaults)]
+        for filename, settings in profiles:
             arguments = ['docker', 'compose', '--env-file', '/dev/null', '-f', filename, 'config']
-            run([*arguments, '--quiet'], environment=environment)
-            config = json.loads(run([*arguments, '--format', 'json'], environment=environment))
-            assert_bot_policy(config['services']['bot'])
+            run([*arguments, '--quiet'], environment=settings)
+            config = json.loads(run([*arguments, '--format', 'json'], environment=settings))
             if filename.startswith('deploy/'):
-                assert set(config['services']) == {'bot'} and 'build' not in config['services']['bot']
+                assert_controlled_policy(config, settings)
+            else:
+                assert_bot_policy(config['services']['bot'])
 
 
 def main() -> None:

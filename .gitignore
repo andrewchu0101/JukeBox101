@@ -29,6 +29,8 @@ db_password.txt
 # Local Docker delivery images, test evidence and extracted verification artifacts
 /artifacts/
 /ci-evidence/
+# Local review drafts may later contain private host configuration; never commit them.
+/configuration-drafts/
 
 # Deployment bundles and exported container/disk images; keep outside Git
 *.tar

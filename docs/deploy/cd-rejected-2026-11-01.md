@@ -28,7 +28,7 @@
 - policy 的 Compose／env hash 都還是全零占位。主機實際執行 `require_file_hash` 對兩者都回報 `CONFIG_DRIFT`；沒有修改檔案。
 - policy 的 network_names 還是 `REVIEW_EXISTING_EGRESS`、`REVIEW_EXISTING_DATABASE_NETWORK`。目前 Bot 實際使用 `jukebox101_egress`、`jukebox101_database`。
 - `/etc/jukebox101/compose.cd.yaml` 還是 repo 原範本，SHA-256 與 `deploy/controlled/compose.yaml` 相同。範本 CA 路徑為 `db_ca.crt`，現有 Bot 掛載的是 `supabase-ca-2021.crt`，須審查適配。
-- `/usr/bin/gh` 已存在，但固定位置的 `/etc/jukebox101/docker/config.json`、`/etc/jukebox101/gh/hosts.yml` 都不存在。尚無這套 adapter 的專用主機認證驗收證據；未使用個人全權 token 代替。
+- `/usr/bin/gh` 已存在，但固定位置的 `/etc/jukebox101/docker/config.json`、`/etc/jukebox101/gh/hosts.yml` 都不存在。後續已實測 GHCR public digest 可在本機匿名 pull，所以 docker config 不存在不能單獨視為拉取阻擋；主機 GitHub API／來源驗證認證仍待配置與驗收。未使用個人全權 token 代替。
 - 目前 Bot 是 local `jukebox101-bot:v7`，image ID `sha256:655fa3a4efc881218ea8b700823edec6ff973bc34c865c2ed22210065cbd31df`，healthcheck 僅為 `bot.readiness`，尚非已接受的 registry LKG。StartedAt 仍為 `2026-10-30T16:35:18.298185854Z`，running／healthy。
 
 因此不能只把 gate 改 true、補一份假 journal，或啟動 units 後重跑 Actions。
