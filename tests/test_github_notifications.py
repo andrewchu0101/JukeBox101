@@ -8,8 +8,7 @@ import copy
 
 import pytest
 
-from deploy.github_notifications import NOTIFICATION_ISSUE, comment_body, publish
-from deploy.receipt import REPOSITORY_ID
+from deploy.github_notifications import NOTIFICATION_ISSUE, REPOSITORY_ID, comment_body, publish
 
 RUN = dict(id=42, run_attempt=2, head_sha='a' * 40, name='CI', path='.github/workflows/ci.yml',
            repository={'id': REPOSITORY_ID}, event='pull_request', status='completed', conclusion='success')
@@ -28,7 +27,7 @@ class FakeGitHub:
         """
         self.run = copy.deepcopy(run or RUN)
         self.comments = comments or [[]]
-        self.jobs = dict(total_count=2, jobs=[dict(name='resolve', status='completed', conclusion='success'),
+        self.jobs = dict(total_count=2, jobs=[dict(name='publish', status='completed', conclusion='success'),
                                             dict(name='deploy', status='completed', conclusion=outcome)])
         self.issue = {'state': 'open'}
         self.writes = []
@@ -134,7 +133,7 @@ def test_real_deploy_job_result_controls_the_message(outcome, expected):
     @param expected: Truthful notification text fragment.
     @return: None.
     """
-    run = dict(RUN, name='Deploy', path='.github/workflows/deploy.yml', event='workflow_run')
+    run = dict(RUN, name='Release', path='.github/workflows/release.yml', event='push')
     api = FakeGitHub(run, outcome=outcome)
     assert publish({'workflow_run': RUN}, api) and expected in api.writes[0]
     if outcome != 'success':
