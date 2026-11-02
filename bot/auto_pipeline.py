@@ -333,7 +333,7 @@ def format_share_outcome(operation_id: str, outcome: PipelineOutcome) -> str:
     @param outcome: Pipeline outcome read back from durable state.
     @return: Private reply; +1 appears only for a committed award.
     """
-    if outcome.similar_title_review:
+    if outcome.similar_title_review and outcome.review_status is ReviewStatus.PENDING_REVIEW:  # [durable state wins]: A stale or already decided case never gets the similar-review wording.
         return f"已儲存投稿；{SIMILAR_REVIEW_REPLY}。操作 {operation_id}。"
     retry = "官方資料暫時無法取得，系統會自動重試。" if outcome.retry_later else ""
     return f"已儲存投稿；審核：{REVIEW_TEXT[outcome.review_status]}。{retry}{_reward_text(outcome)}操作 {operation_id}。"
