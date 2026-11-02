@@ -1,6 +1,6 @@
 # PR 說明草稿：階段 A 自動審核含時長與自動版本確認
 
-狀態：**草稿，尚未開 PR、未 push、未部署、未啟用**。分支 `feature/auto-review-version-confirm`；PR 基底待 Owner 決定（目前比 `origin/main` 多一個 CD 診斷提交 `51ee43a`，建議先合併它或以它為基底）。
+狀態：**已推送並開 PR，未部署、未啟用**。分支 `feature/auto-review-version-confirm`，基底 `main`。已把 `origin/main`（含 PR #16、#17）合併進分支；唯一衝突是 `deploy/host/jukebox101-deploy`（main 以壓縮合併收進了本分支原本就有的 CD 診斷提交，內容相同），解法是保留本分支版本，等於 main 的版本加上 H-1 檢查。合併 main 會觸發自動部署，由 Owner 按。
 
 ## 這個 PR 做什麼
 
@@ -28,7 +28,9 @@
 - migration 0004 套用到正式庫需 Owner 另行明確授權；系統不會自動套用。
 - 啟用順序與回滾：[階段 A 啟用與回滾清單](stage-a-enable-rollback.md)。
 
-## 驗證（2026-11-02，Linux 容器，本機）
+## 驗證（2026-11-02，Linux 容器，本機；於合併 `origin/main` 之後的最終樹重跑）
+
+最終樹上的實測：離線 2264 passed；PostgreSQL 18.6 為 139 passed、2 skipped。第一次 PostgreSQL 重跑曾因另一個同時使用同名測試資源的執行而連線認證失敗（138 errors），確認沒有其他測試容器後重跑通過。
 
 | 狀態 | 項目 |
 |---|---|
@@ -41,7 +43,7 @@
 
 - 回滾到不含 `SYSTEM_JUDGEMENT` 的舊映像：已用基底提交 `51ee43a` 的程式實測，只有「對有系統證據的影片，舊版 Owner 檢視／確認版本／重審」會 `ValueError`；投稿、待處理清單、結算與餘額正常。**為 0 才是乾淨回滾**；移除證據列需 Owner 授權（見啟用與回滾清單）。
 - 卡片與回覆文案（`NEAR_DUPLICATE_NOTE`、`SIMILAR_REVIEW_REPLY`）由 PM 在 Sean 達使用上限後完成，需 Sean 回來審查。
-- 圈複雜度：`bot/runtime_policy.py::check_policy` 以粗估約 11，略高於目標 10（函式長度與巢狀深度由 `tests/test_phase2_quality.py` 強制，全數通過）。
+- 圈複雜度：`bot/runtime_policy.py::check_policy` 原粗估約 11，已由 Sean 拆成小函式（`a6115fd`），行為不變；圈複雜度目標 ≤10 沒有被測試強制，函式長度與巢狀深度由 `tests/test_phase2_quality.py` 強制，全數通過。
 - 階段 B（失敗退點）、階段 C（`/daily` 自訂時間、半遮蔽）不在本 PR。
 - 既有問題，非本 PR 引入：`bot/share_replies.py:59` 在重審核准過的案件重放同一 operation 時拋 `ValueError`（發獎不受影響）。
 - Google 回覆範圍待 Owner 確認；所有 API 比對測試都是 mock，沒有實際呼叫 YouTube。
