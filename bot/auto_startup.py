@@ -67,4 +67,4 @@ def build_auto_pipeline(repository: Any, settings: AutoSettings) -> AutoPipeline
         return None
     client = YouTubeMetadataClient(settings.api_key) if settings.review_enabled else None
     return AutoPipeline(repository, client, settings.trusted_channel_ids, settlement_enabled=settings.settlement_enabled,
-                        api_retention=settings.api_retention)
+                        api_retention=settings.api_retention, version_confirm=settings.version_confirm)
