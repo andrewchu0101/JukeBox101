@@ -49,6 +49,7 @@ class SubmissionSnapshot:
     candidates: tuple[RewardCandidate, ...] = ()  # [current projection]: One authoritative revision per operation.
     historical: tuple[VersionAssignment, ...] = ()  # [catalog evidence]: Unknown and conflicting history remain visible.
     exclusions: tuple[VersionExclusion, ...] = ()  # [trusted negative evidence]: Scoped version exclusions only.
+    daily_limit_exceeded: frozenset[str] = frozenset()  # [daily limit]: Operations past their person's daily reward limit, from the database clock.
 
     def __post_init__(self) -> None:
         """@description: Keep mutable or malformed facts outside snapshot aggregation.
@@ -62,6 +63,8 @@ class SubmissionSnapshot:
                                       (self.historical, VersionAssignment), (self.exclusions, VersionExclusion)):
             if not isinstance(values, tuple) or not all(isinstance(item, expected_type) for item in values):
                 raise ValueError("Snapshot facts must be immutable typed tuples")
+        if not isinstance(self.daily_limit_exceeded, frozenset):
+            raise ValueError("Daily limit facts must be immutable")
 
 
 def snapshot_is_complete(snapshot: SubmissionSnapshot) -> bool:
@@ -96,4 +99,4 @@ def aggregate_snapshot(snapshot: SubmissionSnapshot) -> RewardEvaluationInput:
     historical_versions = frozenset(item.version for item in snapshot.historical
                                     if item.status is VersionIdentityStatus.CONFIRMED)
     return RewardEvaluationInput(snapshot.candidates, historical_versions, snapshot.exclusions,
-                                 snapshot_is_complete(snapshot))
+                                 snapshot_is_complete(snapshot), snapshot.daily_limit_exceeded)

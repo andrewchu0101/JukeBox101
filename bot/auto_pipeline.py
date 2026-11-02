@@ -13,6 +13,7 @@ from typing import Any
 
 from bot.auto_review import AutoReviewKind, AutoReviewVerdict, decide_auto_review
 from bot.auto_version_review import CONFIRMED_REASON_CODE, MUSIC_CATEGORY_CONFIRMED_REASON_CODE, refine_verdict
+from bot.daily_limit import DAILY_LIMIT_REPLY
 from bot.config import TRUST_MODE_ALLOWLIST, TRUST_MODE_MUSIC_CATEGORY
 from bot.database.reward_settlement import LedgerBalanceMismatch
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
@@ -231,7 +232,7 @@ class AutoPipeline:
         if self._metadata_client is None or self._lookups_stopped:
             return ReviewStepResult(False)
         subject = self._replaying(lambda: self._repository.auto_review_subject(operation_id))
-        if not subject.awaits_validation:
+        if not subject.awaits_validation or subject.over_daily_limit:  # [no quota for the excess]: Stored and answered, never looked up.
             return ReviewStepResult(False)
         lookup = self._metadata_client.lookup(subject.video_id)
         self._sweep_units += 1
@@ -350,6 +351,8 @@ def format_share_outcome(operation_id: str, outcome: PipelineOutcome) -> str:
     @param outcome: Pipeline outcome read back from durable state.
     @return: Private reply; +1 appears only for a committed award.
     """
+    if outcome.decision.reason is RewardDecisionReason.DAILY_LIMIT and outcome.decision.status is RewardCandidateStatus.INELIGIBLE:
+        return f"已儲存投稿；{DAILY_LIMIT_REPLY}。操作 {operation_id}。"
     if outcome.similar_title_review and outcome.review_status is ReviewStatus.PENDING_REVIEW:  # [durable state wins]: A stale or already decided case never gets the similar-review wording.
         return f"已儲存投稿；{SIMILAR_REVIEW_REPLY}。操作 {operation_id}。"
     retry = "官方資料暫時無法取得，系統會自動重試。" if outcome.retry_later else ""
@@ -385,6 +388,7 @@ def _reward_text(outcome: PipelineOutcome, third_person: bool = False) -> str:
 
 
 _WAITING_TEXT = {  # [reward line]: Names the one thing the reward still waits for.
+    RewardDecisionReason.DAILY_LIMIT: f"{DAILY_LIMIT_REPLY}。",
     RewardDecisionReason.IDENTITY_UNRESOLVED: "待 Owner 確認錄音版本；目前未發放 Nickel。",
     RewardDecisionReason.REVIEW_INCOMPLETE: "待審核完成；目前未發放 Nickel。",
     RewardDecisionReason.REEXAMINATION_PENDING: "重審中；目前未發放 Nickel。",

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from bot.auto_review import AutoReviewKind, AutoReviewVerdict
+from bot.daily_limit import MAX_REWARDED_SUBMISSIONS_PER_DAY, UPLOAD_DAY_ZONE_NAME
 from bot.database.api_observations import basis_expired, purge_video, record_observation
 from bot.eligibility import DurationEligibility
 from bot.song_identity import VideoIdentity
@@ -19,6 +20,9 @@ from bot.reward_candidates import RewardCandidateStatus, RewardDecision
 from bot.version_identity import VersionIdentityStatus
 
 SYSTEM_ACTOR_ID = 0  # [audit identity]: No Discord snowflake is zero, so automatic decisions can never read as the Owner's.
+_EARLIER_SAME_DAY_COUNT = (  # [daily limit]: Submissions of the same Discord user accepted earlier on the same Asia/Taipei day as row e; matches bot.daily_limit.upload_day.
+    "(SELECT count(*) FROM jb2_events p WHERE p.discord_user_id = e.discord_user_id AND p.accepted_sequence < e.accepted_sequence AND "
+    f"(p.accepted_at AT TIME ZONE '{UPLOAD_DAY_ZONE_NAME}')::date = (e.accepted_at AT TIME ZONE '{UPLOAD_DAY_ZONE_NAME}')::date)")
 VALIDATING_STATUSES = frozenset({ReviewStatus.PENDING_VALIDATION, ReviewStatus.VALIDATION_FAILED})  # [automatic scope]: Decided reviews are never touched.
 
 
@@ -29,6 +33,7 @@ class AutoReviewSubject:
     video_id: str  # [lookup subject]: Stored parser-validated identifier.
     revision: int  # [concurrency token]: A verdict for an older revision applies nothing.
     awaits_validation: bool  # [lookup needed]: False for decided, reviewed or reexamined videos.
+    over_daily_limit: bool = False  # [quota guard]: True when this submission is past its person's daily limit, so no official lookup is spent on it.
 
 
 def _awaits_validation(review: ReviewSnapshot) -> bool:
@@ -46,7 +51,8 @@ def read_subject(cursor: Any, operation_id: str) -> AutoReviewSubject:
     @return: Subject with its current revision.
     """
     review = _current_request(cursor, operation_id, 0).review
-    return AutoReviewSubject(review.video.video_id, review.version, _awaits_validation(review))
+    earlier_today = fetch_all(cursor, f"SELECT {_EARLIER_SAME_DAY_COUNT} AS earlier FROM jb2_events e WHERE e.operation_id=%s", (operation_id,))[0]["earlier"]
+    return AutoReviewSubject(review.video.video_id, review.version, _awaits_validation(review), earlier_today >= MAX_REWARDED_SUBMISSIONS_PER_DAY)
 
 
 def apply_verdict(cursor: Any, control: dict, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict,
@@ -156,8 +162,8 @@ def pending_validation_rows(cursor: Any, limit: int, excluded_video_ids: tuple[s
     """
     rows = fetch_all(cursor, "SELECT e.operation_id,e.video_id,v.review_json,v.review_revision,v.review_status FROM jb2_events e "
                              "JOIN jb2_videos v ON v.video_id=e.video_id WHERE v.review_status=%s AND NOT (e.video_id = ANY(%s::text[])) "
-                             "ORDER BY e.accepted_sequence LIMIT %s",
-                     (ReviewStatus.PENDING_VALIDATION.value, list(excluded_video_ids), limit))
+                             f"AND {_EARLIER_SAME_DAY_COUNT} < %s ORDER BY e.accepted_sequence LIMIT %s",
+                     (ReviewStatus.PENDING_VALIDATION.value, list(excluded_video_ids), MAX_REWARDED_SUBMISSIONS_PER_DAY, limit))
     pending: dict[str, str] = {}  # [one lookup per video]: Later submitters of a video share its review.
     for row in rows:
         if _awaits_validation(decode_current_review(row)):

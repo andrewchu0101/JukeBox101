@@ -111,7 +111,7 @@ class DockerLab:
         self.cleanup.append(['rm', '-f', name])
         result = self.run(['start', '-a', name], check=False)
         self.run(['cp', f'{name}:/tmp/postgres.xml', str(output / 'postgres.xml')])
-        totals = summarize(output / 'postgres.xml', 141)
+        totals = summarize(output / 'postgres.xml', 161)
         status = self.run(['inspect', '--format', '{{.State.ExitCode}}', name])
         if result.returncode or status.stdout.strip() != '0':
             raise RuntimeError('postgres test process failed')
