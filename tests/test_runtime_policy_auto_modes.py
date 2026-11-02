@@ -33,7 +33,7 @@ def test_the_default_environment_passes_and_reports_every_automatic_mode_off(clo
     """
     receipt = asyncio.run(check_policy())
     assert receipt['result'] == 'passed'
-    assert receipt['auto_modes'] == {name: 'off' for name in AUTO_SWITCHES}
+    assert receipt['auto_modes'] == {**{name: 'off' for name in AUTO_SWITCHES}, 'JUKEBOX_AUTO_TRUST_MODE': 'allowlist'}
 
 
 @pytest.mark.parametrize('switch', AUTO_SWITCHES)

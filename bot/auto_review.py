@@ -17,6 +17,8 @@ MUSIC_CATEGORY_ID = "10"  # [YouTube category]: Music; a trusted channel's vlogs
 NON_SONG_TITLE_HINTS = ("trailer", "teaser", "preview", "clip", "shorts", "#short", "highlight", "reaction", "interview",
                         "behind the scenes", "making of", "full album", "playlist", "預告", "片段", "剪輯", "精華", "幕後",
                         "訪談", "花絮", "合輯")  # [negative signal only]: A hint withholds trust; its absence proves nothing and it never rejects.
+APPROVAL_CODE_ALLOWLIST = "trusted_channel_music"  # [audit]: Approval by an Owner-listed channel.
+APPROVAL_CODE_MUSIC_CATEGORY = "music_category"  # [audit]: Approval by the Music category alone; distinguishable from the allowlist code.
 UNAVAILABLE_UPLOAD_STATUSES = frozenset({"deleted", "failed", "rejected"})  # [no playable video]: Reported to the Owner, retryable by evidence.
 
 
@@ -60,10 +62,11 @@ class AutoReviewVerdict:
     version_basis: ComparisonBasis | None = None  # [clean comparison]: Present only when the Owner authorised an automatic version confirmation.
 
 
-def decide_auto_review(lookup: MetadataLookup, trusted_channel_ids: frozenset[str]) -> AutoReviewVerdict:
+def decide_auto_review(lookup: MetadataLookup, trusted_channel_ids: frozenset[str], require_trusted_channel: bool = True) -> AutoReviewVerdict:
     """@description: Map one lookup to its only permitted effect, so an empty allowlist or a failed API can never approve anything.
     @param lookup: Official metadata outcome.
     @param trusted_channel_ids: Owner-approved stable channel IDs; may be empty.
+    @param require_trusted_channel: True (allowlist mode) demands a listed channel; False (music_category mode) drops only that condition.
     @return: Verdict for the repository to apply.
     """
     if lookup.status in {LookupStatus.TEMPORARY_FAILURE, LookupStatus.QUOTA_EXHAUSTED}:
@@ -75,33 +78,38 @@ def decide_auto_review(lookup: MetadataLookup, trusted_channel_ids: frozenset[st
         return _verdict(AutoReviewKind.UNAVAILABLE, "video_not_public", metadata)
     if metadata.live_broadcast_content != "none" or metadata.upload_status != "processed" or metadata.duration_seconds is None:
         return _verdict(AutoReviewKind.HOLD, "undetermined", metadata)
-    return _duration_verdict(metadata, trusted_channel_ids)
+    return _duration_verdict(metadata, trusted_channel_ids, require_trusted_channel)
 
 
-def _duration_verdict(metadata: VideoMetadata, trusted_channel_ids: frozenset[str]) -> AutoReviewVerdict:
+def _duration_verdict(metadata: VideoMetadata, trusted_channel_ids: frozenset[str], require_trusted_channel: bool) -> AutoReviewVerdict:
     """@description: Apply the shared hard duration limits, then the trust conditions, to a video with a final official duration.
     @param metadata: Official metadata of a processed, non-live video.
     @param trusted_channel_ids: Owner-approved stable channel IDs.
+    @param require_trusted_channel: Whether the channel must be on the allowlist.
     @return: Rejection, Owner review or automatic approval.
     """
     source = f"{SOURCE_LABEL}@{metadata.fetched_at.isoformat(timespec='seconds')}"
     evidence = DurationEvidence(VideoIdentity(metadata.video_id), metadata.duration_seconds, source, True, True)
     if assess_duration(evidence) is DurationEligibility.REJECT:
         return _verdict(AutoReviewKind.DURATION_REJECT, "duration_out_of_range", metadata, evidence)
-    withheld = _trust_withheld(metadata, trusted_channel_ids)
+    withheld = _trust_withheld(metadata, trusted_channel_ids, require_trusted_channel)
     if withheld is not None:
         return _verdict(AutoReviewKind.DURATION_ONLY, withheld, metadata, evidence)
-    return _verdict(AutoReviewKind.AUTO_APPROVE, "trusted_channel_music", metadata, evidence)
+    approval_code = APPROVAL_CODE_ALLOWLIST if require_trusted_channel else APPROVAL_CODE_MUSIC_CATEGORY
+    return _verdict(AutoReviewKind.AUTO_APPROVE, approval_code, metadata, evidence)
 
 
-def _trust_withheld(metadata: VideoMetadata, trusted_channel_ids: frozenset[str]) -> str | None:
+def _trust_withheld(metadata: VideoMetadata, trusted_channel_ids: frozenset[str], require_trusted_channel: bool = True) -> str | None:
     """@description: Name the first automatic-approval condition this video fails.
     @param metadata: Official metadata.
     @param trusted_channel_ids: Owner-approved stable channel IDs.
+    @param require_trusted_channel: Whether the channel must be on the allowlist.
     @return: Reason code, or None when every condition holds.
     """
-    if metadata.channel_id not in trusted_channel_ids:
+    if require_trusted_channel and metadata.channel_id not in trusted_channel_ids:
         return "channel_not_trusted"
+    if metadata.channel_id is None:
+        return "channel_unknown"  # [open mode fails closed]: Malformed official data never approves; the version comparison also relies on the channel.
     if metadata.category_id != MUSIC_CATEGORY_ID:
         return "category_not_music"
     if metadata.privacy_status != "public":

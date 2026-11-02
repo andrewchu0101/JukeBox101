@@ -12,7 +12,8 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from bot.auto_review import AutoReviewKind, AutoReviewVerdict, decide_auto_review
-from bot.auto_version_review import refine_verdict
+from bot.auto_version_review import CONFIRMED_REASON_CODE, MUSIC_CATEGORY_CONFIRMED_REASON_CODE, refine_verdict
+from bot.config import TRUST_MODE_ALLOWLIST, TRUST_MODE_MUSIC_CATEGORY
 from bot.database.reward_settlement import LedgerBalanceMismatch
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
 from bot.database.errors import DatabaseError
@@ -59,7 +60,8 @@ class AutoPipeline:
     """Coordinate one operation or a whole sweep; holds no business state beyond a bounded in-memory retry pause."""
 
     def __init__(self, repository: Any, metadata_client: Any | None, trusted_channel_ids: frozenset[str], *,
-                 settlement_enabled: bool, api_retention: bool = False, version_confirm: bool = False, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 settlement_enabled: bool, api_retention: bool = False, version_confirm: bool = False, trust_mode: str = TRUST_MODE_ALLOWLIST,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
         """@description: Bind collaborators without any I/O.
         @param self: New pipeline.
         @param repository: Submission repository owning every transaction.
@@ -68,14 +70,20 @@ class AutoPipeline:
         @param settlement_enabled: Deployment switch; False never writes a reward.
         @param api_retention: Deployment switch; True keeps official values only in the short-lived table and runs the purge.
         @param version_confirm: Independent switch; only an exact True compares approvable submissions with recent songs and may confirm a version.
+        @param trust_mode: allowlist (default) or music_category; any other value is refused.
         @param monotonic: Time source for the retry pause.
         @return: None.
         """
+        if trust_mode not in {TRUST_MODE_ALLOWLIST, TRUST_MODE_MUSIC_CATEGORY}:
+            raise ValueError("unknown trust mode")
+        if trust_mode == TRUST_MODE_MUSIC_CATEGORY and version_confirm is not True:
+            raise ValueError("music_category needs the version comparison")  # [defence in depth]: Startup checks the same rule first.
         self._repository = repository  # [write boundary]: Every change goes through its audited transactions.
         self._metadata_client = metadata_client  # [official source]: Called outside transactions only.
         self._trusted_channel_ids = trusted_channel_ids  # [allowlist]: Empty means nothing is automatically approved.
         self._settlement_enabled = settlement_enabled is True  # [money switch]: Only an exact True may pay.
         self._api_retention = api_retention is True  # [API data lifecycle]: Only an exact True changes where official values are stored.
+        self._trust_mode = trust_mode  # [trust rule]: Decides whether the channel must be on the allowlist.
         self._version_confirm = version_confirm is True  # [Owner-authorised automation]: Only an exact True enables the comparison.
         self._sweep_units = 0  # [quota spent]: Provider units used since this sweep began.
         self._next_purge_at = 0.0  # [purge schedule]: Zero means the next sweep purges first, which is also the startup purge.
@@ -168,7 +176,7 @@ class AutoPipeline:
         @return: None.
         """
         try:
-            verdict = decide_auto_review(self._metadata_client.lookup(video_id), self._trusted_channel_ids)
+            verdict = self._decide(self._metadata_client.lookup(video_id))
             if verdict.kind in {AutoReviewKind.RETRY, AutoReviewKind.HOLD, AutoReviewKind.UNAVAILABLE, AutoReviewKind.DURATION_REJECT}:
                 self._pause(video_id)  # [no refresh]: Only a confirmed pass renews the values; anything else leaves the case for the Owner.
                 return
@@ -227,7 +235,7 @@ class AutoPipeline:
             return ReviewStepResult(False)
         lookup = self._metadata_client.lookup(subject.video_id)
         self._sweep_units += 1
-        verdict = self._compare_recent(subject.video_id, lookup, decide_auto_review(lookup, self._trusted_channel_ids))
+        verdict = self._compare_recent(subject.video_id, lookup, self._decide(lookup))
         if verdict.kind in {AutoReviewKind.RETRY, AutoReviewKind.HOLD}:
             self._pause(subject.video_id)
             return ReviewStepResult(verdict.kind is AutoReviewKind.RETRY)
@@ -257,10 +265,19 @@ class AutoPipeline:
         if recent.video_ids:
             comparison = self._metadata_client.lookup_many(recent.video_ids)
             self._sweep_units += math.ceil(len(recent.video_ids) / BATCH_LOOKUP_SIZE)
-        refined = refine_verdict(verdict, lookup.metadata, comparison, len(recent.video_ids), ConcernThresholds())
+        confirmed_code = MUSIC_CATEGORY_CONFIRMED_REASON_CODE if self._trust_mode == TRUST_MODE_MUSIC_CATEGORY else CONFIRMED_REASON_CODE
+        refined = refine_verdict(verdict, lookup.metadata, comparison, len(recent.video_ids), ConcernThresholds(), confirmed_code)
         if refined.version_basis is None:
             return refined
         return replace(refined, version_basis=replace(refined.version_basis, last_accepted_sequence=recent.last_accepted_sequence))
+
+    def _decide(self, lookup: MetadataLookup) -> AutoReviewVerdict:
+        """@description: Apply the trust policy of the configured mode in every place the pipeline decides, so interactive and sweep paths agree.
+        @param self: Pipeline.
+        @param lookup: Official metadata outcome.
+        @return: Verdict from the trust policy.
+        """
+        return decide_auto_review(lookup, self._trusted_channel_ids, self._trust_mode == TRUST_MODE_ALLOWLIST)
 
     def _apply(self, operation_id: str, revision: int, verdict) -> Any:
         """@description: Apply a verdict, naming the retention mode only when it is on so the previous repository contract stays unchanged.

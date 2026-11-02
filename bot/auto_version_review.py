@@ -19,16 +19,18 @@ RETRY_REASON_CODE = "api_unavailable"  # [same cause as a failed lookup]: The vi
 CONCERN_REASON_CODE = "version_concern"  # [Owner review]: A doubt, not a rejection.
 STALE_REASON_CODE = "comparison_stale"  # [Owner review]: A submission arrived during the comparison, so the clearance did not cover it.
 CONFIRMED_REASON_CODE = "trusted_channel_music_no_version_concern"  # [system judgement]: Authorised by the Owner, not proof of a new recording.
+MUSIC_CATEGORY_CONFIRMED_REASON_CODE = "music_category_no_version_concern"  # [system judgement]: Same, for an approval that needed no allowlist.
 
 
 def refine_verdict(verdict: AutoReviewVerdict, candidate: VideoMetadata, comparison: BatchLookup, compared_count: int,
-                   thresholds: ConcernThresholds) -> AutoReviewVerdict:
+                   thresholds: ConcernThresholds, confirmed_reason_code: str = CONFIRMED_REASON_CODE) -> AutoReviewVerdict:
     """@description: Apply the version comparison to an approval and leave every other verdict untouched.
     @param verdict: Verdict from the trust policy.
     @param candidate: Official metadata of the new video.
     @param comparison: Existing songs fetched for this comparison.
     @param compared_count: How many existing songs were asked about.
     @param thresholds: Active concern limits.
+    @param confirmed_reason_code: Audit code of a clean approval; the trust mode decides which one.
     @return: The same verdict, a retry request, an Owner-review verdict with concerns, or an approval carrying its comparison basis.
     """
     if verdict.kind is not AutoReviewKind.AUTO_APPROVE:
@@ -39,7 +41,7 @@ def refine_verdict(verdict: AutoReviewVerdict, candidate: VideoMetadata, compari
     if concerns:
         return refined_verdict(verdict, AutoReviewKind.DURATION_ONLY, CONCERN_REASON_CODE, candidate,
                                detail=format_concern_detail(concerns), concerns=concerns)
-    return refined_verdict(verdict, AutoReviewKind.AUTO_APPROVE, CONFIRMED_REASON_CODE, candidate, version_basis=ComparisonBasis(compared_count))
+    return refined_verdict(verdict, AutoReviewKind.AUTO_APPROVE, confirmed_reason_code, candidate, version_basis=ComparisonBasis(compared_count))
 
 
 def stale_verdict(verdict: AutoReviewVerdict) -> AutoReviewVerdict:
@@ -47,9 +49,16 @@ def stale_verdict(verdict: AutoReviewVerdict) -> AutoReviewVerdict:
     @param verdict: Approval carrying a comparison basis.
     @return: Owner-review verdict with the stale reason and no basis; the duration evidence is kept.
     """
-    return replace(verdict, kind=AutoReviewKind.DURATION_ONLY, version_basis=None,
-                   reason=verdict.reason.replace(CONFIRMED_REASON_CODE, STALE_REASON_CODE),
-                   public_reason=verdict.public_reason.replace(CONFIRMED_REASON_CODE, STALE_REASON_CODE))
+    return replace(verdict, kind=AutoReviewKind.DURATION_ONLY, version_basis=None, reason=_as_stale(verdict.reason),
+                   public_reason=_as_stale(verdict.public_reason))
+
+
+def _as_stale(audit_text: str) -> str:
+    """@description: Swap whichever clean-approval code an audit text carries for the stale code.
+    @param audit_text: Audit explanation of a clean approval.
+    @return: The same text naming the stale reason.
+    """
+    return audit_text.replace(MUSIC_CATEGORY_CONFIRMED_REASON_CODE, STALE_REASON_CODE).replace(CONFIRMED_REASON_CODE, STALE_REASON_CODE)
 
 
 def system_version_evidence(video: VideoIdentity, compared_count: int, retrieved_at: datetime) -> EvidenceRecord:

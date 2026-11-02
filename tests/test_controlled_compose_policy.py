@@ -27,7 +27,7 @@ def controlled_profile(request):
                environment=dict(DB_NAME=environment['DB_NAME'], DB_USER=environment['DB_USER'],
                                 DB_SSLMODE='verify-full', JUKEBOX_NICKEL_CLAIM='off', JUKEBOX_FORMAL_EXCHANGE='off',
                                 JUKEBOX_AUTO_REVIEW='off', JUKEBOX_API_RETENTION='off', JUKEBOX_AUTO_SETTLEMENT='off',
-                                JUKEBOX_AUTO_VERSION_CONFIRM='off', YOUTUBE_TRUSTED_CHANNEL_IDS='',
+                                JUKEBOX_AUTO_VERSION_CONFIRM='off', JUKEBOX_AUTO_TRUST_MODE='allowlist', YOUTUBE_TRUSTED_CHANNEL_IDS='',
                                 YOUTUBE_API_KEY_FILE='/run/secrets/youtube_api_key'),
                secrets=[{'source': name} for name in ('discord_bot_token', 'db_password', 'db_ca.crt', 'youtube_api_key')])
     networks = {'egress': {'external': True, 'name': environment.get('JB_EGRESS_NETWORK', 'jukebox101_egress')},
@@ -51,7 +51,7 @@ def test_reviewed_controlled_profiles_are_accepted(controlled_profile):
                                   'privileges', 'claim', 'exchange', 'memory', 'cpu', 'service', 'command', 'image',
                                   'auto_review_on', 'auto_settlement_on', 'api_retention_on', 'version_confirm_on',
                                   'auto_review_unset', 'trusted_channels_preset', 'youtube_key_path', 'youtube_key_target',
-                                  'extra_secret', 'missing_youtube_secret', 'swapped_secret'])
+                                  'extra_secret', 'missing_youtube_secret', 'swapped_secret', 'trust_mode_open', 'trust_mode_unset', 'trust_mode_invalid'])
 def test_host_drift_and_weaker_runtime_policy_are_rejected(controlled_profile, fault):
     """@description: Refuse host misrouting and weaker isolation before any service operation.
     @param controlled_profile: Private synthetic configuration and explicit expected settings.
@@ -92,6 +92,8 @@ def mutate_profile(config, environment, fault):
                'auto_settlement_on': (bot['environment'], 'JUKEBOX_AUTO_SETTLEMENT', 'on'),
                'api_retention_on': (bot['environment'], 'JUKEBOX_API_RETENTION', 'on'),
                'version_confirm_on': (bot['environment'], 'JUKEBOX_AUTO_VERSION_CONFIRM', 'on'),
+               'trust_mode_open': (bot['environment'], 'JUKEBOX_AUTO_TRUST_MODE', 'music_category'),
+               'trust_mode_invalid': (bot['environment'], 'JUKEBOX_AUTO_TRUST_MODE', 'any'),
                'trusted_channels_preset': (bot['environment'], 'YOUTUBE_TRUSTED_CHANNEL_IDS', 'UC' + 'a' * 22),
                'youtube_key_path': (bot['environment'], 'YOUTUBE_API_KEY_FILE', '/etc/passwd'),
                'youtube_key_target': (config['secrets']['youtube_api_key'], 'file', '/home/someone/key.txt')}
@@ -103,6 +105,8 @@ def mutate_profile(config, environment, fault):
         bot['secrets'] = secret_faults[fault]
     elif fault == 'auto_review_unset':
         del bot['environment']['JUKEBOX_AUTO_REVIEW']
+    elif fault == 'trust_mode_unset':
+        del bot['environment']['JUKEBOX_AUTO_TRUST_MODE']
     elif fault == 'shared_network':
         environment.update(JB_EGRESS_NETWORK='same-network', JB_DATABASE_NETWORK='same-network')
     else:
