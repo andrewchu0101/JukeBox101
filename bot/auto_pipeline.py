@@ -5,21 +5,28 @@ The provider is always called with no transaction open. Every step can be repeat
 """
 
 import logging
+import math
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
-from bot.auto_review import AutoReviewKind, decide_auto_review
+from bot.auto_review import AutoReviewKind, AutoReviewVerdict, decide_auto_review
+from bot.auto_version_review import refine_verdict
 from bot.database.reward_settlement import LedgerBalanceMismatch
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
 from bot.database.errors import DatabaseError
 from bot.review import ReviewStatus
 from bot.reward_candidates import RewardCandidateStatus, RewardDecision, RewardDecisionReason
+from bot.version_concerns import ConcernCode, ConcernThresholds
+from bot.youtube_metadata import BATCH_LOOKUP_SIZE, BatchLookup, BatchStatus, MetadataLookup
 
 LOGGER = logging.getLogger(__name__)  # [diagnostics]: Class names and counts only.
 COMMIT_REPLAYS = 3  # [unknown commit bound]: The same key is replayed at most this many times per step.
-SWEEP_LOOKUP_LIMIT = 20  # [quota bound]: Provider calls per sweep.
+COMPARISON_RECENT_LIMIT = 500  # [Owner rule]: Most recent existing songs a new submission is compared with.
+SWEEP_LOOKUP_LIMIT = 60  # [quota bound]: YouTube quota units per sweep (one unit per request); raise only after the Owner states the quota. A full comparison costs 1 + 10 units.
+COMPARISON_REQUEST_UNITS = math.ceil(COMPARISON_RECENT_LIMIT / BATCH_LOOKUP_SIZE)  # [worst-case comparison cost]: Batches needed for a full recent window.
+SIMILAR_REVIEW_REPLY = "已轉交審核，高度相似，尚未發放"  # [draft wording]: Told to the submitter when a similar-title doubt sent the case to the Owner; the Owner may reword it here.
 SWEEP_CANDIDATE_LIMIT = 200  # [read bound]: Pending operations examined per sweep.
 RETRY_BACKOFF_SECONDS = 1800.0  # [held-case pause]: A held or failed lookup is not asked again sooner than this.
 MAX_TRACKED_BACKOFFS = 1000  # [memory bound]: Older in-memory pauses are dropped; losing one only costs one quota unit.
@@ -37,13 +44,22 @@ class PipelineOutcome:
     retry_later: bool = False  # [automatic retry]: The provider failed and the sweep will ask again.
     settlement_unknown: bool = False  # [uncertain money]: Repeated lost acknowledgements; the receipt decides later.
     settlement_enabled: bool = False  # [money switch]: Whether this process was allowed to settle, so a READY reply can describe the real cause.
+    similar_title_review: bool = False  # [reply wording]: True when a similar-title doubt sent this very submission to the Owner.
+
+
+@dataclass(frozen=True)
+class ReviewStepResult:
+    """Report what one review step learned beyond the durable state: whether to retry, and whether a similar-title doubt was raised."""
+
+    retry_later: bool  # [automatic retry]: The provider gave no usable answer.
+    similar_title: bool = False  # [reply wording]: The verdict carried a similar-title doubt.
 
 
 class AutoPipeline:
     """Coordinate one operation or a whole sweep; holds no business state beyond a bounded in-memory retry pause."""
 
     def __init__(self, repository: Any, metadata_client: Any | None, trusted_channel_ids: frozenset[str], *,
-                 settlement_enabled: bool, api_retention: bool = False, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 settlement_enabled: bool, api_retention: bool = False, version_confirm: bool = False, monotonic: Callable[[], float] = time.monotonic) -> None:
         """@description: Bind collaborators without any I/O.
         @param self: New pipeline.
         @param repository: Submission repository owning every transaction.
@@ -51,6 +67,7 @@ class AutoPipeline:
         @param trusted_channel_ids: Owner-approved stable channel IDs; may be empty.
         @param settlement_enabled: Deployment switch; False never writes a reward.
         @param api_retention: Deployment switch; True keeps official values only in the short-lived table and runs the purge.
+        @param version_confirm: Independent switch; only an exact True compares approvable submissions with recent songs and may confirm a version.
         @param monotonic: Time source for the retry pause.
         @return: None.
         """
@@ -59,6 +76,8 @@ class AutoPipeline:
         self._trusted_channel_ids = trusted_channel_ids  # [allowlist]: Empty means nothing is automatically approved.
         self._settlement_enabled = settlement_enabled is True  # [money switch]: Only an exact True may pay.
         self._api_retention = api_retention is True  # [API data lifecycle]: Only an exact True changes where official values are stored.
+        self._version_confirm = version_confirm is True  # [Owner-authorised automation]: Only an exact True enables the comparison.
+        self._sweep_units = 0  # [quota spent]: Provider units used since this sweep began.
         self._next_purge_at = 0.0  # [purge schedule]: Zero means the next sweep purges first, which is also the startup purge.
         self._lookups_stopped = False  # [overdue stop]: True while the purge is so far behind that no new official value may be fetched.
         self._monotonic = monotonic  # [pause clock]: Injected for tests.
@@ -70,9 +89,9 @@ class AutoPipeline:
         @param operation_id: Accepted operation.
         @return: Review and reward outcome; an award is reported only when a committed receipt exists.
         """
-        retry_later = self._review_step(operation_id)
+        step = self._review_step(operation_id)
         unknown = self.settle_ready()
-        return self._outcome(operation_id, retry_later, unknown)
+        return replace(self._outcome(operation_id, step.retry_later, unknown), similar_title_review=step.similar_title)
 
     def sweep(self) -> int:
         """@description: Resume everything durable state says is unfinished, which is also the restart recovery path.
@@ -80,16 +99,17 @@ class AutoPipeline:
         @return: Number of operations whose review step ran.
         """
         reviewed = 0
+        self._sweep_units = 0
         self.maintain_retention()
         paused_video_ids = self._paused_video_ids()
         for operation_id, video_id in self._repository.pending_validation_operations(SWEEP_CANDIDATE_LIMIT, paused_video_ids):
-            if reviewed >= SWEEP_LOOKUP_LIMIT or self._metadata_client is None or self._lookups_stopped:
+            if self._metadata_client is None or self._lookups_stopped or not self._next_case_fits():
                 break
             if self._monotonic() < self._paused_until.get(video_id, 0.0):
                 continue
             reviewed += 1
             self._guarded_review(operation_id)
-        reviewed += self._revalidate_expired(SWEEP_LOOKUP_LIMIT - reviewed)
+        reviewed += self._revalidate_expired(SWEEP_LOOKUP_LIMIT - self._sweep_units)
         self.settle_ready()
         return reviewed
 
@@ -194,23 +214,53 @@ class AutoPipeline:
         except SWEEP_ERRORS as error:
             LOGGER.error("Automatic review deferred one operation: %s", type(error).__name__)
 
-    def _review_step(self, operation_id: str) -> bool:
+    def _review_step(self, operation_id: str) -> ReviewStepResult:
         """@description: Look up official metadata with no transaction open, then apply the verdict in a new short one.
         @param self: Pipeline.
         @param operation_id: Accepted operation.
-        @return: True when the provider gave no usable answer and a later sweep should ask again.
+        @return: Whether a later sweep should ask again, and whether a similar-title doubt was raised for the reply.
         """
         if self._metadata_client is None or self._lookups_stopped:
-            return False
+            return ReviewStepResult(False)
         subject = self._replaying(lambda: self._repository.auto_review_subject(operation_id))
         if not subject.awaits_validation:
-            return False
-        verdict = decide_auto_review(self._metadata_client.lookup(subject.video_id), self._trusted_channel_ids)
+            return ReviewStepResult(False)
+        lookup = self._metadata_client.lookup(subject.video_id)
+        self._sweep_units += 1
+        verdict = self._compare_recent(subject.video_id, lookup, decide_auto_review(lookup, self._trusted_channel_ids))
         if verdict.kind in {AutoReviewKind.RETRY, AutoReviewKind.HOLD}:
             self._pause(subject.video_id)
-            return verdict.kind is AutoReviewKind.RETRY
+            return ReviewStepResult(verdict.kind is AutoReviewKind.RETRY)
         self._replaying(lambda: self._apply(operation_id, subject.revision, verdict))
-        return False
+        return ReviewStepResult(False, any(concern.code is ConcernCode.SIMILAR_TITLE for concern in verdict.concerns))
+
+    def _next_case_fits(self) -> bool:
+        """@description: Stop starting cases when the worst-case cost of the next one would exceed the sweep's quota budget; the case waits for the next sweep.
+        @param self: Pipeline.
+        @return: True when the next case can be reviewed completely within the budget.
+        """
+        worst_case_units = 1 + (COMPARISON_REQUEST_UNITS if self._version_confirm else 0)
+        return self._sweep_units + worst_case_units <= SWEEP_LOOKUP_LIMIT
+
+    def _compare_recent(self, video_id: str, lookup: MetadataLookup, verdict: AutoReviewVerdict) -> AutoReviewVerdict:
+        """@description: Compare an otherwise approvable submission with the most recent existing songs, in memory only, before anything is written.
+        @param self: Pipeline.
+        @param video_id: The new video, never compared with itself.
+        @param lookup: Its official metadata lookup.
+        @param verdict: Verdict from the trust policy.
+        @return: The verdict unchanged, or refined by the comparison with the staleness mark filled in.
+        """
+        if not self._version_confirm or verdict.kind is not AutoReviewKind.AUTO_APPROVE:
+            return verdict
+        recent = self._repository.recent_comparison(video_id, COMPARISON_RECENT_LIMIT)
+        comparison = BatchLookup(BatchStatus.COMPLETE, ())
+        if recent.video_ids:
+            comparison = self._metadata_client.lookup_many(recent.video_ids)
+            self._sweep_units += math.ceil(len(recent.video_ids) / BATCH_LOOKUP_SIZE)
+        refined = refine_verdict(verdict, lookup.metadata, comparison, len(recent.video_ids), ConcernThresholds())
+        if refined.version_basis is None:
+            return refined
+        return replace(refined, version_basis=replace(refined.version_basis, last_accepted_sequence=recent.last_accepted_sequence))
 
     def _apply(self, operation_id: str, revision: int, verdict) -> Any:
         """@description: Apply a verdict, naming the retention mode only when it is on so the previous repository contract stays unchanged.
@@ -283,6 +333,8 @@ def format_share_outcome(operation_id: str, outcome: PipelineOutcome) -> str:
     @param outcome: Pipeline outcome read back from durable state.
     @return: Private reply; +1 appears only for a committed award.
     """
+    if outcome.similar_title_review and outcome.review_status is ReviewStatus.PENDING_REVIEW:  # [durable state wins]: A stale or already decided case never gets the similar-review wording.
+        return f"已儲存投稿；{SIMILAR_REVIEW_REPLY}。操作 {operation_id}。"
     retry = "官方資料暫時無法取得，系統會自動重試。" if outcome.retry_later else ""
     return f"已儲存投稿；審核：{REVIEW_TEXT[outcome.review_status]}。{retry}{_reward_text(outcome)}操作 {operation_id}。"
 

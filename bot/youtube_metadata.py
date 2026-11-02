@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -25,6 +25,7 @@ MAX_ATTEMPTS = 3  # [retry bound]: Temporary failures are attempted at most this
 RETRY_BASE_SECONDS = 0.5  # [backoff base]: Doubled after each failed attempt.
 MIN_REQUEST_INTERVAL_SECONDS = 0.2  # [local rate limit]: At most five calls per second from this process.
 QUOTA_COOLDOWN = timedelta(hours=1)  # [quota pause]: Daily quota resets at midnight Pacific; hourly probes cost one unit each.
+BATCH_LOOKUP_SIZE = 50  # [API limit]: videos.list accepts at most this many identifiers per request, for one quota unit.
 MAX_RESPONSE_BYTES = 1_000_000  # [response bound]: A one-video response is far smaller than this.
 SOURCE_LABEL = "youtube-data-api-v3:videos.list"  # [provenance]: Stored with the retrieval time as duration evidence.
 QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded"})  # [quota family]: Retrying before the cooldown only burns more quota.
@@ -71,6 +72,22 @@ class VideoMetadata:
     privacy_status: str | None  # [visibility]: Only public qualifies for automatic approval.
     duration_seconds: int | None  # [full-video length]: None when absent, malformed or zero.
     fetched_at: datetime  # [retrieval time]: Timezone-aware instant the response was parsed.
+
+
+class BatchStatus(Enum):
+    """Separate a trustworthy comparison set from outcomes that say nothing about the old videos."""
+
+    COMPLETE = "complete"  # [usable]: Every request was answered in the documented shape; missing videos were deleted or private.
+    INCOMPLETE = "incomplete"  # [unusable]: A request failed or a response could not be trusted.
+    QUOTA_EXHAUSTED = "quota_exhausted"  # [unusable]: The quota cooldown started or was already running.
+
+
+@dataclass(frozen=True)
+class BatchLookup:
+    """Return the old videos' metadata for one in-memory comparison; found is empty unless the status is COMPLETE."""
+
+    status: BatchStatus  # [outcome]: Drives whether the comparison may clear a submission.
+    found: tuple["VideoMetadata", ...]  # [in-memory facts]: Never stored; dropped when the comparison ends.
 
 
 @dataclass(frozen=True)
@@ -160,19 +177,47 @@ class YouTubeMetadataClient:
         @param video_id: Parser-validated video identifier.
         @return: Found metadata, not found, a temporary failure or exhausted quota.
         """
+        failure, response = self._request(video_id)
+        return failure if failure is not None else self._interpret(video_id, response)
+
+    def lookup_many(self, video_ids: Sequence[str]) -> BatchLookup:
+        """@description: Ask the official API about many videos in chunks of fifty, so a comparison costs one quota unit per chunk.
+        @param self: Client.
+        @param video_ids: Parser-validated identifiers; duplicates are asked once.
+        @return: COMPLETE with the videos that still exist, or an unusable status that stops at the first failed chunk.
+        """
+        unique_ids = list(dict.fromkeys(video_ids))
+        found: list[VideoMetadata] = []  # [in-memory result]: Grows chunk by chunk and is never stored.
+        for start in range(0, len(unique_ids), BATCH_LOOKUP_SIZE):
+            chunk = unique_ids[start:start + BATCH_LOOKUP_SIZE]
+            failure, response = self._request(",".join(chunk))
+            if failure is not None:
+                return BatchLookup(_BATCH_STATUS_BY_FAILURE[failure.status], ())
+            items = self._interpret_many(frozenset(chunk), response)
+            if items is None:
+                return BatchLookup(BatchStatus.INCOMPLETE, ())
+            found.extend(items)
+        return BatchLookup(BatchStatus.COMPLETE, tuple(found))
+
+    def _request(self, id_parameter: str) -> tuple[MetadataLookup | None, object]:
+        """@description: Perform one videos.list request with the shared cooldown, rate limit and bounded retry.
+        @param self: Client.
+        @param id_parameter: One identifier or a comma-joined list of up to fifty.
+        @return: A final failure lookup and no response, or no failure and the decoded response.
+        """
         if self._cooling_down():
-            return MetadataLookup(LookupStatus.QUOTA_EXHAUSTED, None)
+            return MetadataLookup(LookupStatus.QUOTA_EXHAUSTED, None), None
         for attempt in range(MAX_ATTEMPTS):
             self._respect_rate_limit()
             try:
-                return self._interpret(video_id, self._transport(video_id, self._api_key, REQUEST_TIMEOUT_SECONDS))
+                return None, self._transport(id_parameter, self._api_key, REQUEST_TIMEOUT_SECONDS)
             except TransportFailure as failure:
                 terminal = self._terminal_outcome(failure)
             if terminal is not None:
-                return terminal
+                return terminal, None
             if attempt + 1 < MAX_ATTEMPTS:
                 self._sleep(RETRY_BASE_SECONDS * 2 ** attempt)
-        return MetadataLookup(LookupStatus.TEMPORARY_FAILURE, None)
+        return MetadataLookup(LookupStatus.TEMPORARY_FAILURE, None), None
 
     def _cooling_down(self) -> bool:
         """@description: Tell whether the quota cooldown still forbids network calls.
@@ -225,6 +270,21 @@ class YouTubeMetadataClient:
             return MetadataLookup(LookupStatus.TEMPORARY_FAILURE, None)
         return MetadataLookup(LookupStatus.FOUND, self._metadata(video_id, items[0]))
 
+    def _interpret_many(self, requested: frozenset[str], response: object) -> tuple[VideoMetadata, ...] | None:
+        """@description: Accept only items that were requested, once each; anything else makes the whole chunk untrustworthy.
+        @param self: Client.
+        @param requested: Identifiers sent in this request.
+        @param response: Decoded JSON response.
+        @return: Metadata of the videos that still exist, or None when the response cannot be trusted.
+        """
+        items = response.get("items") if isinstance(response, dict) else None
+        if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+            return None
+        returned = [item.get("id") for item in items]
+        if len(set(returned)) != len(returned) or not set(returned) <= requested:
+            return None
+        return tuple(self._metadata(item["id"], item) for item in items)
+
     def _metadata(self, video_id: str, item: dict) -> VideoMetadata:
         """@description: Copy the documented fields, leaving anything missing as None so the policy can hold it.
         @param self: Client.
@@ -246,3 +306,7 @@ def _section(item: dict, name: str) -> dict:
     """
     section = item.get(name)
     return section if isinstance(section, dict) else {}
+
+
+_BATCH_STATUS_BY_FAILURE = {LookupStatus.QUOTA_EXHAUSTED: BatchStatus.QUOTA_EXHAUSTED,
+                            LookupStatus.TEMPORARY_FAILURE: BatchStatus.INCOMPLETE}  # [failure mapping]: Only these two can end a request without a response.

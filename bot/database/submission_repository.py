@@ -44,6 +44,7 @@ from bot.database.api_retention_job import run_purge
 from bot.database.auto_review_store import (
     AutoReviewSubject, apply_verdict, pending_validation_rows, read_reward_state, read_subject, ready_rows, refresh_observation,
 )
+from bot.database.auto_version_store import RecentComparison, read_recent_comparison
 from bot.database.reward_settlement import settle_reward
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
 from bot.database.submission_store import accept_submission
@@ -173,6 +174,16 @@ class SubmissionRepository:
         """
         with submission_transaction(self._factory) as (cursor, control):
             return apply_verdict(cursor, control, operation_id, expected_revision, verdict, retain_api_values)
+
+    def recent_comparison(self, exclude_video_id: str, limit: int) -> RecentComparison:
+        """@description: Read the most recently submitted videos a new submission is compared with, without changing anything.
+        @param self: Synchronous repository boundary.
+        @param exclude_video_id: The new video, never compared with itself.
+        @param limit: Maximum number of existing videos.
+        @return: Video IDs newest first and the newest accepted submission at read time.
+        """
+        with submission_transaction(self._factory) as (cursor, _control):
+            return read_recent_comparison(cursor, exclude_video_id, limit)
 
     def refresh_api_observation(self, operation_id: str, verdict: AutoReviewVerdict) -> bool:
         """@description: Store fresh official values for a pending review whose passing conclusion has expired, without changing the review.

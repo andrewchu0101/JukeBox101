@@ -26,6 +26,7 @@ from bot.song_identity import VideoIdentity
 from bot.urls import canonical_watch_url
 from bot.song_judgement import ContentJudgement
 from bot.submission_workflow import SubmissionRequest, _review_request
+from bot.version_concerns import CONCERN_FIELD, VersionConcern, parse_concern_detail
 from bot.version_evidence import resolve_video_version
 from bot.version_identity import RecordingVersionIdentity, VersionAssignment, VersionIdentityStatus, require_reference
 
@@ -812,6 +813,7 @@ class PendingItem:
     submitter_id: int = 0  # [submitter]: Discord user who submitted the operation, shown on the Owner's case card.
     duration_seconds: int | None = None  # [known duration]: Reliable full-video seconds, or None when no trustworthy duration exists.
     api_basis: str | None = None  # [API duration basis]: "valid" or "expired" when the only duration basis is an official-data conclusion; otherwise None.
+    concerns: tuple[VersionConcern, ...] = ()  # [automatic comparison doubts]: Codes and existing video IDs the system stored when it sent the case to the Owner; never a title.
 
 
 @dataclass(frozen=True)
@@ -866,7 +868,19 @@ def _pending_item(cursor: Any, row: dict, review: ReviewSnapshot, identity: Vers
     """
     return PendingItem(row["operation_id"], row["source_url"], row["accepted_sequence"], review.status, identity.status, review.version,
                        len(_stored_evidence(cursor, row["video_id"])), conflict_reason(identity), row["discord_user_id"],
-                       _known_duration_seconds(review), _api_basis(cursor, review))
+                       _known_duration_seconds(review), _api_basis(cursor, review), _stored_concerns(cursor, row["video_id"]))
+
+
+def _stored_concerns(cursor: Any, video_id: str) -> tuple[VersionConcern, ...]:
+    """@description: Recover the doubts the automatic comparison recorded for a video from its newest audit reason that lists any.
+    @param cursor: Transaction-owned cursor.
+    @param video_id: Video of the pending case.
+    @return: Concerns, or an empty tuple when the case never went through the comparison.
+    """
+    cursor.execute("SELECT decision_reason FROM jb2_review_history WHERE video_id=%s AND strpos(decision_reason, %s) > 0 "
+                   "ORDER BY revision DESC LIMIT 1", (video_id, CONCERN_FIELD))
+    row = cursor.fetchone()
+    return () if row is None else parse_concern_detail(row["decision_reason"])
 
 
 MAX_KNOWN_VERSIONS_PAGE = 10  # [page size cap]: Keeps the known-version list inside one Discord card.

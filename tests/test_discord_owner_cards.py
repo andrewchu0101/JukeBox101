@@ -40,7 +40,7 @@ def case(sequence: int = 1, revision: int = 3, review: ReviewStatus = ReviewStat
     """
     return SimpleNamespace(operation_id=f"discord:internal-{sequence}", source_url=VIDEO_URL, accepted_sequence=sequence,
                            review_status=review, identity_status=identity, revision=revision, evidence_count=0,
-                           conflict_reason=conflict, submitter_id=SUBMITTER_ID, duration_seconds=duration, api_basis=None)
+                           conflict_reason=conflict, submitter_id=SUBMITTER_ID, duration_seconds=duration, api_basis=None, concerns=())
 
 
 class CardService:

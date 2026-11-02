@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from bot.auto_pipeline import AutoPipeline
-from bot.config import ConfigurationError, load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled, load_trusted_channel_ids, load_youtube_api_key
+from bot.config import ConfigurationError, load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled, load_auto_version_confirm_enabled, load_trusted_channel_ids, load_youtube_api_key
 from bot.youtube_metadata import YouTubeMetadataClient
 
 
@@ -16,6 +16,10 @@ RETENTION_REQUIRED_MESSAGE = (  # [refusal text]: Names what to do and what the 
     "JUKEBOX_AUTO_REVIEW=on 需要 JUKEBOX_API_RETENTION=on，否則官方 API 數值會永久寫進歷史表。拒絕啟動。"
     "請先完成 migration 0004（python -m bot.migrate plan，再 apply --apply），再把 JUKEBOX_API_RETENTION 設為 on。"
     "系統不會自動套用 migration，也不會自行修改任何設定值。")
+
+
+VERSION_CONFIRM_REQUIRES_MESSAGE = (  # [refusal text]: Names the prerequisites; the switch value is never echoed.
+    "JUKEBOX_AUTO_VERSION_CONFIRM=on 需要 JUKEBOX_AUTO_REVIEW=on 與 JUKEBOX_API_RETENTION=on，否則無法比對也無法遵守 API 資料保存規則。拒絕啟動。")
 
 
 @dataclass(frozen=True)
@@ -27,13 +31,14 @@ class AutoSettings:
     trusted_channel_ids: frozenset[str]  # [allowlist]: Empty approves nothing automatically.
     api_key: str | None  # [credential]: Present only when lookups may run.
     api_retention: bool = False  # [API data lifecycle]: Official values live only in the short-lived table, and the purge job runs.
+    version_confirm: bool = False  # [Owner-authorised automation]: A clean comparison may confirm the version; off keeps every version with the Owner.
 
     def __repr__(self) -> str:
         """@description: Keep the credential out of every representation.
         @param self: Settings.
         @return: Text without the key.
         """
-        return f"AutoSettings(review_enabled={self.review_enabled}, settlement_enabled={self.settlement_enabled}, api_retention={self.api_retention})"
+        return f"AutoSettings(review_enabled={self.review_enabled}, settlement_enabled={self.settlement_enabled}, api_retention={self.api_retention}, version_confirm={self.version_confirm})"
 
 
 def load_auto_settings(environ=None) -> AutoSettings:
@@ -45,8 +50,11 @@ def load_auto_settings(environ=None) -> AutoSettings:
     api_retention = load_api_retention_enabled(environ)
     if review_enabled and not api_retention:
         raise ConfigurationError(RETENTION_REQUIRED_MESSAGE)  # [before any credential or connection]: Nothing secret is read for a refused combination.
+    version_confirm = load_auto_version_confirm_enabled(environ)
+    if version_confirm and not (review_enabled and api_retention):
+        raise ConfigurationError(VERSION_CONFIRM_REQUIRES_MESSAGE)
     return AutoSettings(review_enabled, load_auto_settlement_enabled(environ), load_trusted_channel_ids(environ),
-                        load_youtube_api_key(environ) if review_enabled else None, api_retention)
+                        load_youtube_api_key(environ) if review_enabled else None, api_retention, version_confirm)
 
 
 def build_auto_pipeline(repository: Any, settings: AutoSettings) -> AutoPipeline | None:
@@ -59,4 +67,4 @@ def build_auto_pipeline(repository: Any, settings: AutoSettings) -> AutoPipeline
         return None
     client = YouTubeMetadataClient(settings.api_key) if settings.review_enabled else None
     return AutoPipeline(repository, client, settings.trusted_channel_ids, settlement_enabled=settings.settlement_enabled,
-                        api_retention=settings.api_retention)
+                        api_retention=settings.api_retention, version_confirm=settings.version_confirm)

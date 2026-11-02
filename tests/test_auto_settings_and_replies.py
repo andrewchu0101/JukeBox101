@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from bot.auto_pipeline import PipelineOutcome, format_share_outcome, reward_label
+from bot.auto_pipeline import SIMILAR_REVIEW_REPLY, PipelineOutcome, format_share_outcome, reward_label
 from bot.auto_startup import build_auto_pipeline, load_auto_settings
 from bot.config import ConfigurationError, load_trusted_channel_ids
 from bot.database.submission_repository import SubmissionRepository
@@ -115,6 +115,27 @@ def test_only_a_committed_award_reply_says_plus_one() -> None:
     @return: None.
     """
     assert "+1" in format_share_outcome("discord:1", outcome(RewardCandidateStatus.AWARDED, RewardDecisionReason.PREVIOUSLY_AWARDED))
+
+
+def test_the_similar_review_reply_is_used_only_while_the_case_is_still_waiting_for_the_owner() -> None:
+    """@description: The submitter is told "handed to review" only when the stored review really is pending review.
+    @param: none
+    @return: None.
+    """
+    waiting = outcome(RewardCandidateStatus.WAITING_VALIDATION, RewardDecisionReason.REVIEW_INCOMPLETE, review=ReviewStatus.PENDING_REVIEW,
+                      similar_title_review=True)
+    assert SIMILAR_REVIEW_REPLY in format_share_outcome("discord:1", waiting)
+
+
+@pytest.mark.parametrize("review", [ReviewStatus.APPROVED, ReviewStatus.REJECTED, ReviewStatus.PENDING_VALIDATION, ReviewStatus.VALIDATION_FAILED])
+def test_the_similar_review_reply_is_never_used_once_the_case_is_no_longer_pending_review(review) -> None:
+    """@description: A stale in-memory hint must not contradict the durable state, for example after the Owner already decided.
+    @param review: Any review state other than pending review.
+    @return: None.
+    """
+    stale = outcome(RewardCandidateStatus.WAITING_VALIDATION, RewardDecisionReason.REVIEW_INCOMPLETE, review=review, similar_title_review=True)
+    reply = format_share_outcome("discord:1", stale)
+    assert SIMILAR_REVIEW_REPLY not in reply and "+1" not in reply
 
 
 def test_an_unknown_settlement_commit_says_unconfirmed_not_paid() -> None:

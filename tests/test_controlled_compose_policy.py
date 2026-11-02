@@ -25,12 +25,16 @@ def controlled_profile(request):
                healthcheck={'test': ['CMD', 'python', '-m', 'bot.healthcheck']},
                deploy={'resources': {'limits': {'cpus': '1.0', 'memory': '536870912'}}},
                environment=dict(DB_NAME=environment['DB_NAME'], DB_USER=environment['DB_USER'],
-                                DB_SSLMODE='verify-full', JUKEBOX_NICKEL_CLAIM='off', JUKEBOX_FORMAL_EXCHANGE='off'),
-               secrets=[{'source': name} for name in ('discord_bot_token', 'db_password', 'db_ca.crt')])
+                                DB_SSLMODE='verify-full', JUKEBOX_NICKEL_CLAIM='off', JUKEBOX_FORMAL_EXCHANGE='off',
+                                JUKEBOX_AUTO_REVIEW='off', JUKEBOX_API_RETENTION='off', JUKEBOX_AUTO_SETTLEMENT='off',
+                                JUKEBOX_AUTO_VERSION_CONFIRM='off', YOUTUBE_TRUSTED_CHANNEL_IDS='',
+                                YOUTUBE_API_KEY_FILE='/run/secrets/youtube_api_key'),
+               secrets=[{'source': name} for name in ('discord_bot_token', 'db_password', 'db_ca.crt', 'youtube_api_key')])
     networks = {'egress': {'external': True, 'name': environment.get('JB_EGRESS_NETWORK', 'jukebox101_egress')},
                 'database': {'external': True, 'name': environment.get('JB_DATABASE_NETWORK', 'jukebox101_database')}}
     return dict(services={'bot': bot}, networks=networks,
-                secrets={'db_ca.crt': {'file': environment.get('JB_DB_CA_FILE', '/etc/jukebox101/supabase-ca-2021.crt')}}), environment
+                secrets={'db_ca.crt': {'file': environment.get('JB_DB_CA_FILE', '/etc/jukebox101/supabase-ca-2021.crt')},
+                         'youtube_api_key': {'file': '/etc/jukebox101/secrets/youtube_api_key.txt'}}), environment
 
 
 def test_reviewed_controlled_profiles_are_accepted(controlled_profile):
@@ -44,7 +48,10 @@ def test_reviewed_controlled_profiles_are_accepted(controlled_profile):
 
 @pytest.mark.parametrize('fault', ['ca', 'network', 'private_network', 'shared_network', 'database', 'role',
                                   'health', 'tls', 'port', 'mount', 'root', 'writable', 'capabilities',
-                                  'privileges', 'claim', 'exchange', 'memory', 'cpu', 'service', 'command', 'image'])
+                                  'privileges', 'claim', 'exchange', 'memory', 'cpu', 'service', 'command', 'image',
+                                  'auto_review_on', 'auto_settlement_on', 'api_retention_on', 'version_confirm_on',
+                                  'auto_review_unset', 'trusted_channels_preset', 'youtube_key_path', 'youtube_key_target',
+                                  'extra_secret', 'missing_youtube_secret', 'swapped_secret'])
 def test_host_drift_and_weaker_runtime_policy_are_rejected(controlled_profile, fault):
     """@description: Refuse host misrouting and weaker isolation before any service operation.
     @param controlled_profile: Private synthetic configuration and explicit expected settings.
@@ -80,8 +87,23 @@ def mutate_profile(config, environment, fault):
                'service': (config['services'], 'postgres', {}),
                'ca': (config['secrets']['db_ca.crt'], 'file', '/wrong/ca.crt'),
                'network': (config['networks']['database'], 'name', 'other-project'),
-               'private_network': (config['networks']['database'], 'external', False)}
-    if fault == 'shared_network':
+               'private_network': (config['networks']['database'], 'external', False),
+               'auto_review_on': (bot['environment'], 'JUKEBOX_AUTO_REVIEW', 'on'),
+               'auto_settlement_on': (bot['environment'], 'JUKEBOX_AUTO_SETTLEMENT', 'on'),
+               'api_retention_on': (bot['environment'], 'JUKEBOX_API_RETENTION', 'on'),
+               'version_confirm_on': (bot['environment'], 'JUKEBOX_AUTO_VERSION_CONFIRM', 'on'),
+               'trusted_channels_preset': (bot['environment'], 'YOUTUBE_TRUSTED_CHANNEL_IDS', 'UC' + 'a' * 22),
+               'youtube_key_path': (bot['environment'], 'YOUTUBE_API_KEY_FILE', '/etc/passwd'),
+               'youtube_key_target': (config['secrets']['youtube_api_key'], 'file', '/home/someone/key.txt')}
+    secret_faults = {'extra_secret': bot['secrets'] + [{'source': 'unreviewed_secret'}],
+                     'missing_youtube_secret': [entry for entry in bot['secrets'] if entry['source'] != 'youtube_api_key'],
+                     'swapped_secret': [{'source': 'youtube_api_key_other' if entry['source'] == 'youtube_api_key' else entry['source']}
+                                        for entry in bot['secrets']]}
+    if fault in secret_faults:
+        bot['secrets'] = secret_faults[fault]
+    elif fault == 'auto_review_unset':
+        del bot['environment']['JUKEBOX_AUTO_REVIEW']
+    elif fault == 'shared_network':
         environment.update(JB_EGRESS_NETWORK='same-network', JB_DATABASE_NETWORK='same-network')
     else:
         target, key, value = changes[fault]

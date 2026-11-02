@@ -19,7 +19,7 @@ from bot.discord_owner_review import (
 from bot.owner_card_versions import (
     CATEGORY_BY_ORDINAL, INSUFFICIENT_TEXT, KNOWN_VERSIONS_PER_CARD, NEW_HEADLINE, NEW_REASON, NO_VERSION_ERROR, OTHER_MENU_TEXT, PROMISE_LINES,
     REMASTER_LABEL, REMASTER_REASON, SAME_HEADLINE, SAME_REASON, SOURCE_REQUIRED_TEXT, category_headline, category_reason, manual_check_source,
-    new_version_identity, render_known_versions, retention_warning, version_evidence, watch_url,
+    concern_lines, new_version_identity, render_known_versions, retention_warning, version_evidence, watch_url,
 )
 from bot.evidence_record import VersionClaimKind
 from bot.owner_review import OwnerReviewService, ReviewAction, ReviewOutcomeUnknown, require_traceable_source
@@ -126,7 +126,7 @@ def render_card(item, versions=None, has_more_versions: bool = False) -> str:
     """
     lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{_card_link(item.source_url)}", f"已知時長：{_duration_text(item.duration_seconds, item.api_basis)}",
              f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item), f"待處理：{waiting_reason(item)}",
-             "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"]
+             "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。", *concern_lines(item.concerns)]
     if versions is not None:
         lines += ["", render_known_versions(versions, has_more_versions), "", *PROMISE_LINES]
     return "\n".join(lines)

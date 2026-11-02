@@ -11,6 +11,14 @@ import tempfile
 from pathlib import Path
 
 
+BASE_SECRETS = {'discord_bot_token', 'db_password', 'db_ca.crt'}  # [reviewed secret names]: The base stack mounts exactly these.
+YOUTUBE_SECRET = 'youtube_api_key'  # [reviewed secret name]: The only secret the controlled stack may add.
+CLOSED_AUTO_SETTINGS = {'JUKEBOX_AUTO_REVIEW': 'off', 'JUKEBOX_API_RETENTION': 'off', 'JUKEBOX_AUTO_SETTLEMENT': 'off',
+                        'JUKEBOX_AUTO_VERSION_CONFIRM': 'off', 'YOUTUBE_TRUSTED_CHANNEL_IDS': '',
+                        'YOUTUBE_API_KEY_FILE': '/run/secrets/youtube_api_key'}  # [published defaults]: Every automatic mode starts closed.
+YOUTUBE_KEY_HOST_FILE = '/etc/jukebox101/secrets/youtube_api_key.txt'  # [fixed host path]: Same directory as the other secrets.
+
+
 def run(arguments, *, environment=None) -> str:
     """@description: Bound Docker verification calls and avoid printing expanded configuration.
     @param arguments: Explicit argv without a shell.
@@ -38,7 +46,7 @@ def assert_bot_policy(bot: dict) -> None:
     assert float(bot['deploy']['resources']['limits']['cpus']) <= 1.0
     assert bot['environment']['DB_SSLMODE'] == 'verify-full'
     secrets = {entry['source'] for entry in bot['secrets']}
-    assert secrets == {'discord_bot_token', 'db_password', 'db_ca.crt'}
+    assert secrets in (BASE_SECRETS, BASE_SECRETS | {YOUTUBE_SECRET})
 
 
 def assert_controlled_policy(config: dict, environment: dict) -> None:
@@ -52,6 +60,9 @@ def assert_controlled_policy(config: dict, environment: dict) -> None:
     assert_bot_policy(bot)
     assert 'build' not in bot and not bot.get('command') and not bot.get('entrypoint')
     assert not bot.get('volumes')
+    assert {entry['source'] for entry in bot['secrets']} == BASE_SECRETS | {YOUTUBE_SECRET}
+    assert {name: bot['environment'].get(name) for name in CLOSED_AUTO_SETTINGS} == CLOSED_AUTO_SETTINGS
+    assert config['secrets'][YOUTUBE_SECRET]['file'] == YOUTUBE_KEY_HOST_FILE
     assert bot['image'] == environment['JB_IMAGE']
     expected = {environment.get('JB_EGRESS_NETWORK') or 'jukebox101_egress',
                 environment.get('JB_DATABASE_NETWORK') or 'jukebox101_database'}
