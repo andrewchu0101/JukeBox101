@@ -10,9 +10,10 @@
 |---|---|---|
 | Google 回覆範圍 | Owner 確認 Google 的回覆涵蓋「用官方 API 做內部比對」的用途；未確認前不得開啟任何會呼叫 YouTube 的開關 | Owner |
 | 14 天保存與即時重查設計 | Owner 口頭同意；Sean 核對 `docs/api-retention-release.md` 後才算正式確認 | Sean／Owner |
-| migration 0004 | 已套用到正式資料庫（`python -m bot.migrate plan`，再 `apply --apply`）；系統不會自動套用 | Owner／管理者 |
+| migration 0004 | 套用到正式資料庫（`python -m bot.migrate plan`，再 `apply --apply`）**需要 Owner 另行明確授權**；系統不會自動套用，也不會代為決定 | Owner 授權、管理者執行 |
 | 資料庫備份 | 開任何開關前先備份 | 管理者 |
-| 首筆案件處理 | 若為 Hypnotize，Owner 在正式庫把版本標為「音源版」（見第 3 節步驟 4）；**必須在開結算之前** | Owner |
+| 首筆案件處理 | Owner 決定「確認版本」，在 Discord 案件卡片操作（見第 3 節步驟 3）；Hypnotize 尚未驗證，Owner 看過影片後才按；**必須在開自動發獎之前** | Owner |
+| 認可頻道清單 | Owner 尚未提供；清單空白時**沒有任何歌會自動通過**（全部轉 Owner 審）。可先用 `python -m bot.channel_id_tool <影片連結>` 取得 ID | Owner |
 
 ## 1. 部署新映像（開關仍 off）
 
@@ -39,13 +40,15 @@ YOUTUBE_TRUSTED_CHANNEL_IDS=<Owner 認可的 UC… 頻道 ID，逗號分隔>
 
 驗證：`bot.healthcheck` 為 `ready`；認可頻道的新投稿出現「審核通過」，但 **`/balance` 不變**（結算仍 off）。
 
-## 3. 開版本自動確認、處理首筆案件、再開結算
+## 3. 處理首筆案件、開版本自動確認，最後才開自動發獎
 
-1. `bot.env` 加 `JUKEBOX_AUTO_VERSION_CONFIRM=on`（需第 2 節兩個開關已 on，否則 Bot 拒絕啟動），重建容器。
-2. 驗證（見測試計畫 5.3 步驟 6-10）：無疑慮的認可頻道新歌被自動確認版本；同頻道且時長相近、歌名相似、含 remix／live／cover 等關鍵字的新歌進 `/owner list`，卡片寫明原因；清單被清空時什麼都不會自動通過。
-3. `/owner list` 逐筆處理所有版本未確認的既有案件。
-4. **首筆案件**（`discord:1565766654502113430`）：若為 Hypnotize，Owner 用既有 `/owner confirm_version` 或 `python -m bot.owner_cli version …` 先 preview 再確認，版本標為「音源版」（無類別的基本確認＋文字說明）。**這是 Owner 在正式庫的人工操作**，確認後該案會依一般流程領 +1，所以須在步驟 5 之前、並明知後果下進行。
-5. 開發獎：停 Bot → `python -m bot.owner_cli settlement-switch preview --enabled on` → 用印出的 digest 執行 `write` → `bot.env` 設 `JUKEBOX_AUTO_SETTLEMENT=on` → 啟動 → `python -m bot.healthcheck`。資料庫旗標與 `JUKEBOX_AUTO_SETTLEMENT` 必須一致，否則健康檢查回報 `SETTLEMENT_*`。
+啟用順序（Owner 已定）：**先開自動審核與保存並用真實 API 驗證（第 2 節）→ 處理首筆案件 → 才開自動發獎**。
+
+1. 用真實 API 驗證第 2 節的結果（見測試計畫 5.3 步驟 6-10）：認可頻道的歌被自動核准，其他的進 `/owner list`。
+2. `/owner list` 逐筆處理所有版本未確認的既有案件。
+3. **首筆案件**（`discord:1565766654502113430`）：Owner 在 Discord 開 `/owner list`，找到該案卡片，**看過影片後**按「確認為新的錄音版本」。這不是改資料庫，是卡片上的一般 Owner 操作；Hypnotize 尚未驗證，Owner 判斷前不要按。確認後該案會依一般流程等待發獎，**須在步驟 5 開自動發獎之前完成**，否則確認當下就可能領 +1。
+4. 需要版本自動比對時，`bot.env` 加 `JUKEBOX_AUTO_VERSION_CONFIRM=on`（第 2 節兩個開關已 on，否則 Bot 拒絕啟動），重建容器。驗證：無疑慮的認可頻道新歌被自動確認版本；同頻道且時長相近、歌名相似、含 remix／live／cover 等關鍵字的新歌進 `/owner list`，卡片寫明原因；清單被清空時什麼都不會自動通過。三個條件（同頻道、時長差 ≤ 3 秒、歌名高度相似）全部成立時，卡片寫「高度相同，建議不發放」，仍由 Owner 決定，不新增狀態。
+5. 開自動發獎：停 Bot → `python -m bot.owner_cli settlement-switch preview --enabled on` → 用印出的 digest 執行 `write` → `bot.env` 設 `JUKEBOX_AUTO_SETTLEMENT=on` → 啟動 → `python -m bot.healthcheck`。資料庫旗標與 `JUKEBOX_AUTO_SETTLEMENT` 必須一致，否則健康檢查回報 `SETTLEMENT_*`。
 
 ## 4. 回滾（由輕到重）
 

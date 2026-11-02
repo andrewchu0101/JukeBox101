@@ -21,6 +21,8 @@ from tests.test_postgres_auto_pipeline import (ALICE, BOB, NOW, OWNER_ID, TRUSTE
 pytestmark = pytest.mark.postgres
 
 TITLE_CANARY = "TitleCanaryQ"
+CANARY_CHANNEL = "UC" + "q" * 22  # [leak marker]: A trusted channel only this test uses, so any stored copy is attributable.
+CANARY_SECONDS = 613  # [leak marker]: An official duration no other fixture uses.
 OLD_TITLE = f"{TITLE_CANARY} Alpha Beta Gamma"
 UNRELATED_TITLE = "Delta Epsilon Zeta"
 TABLES = ("users", "songs", "submissions", "credit_ledger", "jb2_versions", "jb2_videos", "jb2_events", "jb2_receipts", "jb2_claims",
@@ -93,8 +95,8 @@ class ConfirmWorld(World):
         @param repository: Optional repository override.
         @return: Pipeline.
         """
-        return AutoPipeline(repository or self.repository, self.metadata, frozenset({TRUSTED}), settlement_enabled=True,
-                            api_retention=True, version_confirm=True)
+        return AutoPipeline(repository or self.repository, self.metadata, frozenset({TRUSTED, CANARY_CHANNEL}),
+                            settlement_enabled=True, api_retention=True, version_confirm=True)
 
     def everything_stored(self) -> str:
         """@description: Dump every table that could keep a title as text.
@@ -306,3 +308,19 @@ def test_the_recent_comparison_read_marks_the_newest_accepted_submission_and_wri
     assert world.repository.recent_comparison(VIDEO_C, 500).last_accepted_sequence == first and world.everything_stored() == snapshot
     world.repository.accept_pending(BOB, url(VIDEO_B), "discord:2")
     assert world.repository.recent_comparison(VIDEO_C, 500).last_accepted_sequence > first
+
+
+def test_new_data_holds_only_ids_and_links_never_a_title_a_channel_or_an_official_duration(world) -> None:
+    """@description: Outside the short-lived observation table, nothing the automatic path writes contains a title, a channel ID or an official duration.
+    @param world: Comparing world.
+    @return: None.
+    """
+    world.metadata.scripted[VIDEO_C] = official(VIDEO_C, f"{TITLE_CANARY} Omega", CANARY_SECONDS, CANARY_CHANNEL)
+    world.share(ALICE, VIDEO_A, "discord:1")
+    world.share(BOB, VIDEO_C, "discord:2")
+    durable = [row["payload"] for table in TABLES if table != "jb2_api_observations"
+               for row in admin_query(world.database, f"SELECT row_to_json(t)::text AS payload FROM {table} t")]
+    text = "\n".join(durable)
+    assert TITLE_CANARY not in text and CANARY_CHANNEL not in text and TRUSTED not in text
+    assert re.search(rf"(?<![0-9]){CANARY_SECONDS}(?![0-9])", text) is None
+    assert VIDEO_C in text and "youtube.com" in text  # [what is kept]: The video ID and the original link.
