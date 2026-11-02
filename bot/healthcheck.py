@@ -21,7 +21,8 @@ def check_health() -> dict:
     """
     problems = []
     try:
-        if load_formal_exchange_enabled() or load_nickel_claim_enabled():
+        load_formal_exchange_enabled()  # [fail closed]: An invalid value is unhealthy; a valid "on" is the approved stage B state and is not flagged.
+        if load_nickel_claim_enabled():
             problems.append('FEATURE_POLICY_ENABLED')
         load_auto_settings()  # [fail closed]: A switched-on mode with an invalid allowlist or no credential is unhealthy.
         application_id = int(os.environ['DISCORD_EXPECTED_APPLICATION_ID'])

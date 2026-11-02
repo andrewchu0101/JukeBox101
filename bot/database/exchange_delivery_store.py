@@ -5,7 +5,7 @@ Every transition is conditional on its expected prior state and, for an attempt,
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from bot.database.compensation_schema import require_schema
@@ -196,6 +196,51 @@ def user_results(cursor: Any, discord_user_id: int) -> list[dict]:
     rows = sorted(cursor.fetchall(), key=lambda row: row["recommendation_id"])  # [caller scope]: Only this user's rows are selected.
     return [{"operation_code": row["recommendation_id"], "song_id": row["song_id"], "delivery_state": row["status"],
              "refund_state": _refund_state(row)} for row in rows]
+
+
+def _as_utc(moment: datetime) -> datetime:
+    """@description: Compare naive UTC clocks and timezone-aware database values on one footing.
+    @param moment: Naive UTC or timezone-aware time.
+    @return: The same instant as a timezone-aware UTC time.
+    """
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment.astimezone(timezone.utc)
+
+
+def _stuck_reason(row: dict, now: datetime) -> tuple[str, datetime] | None:
+    """@description: Classify one reservation as an unresolved case and name the moment its waiting is counted from.
+    @param row: Reservation row with status, release marker and timestamps.
+    @param now: Aware UTC time of the view.
+    @return: Reason code and start of waiting, or None when the case needs no attention.
+    """
+    claimed = row["claimed_at"] if row["claimed_at"] is not None else row["created_at"]
+    if row["status"] == "uncertain":
+        return "delivery_result_unknown", claimed
+    if row["status"] == "failed" and row["released_at"] is None:
+        return "refund_pending", claimed
+    if row["status"] == "sending" and _as_utc(claimed) < now - DELIVERY_LEASE:
+        return "sending_lease_expired", claimed
+    if row["status"] == "reserved" and _as_utc(row["created_at"]) < now - DELIVERY_LEASE:
+        return "reserved_not_sent", row["created_at"]
+    return None
+
+
+def stuck_exchange_rows(cursor: Any, now: datetime) -> list[dict]:
+    """@description: Let the Owner see exchange cases that need attention, read-only and without any link, token or balance.
+    @param cursor: Cursor inside a transaction; nothing is written.
+    @param now: Current time, naive UTC or timezone-aware UTC.
+    @return: Operation code, requester, delivery state, reason and whole waiting seconds per unresolved case, oldest reservation first.
+    """
+    cursor.execute("SELECT recommendation_id,discord_user_id,status,created_at,claimed_at,released_at FROM recommendations "
+                   "WHERE status IN ('reserved','sending','uncertain','failed') ORDER BY recommendation_id")
+    view_time = _as_utc(now)  # [single clock]: Every row is judged against the same instant.
+    stuck = []
+    for row in cursor.fetchall():
+        verdict = _stuck_reason(row, view_time)
+        if verdict is not None:
+            reason, since = verdict
+            stuck.append({"operation_code": row["recommendation_id"], "requester": row["discord_user_id"], "delivery_state": row["status"],
+                          "reason": reason, "waiting_seconds": int((view_time - _as_utc(since)).total_seconds())})
+    return stuck
 
 
 def user_balance(cursor: Any, discord_user_id: int) -> int | None:
