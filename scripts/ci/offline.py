@@ -26,7 +26,7 @@ def main() -> None:
     try:
         result = subprocess.run(['docker', 'start', '-a', name], timeout=900)
         subprocess.run(['docker', 'cp', f'{name}:/tmp/offline.xml', str(output / 'offline.xml')], check=True)
-        print(summarize(output / 'offline.xml', 2264), flush=True)
+        print(summarize(output / 'offline.xml', 2269), flush=True)
         result.check_returncode()
         status = subprocess.check_output(['docker', 'inspect', '--format', '{{.State.ExitCode}}', name], text=True)
         if status.strip() != '0':

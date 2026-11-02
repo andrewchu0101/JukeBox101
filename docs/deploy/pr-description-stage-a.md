@@ -19,7 +19,7 @@
 | CI 契約 `scripts/ci/runtime_smoke.py` | controlled 的秘密集合由「剛好 3 個」改成「剛好 4 個、名稱鎖死為 `youtube_api_key`」；自動開關渲染結果必須全是 off、清單必須為空；金鑰檔路徑固定。base `compose.yaml` 仍是 3 個 | 新增秘密是必要的，但不能放寬成「至少 3 個」讓日後任何秘密都能被掛進去 | `tests/test_controlled_compose_policy.py`（新增 11 種故障：額外秘密、缺秘密、被換名、開關被設成 on、清單預設有值、金鑰路徑被改） |
 | 部署 compose `deploy/controlled/compose.yaml` | 新增六個設定（預設 `${...:-off}` 或空）與秘密 `youtube_api_key`（固定路徑 `/etc/jukebox101/secrets/youtube_api_key.txt`） | CD 只用單一 compose 檔，疊加檔進不了 CD 路徑 | 上列兩個測試，加真實 `docker compose config` 渲染三種設定 |
 | 主機腳本 `deploy/host/jukebox101-deploy`（H-1） | compose 若提到 `youtube_api_key` 而金鑰檔不是一般檔案，在**停舊 Bot 之前**回 `rejected` | 新 compose 一律掛載這個秘密；沒有這道檢查時，缺檔會在停舊 Bot 之後才讓 `docker compose up` 失敗，雖會自動回滾但有停機 | `tests/test_deploy_host_script.py`（缺檔拒絕且舊 Bot 不停、檔案存在可部署且內容不外洩、舊 compose 不受影響、目錄不是檔案則拒絕） |
-| CI 數量下限 | 離線 1747 → 2264；PostgreSQL 35 → 141 | 下限不會隨新增測試自動調高，新測試可能被悄悄跳過 | `scripts/ci/offline.py`、`scripts/dev/verify-fresh-postgres.py` |
+| CI 數量下限 | 離線 1747 → 2269；PostgreSQL 35 → 141 | 下限不會隨新增測試自動調高，新測試可能被悄悄跳過 | `scripts/ci/offline.py`、`scripts/dev/verify-fresh-postgres.py` |
 
 ## 上線時必須注意（不會自動發生）
 
@@ -30,11 +30,11 @@
 
 ## 驗證（2026-11-02，Linux 容器，本機；於合併 `origin/main` 之後的最終樹重跑）
 
-最終樹上的實測：離線 2264 passed；PostgreSQL 18.6 為 139 passed、2 skipped。第一次 PostgreSQL 重跑曾因另一個同時使用同名測試資源的執行而連線認證失敗（138 errors），確認沒有其他測試容器後重跑通過。
+最終樹上的實測：離線 2269 passed；PostgreSQL 18.6 為 139 passed、2 skipped。第一次 PostgreSQL 重跑曾因另一個同時使用同名測試資源的執行而連線認證失敗（138 errors），確認沒有其他測試容器後重跑通過。
 
 | 狀態 | 項目 |
 |---|---|
-| Passed | 離線全套 2264（`--network none`）；PostgreSQL 18.6 全套 139（另 2 個 skip）；階段 A 的 PG 整合測試 13、文案測試 10、回滾測試 5；既有 Owner 裁決特徵測試 5；`docker compose config` 渲染三種設定；執行期映像 `python -m bot.runtime_policy` 與匯入檢查 |
+| Passed | 離線全套 2269（`--network none`）；PostgreSQL 18.6 全套 139（另 2 個 skip）；階段 A 的 PG 整合測試 13、文案測試 10、回滾測試 5；既有 Owner 裁決特徵測試 5；`docker compose config` 渲染三種設定；執行期映像 `python -m bot.runtime_policy` 與匯入檢查 |
 | Skipped | 2 個 TLS 測試（本機拋棄式伺服器未開 TLS；CI 不允許 skip） |
 | Not Run | PostgreSQL 17.11（只在 CI）；`scripts.ci.runtime_smoke.main` 與 `verify-fresh-postgres.py` 完整流程（只在 CI） |
 | Manual Pending | 真實 YouTube API 批次回應與額度；Supabase Session Pooler；真實 VM 的新 compose、金鑰檔權限、`rolled_back` 路徑；Discord 卡片顯示 |

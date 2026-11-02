@@ -182,7 +182,7 @@ docker compose -f compose.test.yaml down -v
 - `postgres` 標記的測試只會連到 `cluster_name=jukebox101-disposable-test` 的拋棄式伺服器；沒有設定時會被跳過，跳過不算通過。
 - 本機 TLS：先對測試容器執行 `PG_CONTAINER=jukebox101-localtest-postgres-1 scripts/dev/enable-test-tls.sh`，再跑整合測試；未設定 TLS 時相關測試會 skip，不算通過。
 - 在 Windows 上，git 的 `autocrlf` 會把 shell 腳本變成 CRLF，直接 `docker build` 會讓主機腳本測試誤失敗。請用 `bash scripts/dev/run-linux-tests.sh offline|postgres [pytest 參數]`：它從 LF 副本建映像，不改 repository，結束後清掉自己的暫存目錄與測試 volume。
-- 階段 A 本機實測（2026-11-02，Linux 容器）：離線 2264 通過；PostgreSQL 18.6 為 139 通過、2 skip（TLS 測試，拋棄式伺服器沒開 TLS，需靠 CI）。PostgreSQL 17.11 只在 CI 驗證。CI 的數量下限為離線 2264、PostgreSQL 141，且不允許 skip；封裝狀態見 `docs/deploy/v7-delivery-status.md`。
+- 階段 A 本機實測（2026-11-02，Linux 容器）：離線 2269 通過；PostgreSQL 18.6 為 139 通過、2 skip（TLS 測試，拋棄式伺服器沒開 TLS，需靠 CI）。PostgreSQL 17.11 只在 CI 驗證。CI 的數量下限為離線 2269、PostgreSQL 141，且不允許 skip；封裝狀態見 `docs/deploy/v7-delivery-status.md`。
 - 備份與還原的驗證腳本：`scripts/dev/verify-backup-restore.sh`。
 - 程式規範：`CODING_STANDARD.md`。協作規則：`CLAUDE.md`。
 

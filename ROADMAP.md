@@ -192,7 +192,7 @@ Implemented／Offline Tested／PostgreSQL 17.11 與 18.6 拋棄式資料庫 Test
 
 ## 階段 A：自動審核含時長與自動版本確認（2026-11-02）
 
-分支 `feature/auto-review-version-confirm`（本機提交，**未 push、未開 PR、未部署、未啟用**）。狀態：Implemented／Offline Tested（2264 項）／PostgreSQL 18.6 Tested（139 通過，2 項 TLS 測試本機 skip）；**PostgreSQL 17.11、真實 YouTube API、Session Pooler、真實 VM 與 Discord 待驗收**（Manual Pending）。
+分支 `feature/auto-review-version-confirm`（已推送並開 PR #19，**未合併、未部署、未啟用**）。狀態：Implemented／Offline Tested（2269 項）／PostgreSQL 18.6 Tested（139 通過，2 項 TLS 測試本機 skip）；**PostgreSQL 17.11、真實 YouTube API、Session Pooler、真實 VM 與 Discord 待驗收**（Manual Pending）。
 
 - 新增獨立開關 `JUKEBOX_AUTO_VERSION_CONFIRM`（預設 off，無效值拒絕啟動，需審核與保存同時開）。開啟後新投稿在自動核准前，向 YouTube 重查最近 500 首既有歌曲（每 50 首一次、比完即丟、不保存），三種疑慮（同頻道且時長差 ≤ 3 秒、歌名相似度 ≥ 0.65、版本關鍵字）任一成立就轉 Owner；全部沒有疑慮才以系統身分確認版本。額度用完與 API 故障一律稍後重試（30 分鐘），不寫待審、不拒絕。
 - 部署保護：`deploy/controlled/compose.yaml` 新增六個設定（預設 off）與第 4 個秘密 `youtube_api_key`；CI 契約 `runtime_smoke` 鎖死秘密為 4 個；`runtime_policy` 證明映像預設所有自動開關關閉；健康檢查將「設定完整的自動模式」視為 ready，設定錯誤或缺金鑰仍 not_ready；主機腳本在停舊 Bot 前檢查金鑰檔（H-1）。
