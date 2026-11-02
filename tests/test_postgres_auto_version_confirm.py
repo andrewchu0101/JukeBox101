@@ -10,9 +10,10 @@ import threading
 import pytest
 
 from bot.auto_pipeline import AutoPipeline
-from bot.owner_review import OwnerReviewService
+from bot.owner_review import OwnerReviewService, ReviewAction
 from bot.review import ApprovalSource, ReviewStatus
 from bot.reward_candidates import RewardCandidateStatus
+from bot.song_judgement import ContentJudgement
 from bot.version_identity import VersionIdentityStatus
 from bot.youtube_metadata import BatchLookup, BatchStatus, LookupStatus, MetadataLookup, VideoMetadata
 from tests.postgres_support import admin_query
@@ -21,6 +22,7 @@ from tests.test_postgres_auto_pipeline import (ALICE, BOB, NOW, OWNER_ID, TRUSTE
 pytestmark = pytest.mark.postgres
 
 TITLE_CANARY = "TitleCanaryQ"
+SYSTEM_EVIDENCE = "strpos(evidence_json::text, 'EvidenceRecord') > 0 AND strpos(evidence_json::text, 'system_judgement') > 0"  # [system rows only]: Every review write also stores identity-assertion rows.
 CANARY_CHANNEL = "UC" + "q" * 22  # [leak marker]: A trusted channel only this test uses, so any stored copy is attributable.
 CANARY_SECONDS = 613  # [leak marker]: An official duration no other fixture uses.
 OLD_TITLE = f"{TITLE_CANARY} Alpha Beta Gamma"
@@ -107,6 +109,18 @@ class ConfirmWorld(World):
         return "\n".join(rows)
 
 
+def approve_as_owner(world: "ConfirmWorld", operation_id: str) -> None:
+    """@description: Approve the song as the Owner does for a case that waited in review.
+    @param world: Comparing world.
+    @param operation_id: Operation.
+    @return: None.
+    """
+    review = world.owner.view(OWNER_ID, operation_id).review
+    content = ContentJudgement(review.video, OWNER_ID, "人工確認是歌曲", NOW, f"content-{operation_id}", True)
+    preview = world.owner.preview(OWNER_ID, operation_id, ReviewAction.APPROVE, "人工判斷", review.version, f"cite-{operation_id}", content=content)
+    world.owner.confirm(OWNER_ID, preview.token_id)
+
+
 @pytest.fixture
 def world(pg_database) -> ConfirmWorld:
     """@description: Provide one comparing world.
@@ -136,7 +150,7 @@ def test_the_version_evidence_is_system_judged_not_owner_confirmed_and_holds_no_
     @return: None.
     """
     world.share(ALICE, VIDEO_A, "discord:1")
-    rows = admin_query(world.database, "SELECT evidence_json::text AS payload FROM jb2_evidence")
+    rows = admin_query(world.database, f"SELECT evidence_json::text AS payload FROM jb2_evidence WHERE {SYSTEM_EVIDENCE}")
     assert len(rows) == 1
     payload = rows[0]["payload"]
     assert "system_judgement" in payload and re.search(r'owner_confirmed"?\s*:\s*true', payload) is None
@@ -165,7 +179,7 @@ def test_a_similar_song_waits_for_the_owner_with_its_reason_and_pays_nothing_unt
     outcome = world.share(BOB, VIDEO_B, "discord:2")
     view = world.owner.view(OWNER_ID, "discord:2")
     assert outcome.review_status is ReviewStatus.PENDING_REVIEW and view.identity.status is VersionIdentityStatus.UNRESOLVED
-    history = admin_query(world.database, "SELECT reason FROM jb2_review_history ORDER BY revision DESC")
+    history = admin_query(world.database, "SELECT decision_reason AS reason FROM jb2_review_history ORDER BY revision DESC")
     assert any("same_channel_close_duration" in row["reason"] and "similar_title" in row["reason"] for row in history)
     assert world.balances() == {ALICE: 1, BOB: 0}
     world.assert_books_balance(1)
@@ -179,6 +193,7 @@ def test_the_owner_can_still_confirm_a_flagged_case_the_old_way_and_it_then_pays
     world.share(ALICE, VIDEO_A, "discord:1")
     world.metadata.scripted[VIDEO_B] = official(VIDEO_B, "alpha beta gamma (Official Video)", 190)
     world.share(BOB, VIDEO_B, "discord:2")
+    approve_as_owner(world, "discord:2")
     world.confirm_version("discord:2", "rec-B")
     assert "+1" in world.owner.settlement_note(OWNER_ID, "discord:2")
     assert world.balances() == {ALICE: 1, BOB: 1}
@@ -196,7 +211,7 @@ def test_a_submission_accepted_during_the_comparison_makes_the_clearance_stale(w
     world.metadata.during_comparison = None
     assert outcome.review_status is ReviewStatus.PENDING_REVIEW
     assert world.owner.view(OWNER_ID, "discord:2").identity.status is VersionIdentityStatus.UNRESOLVED
-    reasons = " ".join(row["reason"] for row in admin_query(world.database, "SELECT reason FROM jb2_review_history"))
+    reasons = " ".join(row["reason"] for row in admin_query(world.database, "SELECT decision_reason AS reason FROM jb2_review_history"))
     assert "comparison_stale" in reasons and world.balances()[BOB] == 0
     world.assert_books_balance(1)
 
@@ -209,7 +224,7 @@ def test_replaying_the_same_share_creates_one_confirmation_and_one_award(world) 
     world.share(ALICE, VIDEO_A, "discord:1")
     world.pipeline.process("discord:1")
     world.share(ALICE, VIDEO_A, "discord:1")
-    assert len(admin_query(world.database, "SELECT 1 FROM jb2_evidence")) == 1
+    assert len(admin_query(world.database, f"SELECT 1 FROM jb2_evidence WHERE {SYSTEM_EVIDENCE}")) == 1
     assert len(admin_query(world.database, "SELECT 1 FROM jb2_versions")) == 1
     world.assert_books_balance(1)
 
@@ -237,7 +252,7 @@ def test_two_pipelines_racing_on_one_new_video_confirm_and_pay_once(world) -> No
     for worker in workers:
         worker.join()
     assert sum(world.balances().values()) == 1
-    assert len(admin_query(world.database, "SELECT 1 FROM jb2_evidence")) == 1
+    assert len(admin_query(world.database, f"SELECT 1 FROM jb2_evidence WHERE {SYSTEM_EVIDENCE}")) == 1
     world.assert_books_balance(1)
 
 
@@ -265,7 +280,7 @@ def test_two_look_alike_songs_submitted_together_are_never_both_confirmed_automa
         worker.start()
     for worker in workers:
         worker.join()
-    assert sum(world.balances().values()) == 0 and len(admin_query(world.database, "SELECT 1 FROM jb2_evidence")) == 0
+    assert sum(world.balances().values()) == 0 and len(admin_query(world.database, f"SELECT 1 FROM jb2_evidence WHERE {SYSTEM_EVIDENCE}")) == 0
     world.assert_books_balance(0)
 
 

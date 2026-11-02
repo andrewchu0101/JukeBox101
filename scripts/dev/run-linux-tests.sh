@@ -15,7 +15,7 @@ case "$mode" in offline | postgres) shift ;; *) echo "usage: $0 offline|postgres
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 copy="$(mktemp -d)"
-trap 'rm -rf "$copy"; [ "$mode" != postgres ] || (cd "$copy" 2> /dev/null && docker compose -f compose.test.yaml down -v > /dev/null 2>&1) || true' EXIT
+trap '[ "$mode" != postgres ] || (cd "$copy" 2> /dev/null && docker compose -f compose.test.yaml down -v > /dev/null 2>&1) || true; rm -rf "$copy"' EXIT
 
 cd "$repo_root"
 tar --exclude=.git --exclude=.venv --exclude=.pytest_tmp --exclude=.pytest_cache --exclude='__pycache__' --exclude='*.pdf' \
