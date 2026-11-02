@@ -58,7 +58,7 @@ YOUTUBE_TRUSTED_CHANNEL_IDS=UC12HMtO5MYph9dCZZ7yygng   # 目前唯一的認可�
 | 懷疑發獎有問題 | 停 Bot → `settlement-switch write --enabled off` → `JUKEBOX_AUTO_SETTLEMENT=off` → 啟動 | 不再自動發獎，案件停在「符合資格待結算」 |
 | API 額度耗盡或金鑰異常 | 不必處理：比對與審核都不寫入、不拒絕，30 分鐘後自動重試，額度恢復後繼續 | 投稿者看到「稍後重試」，不會被拒絕 |
 | 整個關閉 | 三個自動開關與 `JUKEBOX_AUTO_REVIEW` 設 off（`JUKEBOX_API_RETENTION` 最後關），重建 | 回到階段 A 之前的行為；`jb2_api_observations` 仍會依排程清除 |
-| 要回到**不含 `SYSTEM_JUDGEMENT` 的舊映像**（例如 `51ee43a`） | 先跑唯讀檢查 `SELECT count(*) FROM jb2_evidence WHERE strpos(evidence_json::text, 'system_judgement') > 0;`。為 0 才是完全乾淨的回滾；大於 0 時照下方「已實測」判斷影響後再決定 | 見下方「回滾到舊映像的實測結果」 |
+| 要回到**不含 `SYSTEM_JUDGEMENT` 的舊映像**（例如 `51ee43a`） | 先跑唯讀檢查 `SELECT count(*) FROM jb2_evidence WHERE strpos(evidence_json::text, 'system_judgement') > 0;`。**為 0 才是乾淨回滾**。大於 0 時回滾不阻擋，但舊版 Owner 工具對那些影片會失敗（見下方「已實測」）；要先在新版處理完這些影片，或**移除這些證據列，移除必須有 Owner 明確授權**（證據列是只增不改的稽核紀錄，不由系統或維護者自行刪除） | 見下方「回滾到舊映像的實測結果」 |
 | 新映像不健康 | 主機腳本自動換回前一個映像，回報 `rolled_back` | 看 `docker logs`；`rolled_back` 路徑在真實主機尚未驗證過 |
 | `rejected`（缺金鑰檔） | 放好 `youtube_api_key.txt` 後推新 commit | 舊 Bot 一直沒被停 |
 
@@ -75,7 +75,7 @@ YOUTUBE_TRUSTED_CHANNEL_IDS=UC12HMtO5MYph9dCZZ7yygng   # 目前唯一的認可�
 | 新增投稿 `accept_pending`、`pending_validation_operations`、`ready_operations` | 正常 |
 | `settle_ready`（舊版開啟結算） | 正常，兩支影片各發 1 Nickel，餘額 (1, 1) |
 
-結論：回滾**不會**讓整個系統讀不懂資料；受影響的只有「對有系統證據的影片，舊版 Owner 工具（檢視、確認版本、重審）會 `ValueError`」。投稿、待處理清單、結算與餘額都不受影響。`preview_version_confirmation` 與重審走同一條讀取證據的路徑，依程式閱讀同樣會失敗，未逐一實測。對應自動測試：`tests/test_postgres_system_evidence_rollback.py`（在同一個行程內移除該列舉成員來模擬舊版，5 個）、`tests/test_codec_unknown_enum_value.py`（未知列舉值一律拋 `ValueError`，3 個）。上表的「用真實舊版程式」結果是一次性人工實測，未做成自動測試。
+結論（Owner／PM 已同意：此限制**不阻擋上線**）：回滾**不會**讓整個系統讀不懂資料；受影響的只有「對有系統證據的影片，舊版 Owner 工具（檢視、確認版本、重審）會 `ValueError`」。投稿、待處理清單、結算與餘額都不受影響。`preview_version_confirmation` 與重審走同一條讀取證據的路徑，依程式閱讀同樣會失敗，未逐一實測。對應自動測試：`tests/test_postgres_system_evidence_rollback.py`（在同一個行程內移除該列舉成員來模擬舊版，5 個）、`tests/test_codec_unknown_enum_value.py`（未知列舉值一律拋 `ValueError`，3 個）。上表的「用真實舊版程式」結果是一次性人工實測，未做成自動測試。
 
 ## 5. 本機驗證注意（Windows）
 
