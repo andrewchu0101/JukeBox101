@@ -46,7 +46,15 @@ services:
       SECRET_EXPECTED_GID: '10001'
       JUKEBOX_FORMAL_EXCHANGE: 'off'
       JUKEBOX_NICKEL_CLAIM: 'off'
-    secrets: [discord_bot_token, db_password, db_ca.crt]
+      # Automatic review: every mode starts closed and is opened only from the root-owned bot.env, never by this file.
+      # JUKEBOX_AUTO_REVIEW=on needs JUKEBOX_API_RETENTION=on and the key file below; JUKEBOX_AUTO_VERSION_CONFIRM=on needs both.
+      JUKEBOX_AUTO_REVIEW: ${JUKEBOX_AUTO_REVIEW:-off}
+      JUKEBOX_API_RETENTION: ${JUKEBOX_API_RETENTION:-off}
+      JUKEBOX_AUTO_SETTLEMENT: ${JUKEBOX_AUTO_SETTLEMENT:-off}
+      JUKEBOX_AUTO_VERSION_CONFIRM: ${JUKEBOX_AUTO_VERSION_CONFIRM:-off}
+      YOUTUBE_TRUSTED_CHANNEL_IDS: ${YOUTUBE_TRUSTED_CHANNEL_IDS:-}
+      YOUTUBE_API_KEY_FILE: /run/secrets/youtube_api_key
+    secrets: [discord_bot_token, db_password, db_ca.crt, youtube_api_key]
     networks: [egress, database]
 secrets:
   discord_bot_token:
@@ -55,6 +63,8 @@ secrets:
     file: /etc/jukebox101/secrets/db_password.txt
   db_ca.crt:
     file: ${JB_DB_CA_FILE:-/etc/jukebox101/supabase-ca-2021.crt}
+  youtube_api_key:
+    file: /etc/jukebox101/secrets/youtube_api_key.txt
 networks:
   egress:
     external: true

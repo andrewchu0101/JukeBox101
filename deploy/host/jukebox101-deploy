@@ -20,6 +20,7 @@ START_TIMEOUT=${JB_START_TIMEOUT:-180}
 SOAK_SECONDS=${JB_SOAK_SECONDS:-60}
 SOAK_STEP=${JB_SOAK_STEP:-5}
 FLOCK=${JB_FLOCK:-/usr/bin/flock}
+YOUTUBE_KEY_FILE=${JB_SECRET_DIR:-/etc/jukebox101/secrets}/youtube_api_key.txt
 IMAGE=ghcr.io/andrewchu0101/jukebox101
 SOURCE=https://github.com/andrewchu0101/JukeBox101
 ROLLBACK_TAG=jukebox101-rollback:previous
@@ -52,6 +53,11 @@ setting() { { sed -n "s/^$1=//p" "$2" 2> /dev/null || true; } | head -n 1 | tr -
 
 owned() { # root-owned and not writable by group/others
   [ -f "$1" ] && [ -z "$(find "$1" -maxdepth 0 \( ! -user "$OWNER_UID" -o -perm -g+w -o -perm -o+w \))" ]
+}
+
+youtube_key_ready() { # a compose file that mounts the YouTube key needs the file before anything is stopped; only existence is checked
+  grep -q 'youtube_api_key' "$COMPOSE" || return 0
+  [ -f "$YOUTUBE_KEY_FILE" ] || { why "compose file mounts youtube_api_key but $YOUTUBE_KEY_FILE is not a regular file; create it (uid/gid 10001, mode 0400) first"; return 1; }
 }
 
 gateways() { # running containers of this Discord application (plus the optional legacy container)
@@ -100,6 +106,7 @@ admit() { # every check here runs before anything is stopped
   [ ! -e "$STATE/locked" ] || { why "host is locked after a failed rollback; check the Bot, then remove $STATE/locked"; return 1; }
   owned "$COMPOSE" || { why 'compose file must be a root-owned regular file that group and others cannot write'; return 1; }
   owned "$ENVFILE" || { why 'bot.env must be a root-owned regular file that group and others cannot write'; return 1; }
+  youtube_key_ready || return 1
   [[ $app_id =~ ^[0-9]+$ ]] || { why 'DISCORD_EXPECTED_APPLICATION_ID is missing or not numeric in bot.env'; return 1; }
   [ "$run" -gt "$highwater" ] || { why "run $run is not newer than the highest deployed run $highwater; push a new commit instead of re-running"; return 1; }
   "$DOCKER" pull "$ref" > /dev/null 2>&1 || { why "cannot pull $ref"; return 1; }

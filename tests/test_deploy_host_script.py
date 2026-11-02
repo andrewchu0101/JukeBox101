@@ -157,7 +157,8 @@ class Host:
         environment = dict(os.environ, JB_STATE_DIR=str(self.state_dir), JB_COMPOSE_FILE=str(self.root / 'compose.yaml'),
                            JB_ENV_FILE=str(self.root / 'bot.env'), JB_CONF_FILE=str(self.root / 'deploy.conf'),
                            JB_DOCKER=str(self.root / 'docker'), JB_FLOCK=self.flock, JB_OWNER_UID=str(os.getuid()),
-                           JB_SOAK_SECONDS=str(soak), JB_SOAK_STEP='1', FAKE_DOCKER_STATE=str(self.root))
+                           JB_SOAK_SECONDS=str(soak), JB_SOAK_STEP='1', FAKE_DOCKER_STATE=str(self.root),
+                           JB_SECRET_DIR=str(self.root / 'secrets'))
         return subprocess.run(['bash', str(SCRIPT)], input=line, env=environment, text=True,
                               capture_output=True, timeout=60)
 
@@ -358,3 +359,60 @@ def test_group_writable_host_configuration_is_refused(host, name):
     (host.root / name).chmod(0o664)
     assert host.run().stdout == 'rejected\n'
     assert [c['id'] for c in host.state['running']] == ['old']
+
+
+
+
+COMPOSE_WITH_YOUTUBE_KEY = 'services: {}\nsecrets:\n  youtube_api_key:\n    file: /etc/jukebox101/secrets/youtube_api_key.txt\n'  # [adopted compose]: Mounts the key secret.
+
+
+def mount_youtube_key(host, *, present: bool) -> None:
+    """@description: Make the host compose file mount the YouTube key secret, with or without the key file on disk.
+    @param host: Fake host.
+    @param present: Whether the key file exists in the secret directory.
+    @return: None.
+    """
+    (host.root / 'compose.yaml').write_text(COMPOSE_WITH_YOUTUBE_KEY)
+    (host.root / 'compose.yaml').chmod(0o644)
+    if present:
+        (host.root / 'secrets').mkdir()
+        (host.root / 'secrets' / 'youtube_api_key.txt').write_text('SYNTHETIC-KEY-CONTENT')
+
+
+def test_a_compose_file_that_mounts_the_youtube_key_needs_the_key_file_before_anything_is_stopped(host):
+    """@description: A missing secret file would otherwise be discovered only after the old Bot was stopped.
+    @param host: Fake host.
+    @return: None.
+    """
+    mount_youtube_key(host, present=False)
+    result = host.run()
+    assert (result.stdout, 'youtube_api_key.txt' in result.stderr) == ('rejected\n', True)
+    assert [c['id'] for c in host.state['running']] == ['old'] and 'stop' not in sum(host.state['calls'], [])
+
+
+def test_a_present_youtube_key_file_lets_the_release_proceed_and_is_never_printed(host):
+    """@description: Only existence is checked by the host; the content stays private.
+    @param host: Fake host.
+    @return: None.
+    """
+    mount_youtube_key(host, present=True)
+    result = host.run()
+    assert result.stdout == 'succeeded\n' and 'SYNTHETIC-KEY-CONTENT' not in result.stdout + result.stderr
+
+
+def test_a_compose_file_without_the_youtube_key_keeps_working_unchanged(host):
+    """@description: A host that has not adopted the new compose file must not be blocked by the new check.
+    @param host: Fake host.
+    @return: None.
+    """
+    assert host.run().stdout == 'succeeded\n'
+
+
+def test_a_youtube_key_path_that_is_a_directory_is_refused(host):
+    """@description: A directory is not a secret file, and compose would mount it incorrectly.
+    @param host: Fake host.
+    @return: None.
+    """
+    mount_youtube_key(host, present=False)
+    (host.root / 'secrets' / 'youtube_api_key.txt').mkdir(parents=True)
+    assert host.run().stdout == 'rejected\n'

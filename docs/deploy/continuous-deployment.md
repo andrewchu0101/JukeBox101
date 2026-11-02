@@ -36,6 +36,8 @@ push main → CI 測試 → 發布同一個已測映像到 GHCR（附 GitHub 來
 
 **不做**：不執行資料庫 migration、不還原資料、不同步指令、不管理 PostgreSQL／Caddy／DNS、不讀取或印出秘密。formal exchange 與 claim 由 compose 固定 off。
 
+**新增的一項檢查（階段 A）**：若主機的 compose 檔提到 `youtube_api_key`，則 `youtube_api_key.txt` 必須是一般檔案，否則在停舊 Bot 之前 `rejected`。只檢查存在，不讀內容。**主機的 `compose.cd.yaml` 不會隨部署更新**（`install-host.sh` 不覆寫既有檔案），要採用新 compose 必須人工替換。
+
 ## 主機需要的東西
 
 | 路徑 | 內容 | 誰準備 |
@@ -46,6 +48,7 @@ push main → CI 測試 → 發布同一個已測映像到 GHCR（附 GitHub 來
 | `/etc/jukebox101/compose.cd.yaml` | 單一 `bot` 服務；已存在就保留，不覆寫 | 既有或安裝器放範本 |
 | `/etc/jukebox101/bot.env` | `DB_HOST`、`DB_NAME`、`DB_USER`、`DISCORD_EXPECTED_APPLICATION_ID`、`DISCORD_OWNER_USER_ID` 等；選用 `DISCORD_OWNER_GUILD_ID`（未設時程式刻意不註冊 `/owner` 指令） | 管理者（既有） |
 | `/etc/jukebox101/secrets/*.txt`、CA 檔 | Discord token、DB 密碼、TLS CA（0400，uid/gid 10001） | 管理者（既有） |
+| `/etc/jukebox101/secrets/youtube_api_key.txt` | YouTube API 金鑰（0400、10001:10001）。**階段 A 的 compose 一律掛載它，開關 off 時也必須有這個檔案**（內容可先放占位字串）。缺檔時主機腳本在停舊 Bot 之前回 `rejected`。見 [階段 A 啟用與回滾清單](stage-a-enable-rollback.md) | 管理者 |
 | `/etc/jukebox101/deploy.conf`（選用） | 只有一行 `LEGACY_CONTAINER=<容器名稱>`：第一次接手一個沒有 application 標籤的舊 Bot 時使用 | 管理者 |
 | `/var/lib/jukebox101-deploy/` | 腳本自己的狀態（最高 run、結果、`locked`） | 腳本 |
 

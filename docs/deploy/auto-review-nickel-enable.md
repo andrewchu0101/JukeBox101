@@ -24,6 +24,8 @@
 
 **發獎**另外要求：審核通過、**錄音版本已確認**、該版本首位、沒有更早的未解決投稿。官方資料與認可頻道都不能證明版本，所以目前**新歌的版本都要 Owner 確認一次**；確認後立即自動結算。
 
+**階段 A（開發中，預設 off，尚未部署）**：另有獨立開關 `JUKEBOX_AUTO_VERSION_CONFIRM`。開啟後，新投稿通過上述自動核准時，系統會再向 YouTube 查一次**最近 500 首既有歌曲**（每 50 首一次，用完即丟、不保存），並檢查三種疑慮：同頻道且時長差 ≤ 3 秒、歌名相似度 ≥ 0.65（difflib）、標題含版本關鍵字（remix、live、cover 等）。**全部沒有疑慮**才以系統身分（actor 0）自動確認錄音版本並走一般發獎；**任一疑慮**就轉 Owner 待審，卡片顯示原因與疑似重複歌曲的連結。比對所需的 API 失敗或額度用完時，什麼都不寫入、不拒絕，沿用 30 分鐘自動重試。標題只用來產生疑慮，從不證明「同一首」或「不同首」。設計見 [自動確認錄音版本設計](../auto-review-version-confirm-design.md)；測試與部署計畫見 [階段 A 測試與部署計畫](../auto-review-test-deploy-plan.md)。
+
 > 既有規則：版本未知的較早投稿會擋住**所有**較晚的投稿（不只同版本）。任何一筆卡住的案件都會暫停後面的發獎，需由 Owner 確認版本或拒絕。首筆案件 `discord:1565766654502113430` 一旦開啟就屬於這種情況。
 
 ## Owner 在 Discord 的最短流程
@@ -40,6 +42,7 @@
 | `JUKEBOX_AUTO_REVIEW` | `on`／`off`；on 時必須有 API 金鑰 |
 | `JUKEBOX_AUTO_SETTLEMENT` | `on`／`off`；必須與資料庫開關一致 |
 | `JUKEBOX_API_RETENTION` | `on`／`off`；on 才把官方 API 數值只存短期表並執行清除（需先套用 migration 0004，見 [API 資料保存發行說明](../api-retention-release.md)）。**`JUKEBOX_AUTO_REVIEW=on` 必須搭配 `on`，否則拒絕啟動** |
+| `JUKEBOX_AUTO_VERSION_CONFIRM` | `on`／`off`，預設 off、無效值拒絕啟動；on 必須同時 `JUKEBOX_AUTO_REVIEW=on` 與 `JUKEBOX_API_RETENTION=on`，否則拒絕啟動（階段 A，尚未部署） |
 | `YOUTUBE_TRUSTED_CHANNEL_IDS` | 逗號分隔的 `UC...` 頻道 ID，不接受名稱或 handle |
 | `${JB_SECRET_DIR}/youtube_api_key.txt` | API 金鑰秘密檔（uid/gid 10001、0400），由 `YOUTUBE_API_KEY_FILE` 指向；不進 Git 或聊天 |
 
@@ -64,5 +67,5 @@
 ## YouTube 資料政策待辦（啟用前需確認）
 
 - Google 回覆（Issue 576880673）只涵蓋 Discord 內分享獎勵與後端 metadata 驗證用途，並要求遵守其他全部條款；見 `docs/youtube-policy-confirmation.md`（PR #3）。
-- 開發者政策 III.E.4 對存放的 API 資料設有 30 日刷新或刪除的要求。本版把**官方時長、channel ID、取得時間**寫入審核歷程，且歷程目前是只增不改，**尚未實作 30 日刷新或刪除**。啟用前須由 Owner 決定保存方案。政策頁面（2026-10-15 版）文字中未見影片／頻道 ID 的豁免，但內部衍生結果是否適用仍未決。保存位置清單、設計與待決問題見 [API 資料生命週期設計](../api-data-lifecycle-design.md)。
+- 開發者政策 III.E.4 對存放的 API 資料設有 30 日刷新或刪除的要求。保存方案已實作（migration 0004）：官方時長與頻道只存短期觀測表 `jb2_api_observations`，預設保存 **14 天**（`RETENTION_DAYS = 14`，資料庫護欄上限 30 天），每日清除；等待中的案件在第 10 天刷新一次。細節見 [API 資料保存發行說明](../api-retention-release.md)。Owner 已口頭同意 14 天與「新投稿時即時重查」的設計，**正式確認待 Sean 核對**。階段 A 的比對重查結果不寫入任何資料表。
 - 本版不保存標題；API 預設配額 10,000 單位／日，每次 `videos.list` 1 單位，每輪巡檢最多 20 次。
