@@ -12,10 +12,9 @@ from bot.auto_review import AUTO_REVIEW_POLICY_VERSION, AutoReviewKind, AutoRevi
 from bot.evidence_record import SYSTEM_JUDGE_ID, EvidenceRecord, EvidenceSourceType, record_evidence
 from bot.owner_card_versions import new_version_identity
 from bot.song_identity import VideoIdentity
-from bot.version_concerns import VersionConcern, ConcernThresholds, assess_concerns
+from bot.version_concerns import ConcernThresholds, assess_concerns, format_concern_detail
 from bot.youtube_metadata import BatchLookup, BatchStatus, VideoMetadata
 
-MAX_CITED_VIDEO_IDS = 10  # [audit bound]: The reason column holds 1024 characters; the card needs only the first few links.
 RETRY_REASON_CODE = "api_unavailable"  # [same cause as a failed lookup]: The video itself was not judged.
 CONCERN_REASON_CODE = "version_concern"  # [Owner review]: A doubt, not a rejection.
 STALE_REASON_CODE = "comparison_stale"  # [Owner review]: A submission arrived during the comparison, so the clearance did not cover it.
@@ -39,18 +38,8 @@ def refine_verdict(verdict: AutoReviewVerdict, candidate: VideoMetadata, compari
     concerns = assess_concerns(candidate, comparison.found, thresholds)
     if concerns:
         return refined_verdict(verdict, AutoReviewKind.DURATION_ONLY, CONCERN_REASON_CODE, candidate,
-                               detail=_concern_detail(concerns), concerns=concerns)
+                               detail=format_concern_detail(concerns), concerns=concerns)
     return refined_verdict(verdict, AutoReviewKind.AUTO_APPROVE, CONFIRMED_REASON_CODE, candidate, version_basis=ComparisonBasis(compared_count))
-
-
-def _concern_detail(concerns: tuple[VersionConcern, ...]) -> str:
-    """@description: Name the concern codes and the first few existing videos for the audit text, never a title or channel.
-    @param concerns: Doubts found.
-    @return: Text starting with a space.
-    """
-    codes = ",".join(sorted({concern.code.value for concern in concerns}))
-    video_ids = list(dict.fromkeys(concern.other_video_id for concern in concerns if concern.other_video_id))[:MAX_CITED_VIDEO_IDS]
-    return f" concerns={codes}" + (f" other_videos={','.join(video_ids)}" if video_ids else "")
 
 
 def stale_verdict(verdict: AutoReviewVerdict) -> AutoReviewVerdict:
