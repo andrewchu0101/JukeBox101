@@ -12,8 +12,8 @@
 | 14 天保存與即時重查設計 | Owner 口頭同意；Sean 核對 `docs/api-retention-release.md` 後才算正式確認 | Sean／Owner |
 | migration 0004 | 套用到正式資料庫（`python -m bot.migrate plan`，再 `apply --apply`）**需要 Owner 另行明確授權**；系統不會自動套用，也不會代為決定 | Owner 授權、管理者執行 |
 | 資料庫備份 | 開任何開關前先備份 | 管理者 |
-| 首筆案件處理 | Owner 決定「確認版本」，在 Discord 案件卡片操作（見第 3 節步驟 3）；Hypnotize 尚未驗證，Owner 看過影片後才按；**必須在開自動發獎之前** | Owner |
-| 認可頻道清單 | Owner 尚未提供；清單空白時**沒有任何歌會自動通過**（全部轉 Owner 審）。可先用 `python -m bot.channel_id_tool <影片連結>` 取得 ID | Owner |
+| 首筆案件處理 | 首筆歌曲標題是「XG - HYPNOTIZE (Official Music Video)」。Owner 決定「確認版本」，在 Discord 案件卡片操作（見第 3 節步驟 3）；Owner 看過影片後才按。這是官方 MV，MV 與音源在版本類別視為同一錄音，**不需要另標音源版**。**必須在開自動發獎之前** | Owner |
+| 認可頻道清單 | 目前有 1 個認可頻道 `UC12HMtO5MYph9dCZZ7yygng`，**尚未寫入 VM 的 `bot.env`**（第 2 節寫入）。安全規則不變：清單空白時**沒有任何歌會自動通過**（全部轉 Owner 審）。新增頻道可用 `python -m bot.channel_id_tool <影片連結>` 取得 ID | Owner |
 
 ## 1. 部署新映像（開關仍 off）
 
@@ -33,7 +33,7 @@
 ```
 JUKEBOX_API_RETENTION=on
 JUKEBOX_AUTO_REVIEW=on
-YOUTUBE_TRUSTED_CHANNEL_IDS=<Owner 認可的 UC… 頻道 ID，逗號分隔>
+YOUTUBE_TRUSTED_CHANNEL_IDS=UC12HMtO5MYph9dCZZ7yygng   # 目前唯一的認可頻道；新增時以逗號分隔
 ```
 
 並把 `youtube_api_key.txt` 換成真金鑰（0400、10001:10001）。再推一個新 commit 重建容器（`bot.env` 只在重建時生效；不要手動重建，會繞過 CD 紀錄）。
@@ -46,7 +46,7 @@ YOUTUBE_TRUSTED_CHANNEL_IDS=<Owner 認可的 UC… 頻道 ID，逗號分隔>
 
 1. 用真實 API 驗證第 2 節的結果（見測試計畫 5.3 步驟 6-10）：認可頻道的歌被自動核准，其他的進 `/owner list`。
 2. `/owner list` 逐筆處理所有版本未確認的既有案件。
-3. **首筆案件**（`discord:1565766654502113430`）：Owner 在 Discord 開 `/owner list`，找到該案卡片，**看過影片後**按「確認為新的錄音版本」。這不是改資料庫，是卡片上的一般 Owner 操作；Hypnotize 尚未驗證，Owner 判斷前不要按。確認後該案會依一般流程等待發獎，**須在步驟 5 開自動發獎之前完成**，否則確認當下就可能領 +1。
+3. **首筆案件**（`discord:1565766654502113430`，「XG - HYPNOTIZE (Official Music Video)」）：Owner 在 Discord 開 `/owner list`，找到該案卡片，**看過影片後**按「確認為新的錄音版本」。這不是改資料庫，是卡片上的一般 Owner 操作；影片是官方 MV，MV 與音源在版本類別視為同一錄音，不需要另標音源版。確認後該案會依一般流程等待發獎，**須在步驟 5 開自動發獎之前完成**，否則確認當下就可能領 +1。
 4. 需要版本自動比對時，`bot.env` 加 `JUKEBOX_AUTO_VERSION_CONFIRM=on`（第 2 節兩個開關已 on，否則 Bot 拒絕啟動），重建容器。驗證：無疑慮的認可頻道新歌被自動確認版本；同頻道且時長相近、歌名相似、含 remix／live／cover 等關鍵字的新歌進 `/owner list`，卡片寫明原因；清單被清空時什麼都不會自動通過。三個條件（同頻道、時長差 ≤ 3 秒、歌名高度相似）全部成立時，卡片寫「高度相同，建議不發放」，仍由 Owner 決定，不新增狀態。
 5. 開自動發獎：停 Bot → `python -m bot.owner_cli settlement-switch preview --enabled on` → 用印出的 digest 執行 `write` → `bot.env` 設 `JUKEBOX_AUTO_SETTLEMENT=on` → 啟動 → `python -m bot.healthcheck`。資料庫旗標與 `JUKEBOX_AUTO_SETTLEMENT` 必須一致，否則健康檢查回報 `SETTLEMENT_*`。
 
@@ -58,8 +58,24 @@ YOUTUBE_TRUSTED_CHANNEL_IDS=<Owner 認可的 UC… 頻道 ID，逗號分隔>
 | 懷疑發獎有問題 | 停 Bot → `settlement-switch write --enabled off` → `JUKEBOX_AUTO_SETTLEMENT=off` → 啟動 | 不再自動發獎，案件停在「符合資格待結算」 |
 | API 額度耗盡或金鑰異常 | 不必處理：比對與審核都不寫入、不拒絕，30 分鐘後自動重試，額度恢復後繼續 | 投稿者看到「稍後重試」，不會被拒絕 |
 | 整個關閉 | 三個自動開關與 `JUKEBOX_AUTO_REVIEW` 設 off（`JUKEBOX_API_RETENTION` 最後關），重建 | 回到階段 A 之前的行為；`jb2_api_observations` 仍會依排程清除 |
+| 要回到**不含 `SYSTEM_JUDGEMENT` 的舊映像**（例如 `51ee43a`） | 先跑唯讀檢查 `SELECT count(*) FROM jb2_evidence WHERE strpos(evidence_json::text, 'system_judgement') > 0;`。為 0 才是完全乾淨的回滾；大於 0 時照下方「已實測」判斷影響後再決定 | 見下方「回滾到舊映像的實測結果」 |
 | 新映像不健康 | 主機腳本自動換回前一個映像，回報 `rolled_back` | 看 `docker logs`；`rolled_back` 路徑在真實主機尚未驗證過 |
 | `rejected`（缺金鑰檔） | 放好 `youtube_api_key.txt` 後推新 commit | 舊 Bot 一直沒被停 |
+
+### 回滾到舊映像的實測結果（2026-11-02，PostgreSQL 18.6 拋棄式資料庫）
+
+做法：用新程式建立資料庫（1 支被系統自動確認版本的影片＋1 支 Owner 手動確認的影片，結算旗標先關再開），再用**基底提交 `51ee43a` 的 `bot/` 套件**對同一個資料庫操作，看哪些路徑還能用。
+
+| 路徑（舊版程式） | 結果 |
+|---|---|
+| `owner.view` 有系統證據的那支影片 | **失敗：`ValueError`**（舊版不認得儲存的 `system_judgement`） |
+| `owner.view` Owner 手動確認的影片 | 正常 |
+| `owner.list_pending`（待處理卡片清單） | 正常 |
+| `reward_state`（兩支影片） | 正常 |
+| 新增投稿 `accept_pending`、`pending_validation_operations`、`ready_operations` | 正常 |
+| `settle_ready`（舊版開啟結算） | 正常，兩支影片各發 1 Nickel，餘額 (1, 1) |
+
+結論：回滾**不會**讓整個系統讀不懂資料；受影響的只有「對有系統證據的影片，舊版 Owner 工具（檢視、確認版本、重審）會 `ValueError`」。投稿、待處理清單、結算與餘額都不受影響。`preview_version_confirmation` 與重審走同一條讀取證據的路徑，依程式閱讀同樣會失敗，未逐一實測。對應自動測試：`tests/test_postgres_system_evidence_rollback.py`（在同一個行程內移除該列舉成員來模擬舊版，5 個）、`tests/test_codec_unknown_enum_value.py`（未知列舉值一律拋 `ValueError`，3 個）。上表的「用真實舊版程式」結果是一次性人工實測，未做成自動測試。
 
 ## 5. 本機驗證注意（Windows）
 

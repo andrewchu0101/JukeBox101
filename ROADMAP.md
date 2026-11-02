@@ -196,6 +196,6 @@ Implemented／Offline Tested／PostgreSQL 17.11 與 18.6 拋棄式資料庫 Test
 
 - 新增獨立開關 `JUKEBOX_AUTO_VERSION_CONFIRM`（預設 off，無效值拒絕啟動，需審核與保存同時開）。開啟後新投稿在自動核准前，向 YouTube 重查最近 500 首既有歌曲（每 50 首一次、比完即丟、不保存），三種疑慮（同頻道且時長差 ≤ 3 秒、歌名相似度 ≥ 0.65、版本關鍵字）任一成立就轉 Owner；全部沒有疑慮才以系統身分確認版本。額度用完與 API 故障一律稍後重試（30 分鐘），不寫待審、不拒絕。
 - 部署保護：`deploy/controlled/compose.yaml` 新增六個設定（預設 off）與第 4 個秘密 `youtube_api_key`；CI 契約 `runtime_smoke` 鎖死秘密為 4 個；`runtime_policy` 證明映像預設所有自動開關關閉；健康檢查將「設定完整的自動模式」視為 ready，設定錯誤或缺金鑰仍 not_ready；主機腳本在停舊 Bot 前檢查金鑰檔（H-1）。
-- 啟用順序（Owner 已定）：開審核與保存並用真實 API 驗證 → Owner 在 `/owner list` 卡片處理首筆案件 → 才開自動發獎。認可頻道清單 Owner 尚未提供（空白時沒有歌自動通過）；migration 0004 套用正式庫需 Owner 另行授權。清單見 [階段 A 啟用與回滾清單](docs/deploy/stage-a-enable-rollback.md)，測試計畫見 [階段 A 測試與部署計畫](docs/auto-review-test-deploy-plan.md)。
+- 啟用順序（Owner 已定）：開審核與保存並用真實 API 驗證 → Owner 在 `/owner list` 卡片處理首筆案件 → 才開自動發獎。認可頻道目前 1 個（`UC12HMtO5MYph9dCZZ7yygng`，尚未寫入 VM 的 `bot.env`；清單空白時沒有歌自動通過）；migration 0004 套用正式庫需 Owner 另行授權。清單見 [階段 A 啟用與回滾清單](docs/deploy/stage-a-enable-rollback.md)，測試計畫見 [階段 A 測試與部署計畫](docs/auto-review-test-deploy-plan.md)。
 - 尚未做：「高度相同，建議不發放」卡片文案、階段 B（失敗退點）、階段 C（`/daily` 自訂時間、半遮蔽）；回滾到舊映像時舊版能否讀懂 `system_judgement` 證據列尚未證明。
 

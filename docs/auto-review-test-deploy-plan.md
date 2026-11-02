@@ -374,7 +374,7 @@
 | 3 | 推一個空 commit 讓 CD 部署（同一 run 不能重送，見 `docs/deploy/continuous-deployment.md` 第 120 行） | Actions 的 Release 綠燈；Issue #7 通知 `succeeded` | `rolled_back` 或 `rejected`：看通知與固定句子 |
 | 4 | 在主機執行 `docker inspect` 看 Health | `healthy` | 看 `python -m bot.healthcheck` 輸出的問題碼 |
 | 5 | **只開審核**：`JUKEBOX_API_RETENTION=on`、`JUKEBOX_AUTO_REVIEW=on`，結算維持 off，再部署 | healthcheck 仍 `ready`（不會因為「開了自動審核」就變不健康） | 若 not_ready，把輸出給 Ken |
-| 5.5 | **既有首筆案件（`discord:1565766654502113430`）的版本處理**：Owner 決定「確認版本」，**在 Discord 操作，不是改資料庫**：`/owner list` 開啟該案卡片 → 看過影片 → 按「確認為新的錄音版本」。Hypnotize 尚未驗證，Owner 判斷前不要按 | 卡片換成確認結果；該案不再擋住後續投稿（版本未知的較早投稿會擋住所有較晚投稿）。確認後該案依一般流程等待發獎，所以**必須在步驟 11 開自動發獎之前完成** | 若影片內容不確定，不要按，回報 Emily。本步驟實際結果為 Manual Pending，我不能替 Owner 執行 |
+| 5.5 | **既有首筆案件（`discord:1565766654502113430`，「XG - HYPNOTIZE (Official Music Video)」）的版本處理**：Owner 決定「確認版本」，**在 Discord 操作，不是改資料庫**：`/owner list` 開啟該案卡片 → 看過影片 → 按「確認為新的錄音版本」。這是官方 MV，MV 與音源在版本類別視為同一錄音，不需要另標音源版 | 卡片換成確認結果；該案不再擋住後續投稿（版本未知的較早投稿會擋住所有較晚投稿）。確認後該案依一般流程等待發獎，所以**必須在步驟 11 開自動發獎之前完成** | 若影片內容與案件不符，不要按，回報 Emily。本步驟實際結果為 Manual Pending，我不能替 Owner 執行 |
 | 6 | 帳號 A 在 Discord 投稿「認可頻道、無疑慮」的影片 | 私訊回覆「審核通過／待 Owner 確認版本」或（若階段 A 版本也自動確認）「符合首次獎勵資格」；`/balance` **仍是 0**（結算還沒開） | 若 `/balance` 已經 +1，立刻關閉開關並回報（這是嚴重問題） |
 | 7 | 帳號 A 投稿「與上一首同頻道、長度相近」的影片 | 回覆「待審」；`/owner list` 出現一張卡片，**顯示疑慮原因**（例如「與既有歌曲同頻道且長度相近」），不顯示其他人的歌名；A 的 `/balance` 不變 | 卡片沒有原因、或顯示他人歌名：回報 |
 | 8 | 帳號 A 投稿 live／remix 版本的影片 | 回覆「待審」，卡片原因為版本疑慮 | 同上 |
@@ -430,7 +430,7 @@ Owner 一眼可確認的「成功畫面」：`/owner list` 的卡片、`/balance
 
 | 決定 | 狀態 | 在本計畫的位置 |
 |---|---|---|
-| 首筆案件：Owner 決定「確認版本」，在 Discord 案件卡片（`/owner list` →「確認為新的錄音版本」）操作；Hypnotize 尚未驗證，Owner 看影片後再按；須在開自動發獎之前完成 | Owner 已決定；實際執行為 Manual Pending | 5.3 步驟 5.5 |
+| 首筆案件（官方 MV「XG - HYPNOTIZE (Official Music Video)」）：Owner 決定「確認版本」，在 Discord 案件卡片（`/owner list` →「確認為新的錄音版本」）操作；MV 與音源視為同一錄音，不需另標音源版；須在開自動發獎之前完成 | Owner 已決定；實際執行為 Manual Pending | 5.3 步驟 5.5 |
 | 14 天保存與 API 即時重查 | **Owner 已正式核可（B1）** | 3.9 的 G6、G7；天數用具名常數 `RETENTION_DAYS = 14` |
 | 階段 B：`/exchange` 失敗與 DM 失敗都退點；卡住案件 Owner 自己看 | Owner 已決定 | 7.2 |
 | 階段 C：`/daily` 使用者自訂送達時間；整點、預設 20:00 Asia/Taipei；Nickel 不足發私訊不扣點；推薦者半遮蔽 | Owner 已決定 | 7.3 |
@@ -550,7 +550,7 @@ Owner 一眼可確認的「成功畫面」：`/owner list` 的卡片、`/balance
 | 項目 | 決定／狀態 | 對測試與文件的影響 |
 |---|---|---|
 | 啟用順序 | 先開自動審核與保存並用真實 API 驗證 → 處理首筆案件 → 才開自動發獎 | `docs/deploy/stage-a-enable-rollback.md` 第 3 節已改；驗收腳本 5.3 的步驟順序相同 |
-| 認可頻道清單 | Owner 尚未提供；空白時沒有歌自動通過 | 既有 A2、`tests/test_auto_pipeline_version_confirm.py` 空清單案例鎖定；健康檢查視為 ready |
+| 認可頻道清單 | 目前 1 個：`UC12HMtO5MYph9dCZZ7yygng`，尚未寫入 VM 的 `bot.env`；空白時沒有歌自動通過的安全規則不變 | 既有 A2、`tests/test_auto_pipeline_version_confirm.py` 空清單案例鎖定；健康檢查視為 ready |
 | migration 0004 套用到正式庫 | **需 Owner 另行明確授權** | 啟用清單先決條件已註明；本計畫不執行 |
 | 「高度相同」 | 採方案 X：同頻道、時長差 ≤ 3 秒、歌名高度相似**三者全成立** → 轉 Owner 審，卡片寫「高度相同，建議不發放」，**不新增狀態**（不是拒絕，也不是新的審核狀態）。方案 Y（新增「重複不發放」狀態）的測試草案已移除，不再追蹤 | 卡片文字的測試待 Sean 實作後補：三條件全成立時文案出現，只成立一或兩條時不出現，且文案不含其他歌曲的標題 |
 | 資料只存影片 ID 與原始連結 | Owner 要求 | 新增 `tests/test_postgres_auto_version_confirm.py::test_new_data_holds_only_ids_and_links_never_a_title_a_channel_or_an_official_duration`：短期觀測表以外的所有表，不含標題、頻道 ID、官方時長 |
@@ -558,3 +558,8 @@ Owner 一眼可確認的「成功畫面」：`/owner list` 的卡片、`/balance
 | 交換語意（階段 B） | Owner 澄清：「交換」是給對方資料庫中隨機一首歌的連結，**不是把歌移出資料庫**；仍排除自己的投稿與已收過的歌 | 7.2 的 X 系列與選曲測試：交換前後歌曲仍在資料庫、他人仍可收到同一首；同一人不會收到自己投稿或已收過的歌；歌曲池不因交換變小 |
 
 **已知待處理（不在階段 A 範圍）**：`bot/share_replies.py:59` 在重審核准過的案件重放同一 operation 時，因 accepted_sequence 已變為新的尾端序號而拋 `ValueError`。發獎不受影響，建議另開票。
+
+### 7.7 回滾單向門與文案測試（2026-11-02）
+
+- 回滾實測結果與唯讀檢查 SQL 寫在 [階段 A 啟用與回滾清單](deploy/stage-a-enable-rollback.md)：以基底提交 `51ee43a` 的程式讀取含 `system_judgement` 證據的資料庫，只有「對該影片的 Owner 檢視／確認版本／重審」會 `ValueError`，投稿、待處理清單、結算與餘額不受影響。自動測試：`tests/test_postgres_system_evidence_rollback.py`（5）、`tests/test_codec_unknown_enum_value.py`（3）。
+- 卡片與回覆文案的紅燈測試：`tests/test_postgres_concern_wording.py`（10）。文案是具名常數 `NEAR_DUPLICATE_NOTE`（「高度相同，建議不發放」）、`SIMILAR_REVIEW_REPLY`（「已轉交審核，高度相似，尚未發放」），Owner 要改字只改常數與對應測試的常數值。
