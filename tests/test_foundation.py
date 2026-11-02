@@ -114,6 +114,34 @@ def test_reject_postgresql_administrative_users(database_settings, monkeypatch, 
         load_database_settings()
 
 
+@pytest.mark.parametrize("pooler_user", ["postgres.gtyvvemrhosfnfigbosn", "POSTGRES.project", "rdsadmin.project"])
+def test_pooler_project_suffix_does_not_hide_an_administrative_role(database_settings, monkeypatch, pooler_user):
+    """@description: A Supabase pooler login such as postgres.<ref> is still the administrator.
+    @param database_settings: Isolated environment configuration.
+    @param monkeypatch: Environment isolation facility.
+    @param pooler_user: Administrative role with the pooler project suffix.
+    @return: None.
+    """
+    monkeypatch.setenv("DB_HOST", "aws-0-us-east-1.pooler.supabase.com")
+    monkeypatch.setenv("DB_USER", pooler_user)
+    with pytest.raises(ConfigurationError, match="non-administrative"):
+        load_database_settings()
+
+
+def test_pooler_suffix_is_only_removed_for_a_supabase_pooler_host(database_settings, monkeypatch):
+    """@description: Dots in a user name on any other host keep their meaning.
+    @param database_settings: Isolated environment configuration.
+    @param monkeypatch: Environment isolation facility.
+    @return: None.
+    """
+    from bot.config import database_account_name
+
+    assert database_account_name("jukebox101_app.projectref", "aws-0-us-east-1.pooler.supabase.com") == "jukebox101_app"
+    assert database_account_name("jukebox101_app.projectref", "AWS-0.POOLER.SUPABASE.COM") == "jukebox101_app"
+    assert database_account_name("postgres.projectref", "db.example.internal") == "postgres.projectref"
+    assert database_account_name("jukebox101_app", "aws-0-us-east-1.pooler.supabase.com") == "jukebox101_app"
+
+
 @pytest.mark.parametrize("insecure_mode", ["require", "prefer", "allow", "verify", ""])
 def test_tls_modes_that_skip_verification_are_refused(database_settings, monkeypatch, insecure_mode):
     """@description: Encryption without certificate verification is never accepted as a database setting.
