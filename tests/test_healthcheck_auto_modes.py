@@ -102,9 +102,9 @@ def test_an_empty_allowlist_with_review_on_is_ready_because_it_approves_nothing(
     assert healthcheck.check_health()['result'] == 'ready'
 
 
-@pytest.mark.parametrize('legacy', ['JUKEBOX_FORMAL_EXCHANGE', 'JUKEBOX_NICKEL_CLAIM'])
+@pytest.mark.parametrize('legacy', ['JUKEBOX_NICKEL_CLAIM'])  # [Owner ruling, stage B]: JUKEBOX_FORMAL_EXCHANGE=on is a legal state; see tests/test_healthcheck_formal_exchange.py.
 def test_legacy_feature_switches_stay_unhealthy_when_on_even_with_review_on(healthy_environment, legacy) -> None:
-    """@description: Allowing automatic review must not relax the closed exchange and claim routes.
+    """@description: Allowing automatic review must not relax the closed claim route.
     @param healthy_environment: Healthy environment.
     @param legacy: Legacy switch turned on.
     @return: None.

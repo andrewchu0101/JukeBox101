@@ -22,6 +22,7 @@ from bot.database.exchange_delivery_store import (
     user_balance,
     record_result,
     refund_undelivered,
+    stuck_exchange_rows,
     user_results,
 )
 from bot.database.exchange_reservation import ExchangeOutcome, reserve_exchange
@@ -538,6 +539,17 @@ class SubmissionRepository:
         """
         with submission_transaction(self._factory) as (cursor, _):
             return owner_summary(cursor)
+
+    def owner_stuck_exchanges(self, requester_id: int, now: datetime) -> list[dict]:
+        """@description: Show the Owner the exchange cases that need attention, read-only and independent of the compensation switch.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param requester_id: Identity making the request; must be the configured Owner.
+        @param now: Current time, naive or aware UTC.
+        @return: Stuck cases without links, tokens or balances.
+        """
+        self._require_owner(requester_id)
+        with submission_transaction(self._factory) as (cursor, _):
+            return stuck_exchange_rows(cursor, now)
 
     def refund_undelivered(self, recommendation_id: int, now: Any) -> RefundOutcome:
         """@description: Refund one point for a reservation proven unsent, from its authoritative original debit only.

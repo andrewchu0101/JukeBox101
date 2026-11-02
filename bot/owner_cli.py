@@ -153,6 +153,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_version_commands(commands)
     _add_settlement_commands(commands)
     _add_switch_commands(commands)
+    _add_stuck_command(commands)
     return parser
 
 
@@ -254,6 +255,30 @@ def _settlement_switch(args: argparse.Namespace, repository: Any, owner: int) ->
     stored = repository.settlement_enabled(owner)
     _report([f"settlement switch now: {stored}"])
     return 0 if stored is enabled else 1
+
+
+def _add_stuck_command(commands: Any) -> None:
+    """@description: Register the read-only stuck-exchange listing; it takes no argument, so no actor can be supplied.
+    @param commands: Top-level subparser collection that receives the exchange-stuck command.
+    @return: None.
+    """
+    commands.add_parser("exchange-stuck", help="Read-only list of exchange cases that need attention")
+
+
+def _exchange_stuck(repository: Any, owner: int, now: Callable[[], datetime]) -> int:
+    """@description: Print each stuck exchange case so the Owner can see it; nothing is written.
+    @param repository: Repository the operator reads through.
+    @param owner: Acting Owner identifier.
+    @param now: Timezone-aware clock.
+    @return: Process exit code.
+    """
+    rows = repository.owner_stuck_exchanges(owner, now())
+    if not rows:
+        _report(["no stuck exchange cases"])
+        return 0
+    _report([f"operation_code: {row['operation_code']} requester: {row['requester']} delivery_state: {row['delivery_state']} "
+             f"reason: {row['reason']} waiting_seconds: {row['waiting_seconds']}" for row in rows])
+    return 0
 
 
 def _report(lines: list) -> None:
@@ -435,6 +460,8 @@ def _dispatch(args: argparse.Namespace, repository: Any, owner: int, now: Callab
         return _version(args, repository, owner, now)
     if args.command == "settlement-switch":
         return _settlement_switch(args, repository, owner)
+    if args.command == "exchange-stuck":
+        return _exchange_stuck(repository, owner, now)
     return _settle(args, repository, owner)
 
 
