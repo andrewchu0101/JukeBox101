@@ -37,15 +37,34 @@ def require_automatic_modes_closed() -> dict[str, str]:
     return {name: 'off' for name in loaders}
 
 
-async def check_policy() -> dict:
-    """@description: Exercise real closed routes and the full local command baseline.
+def require_feature_switches_closed() -> None:
+    """@description: Refuse any run where the legacy feature switches are not explicitly off.
     @param: none
-    @return: Secret-free policy receipt; a drift or side effect raises.
+    @return: None; a missing, enabling or inconsistent value raises.
     """
     if any(os.environ.get(key) != 'off' for key in ('JUKEBOX_FORMAL_EXCHANGE', 'JUKEBOX_NICKEL_CLAIM')):
         raise ConfigurationError('CI/CD requires explicit off feature policy')
     if load_formal_exchange_enabled() or load_nickel_claim_enabled():
         raise ConfigurationError('closed feature policy mismatch')
+
+
+def require_business_routes_closed(service: MusicService, repository: SubmissionRepository) -> None:
+    """@description: Prove the constructed service enabled no pipeline, exchange or compensation route.
+    @param service: Service built over the connection trap.
+    @param repository: Repository built over the connection trap.
+    @return: None; any enabled route raises.
+    """
+    enabled = (service.auto_pipeline is not None, service.formal_exchange_enabled, service.synthetic_exchange_enabled, repository._compensation_enabled)
+    if any(enabled):
+        raise RuntimeError('business policy enabled')
+
+
+async def check_policy() -> dict:
+    """@description: Exercise real closed routes and the full local command baseline.
+    @param: none
+    @return: Secret-free policy receipt; a drift or side effect raises.
+    """
+    require_feature_switches_closed()
     automatic_modes = require_automatic_modes_closed()  # [closed by default]: The receipt records that no automatic mode is on.
     repository = SubmissionRepository(forbid_connection, 123)
     service = MusicService(None, repository, nickel_connection_factory=forbid_connection)
@@ -56,8 +75,7 @@ async def check_policy() -> dict:
     await service.exchange(123)
     await service.daily(123, True)
     await service.claim(123, 'ci-disabled')
-    if service.auto_pipeline is not None or service.formal_exchange_enabled or service.synthetic_exchange_enabled or repository._compensation_enabled:
-        raise RuntimeError('business policy enabled')
+    require_business_routes_closed(service, repository)
     await client.close()
     return {'result': 'passed', 'claim_registered': False, 'formal_exchange': False,
             'compensation': False, 'local_contract': 'matched', 'login': 'not_run', 'auto_modes': automatic_modes}
