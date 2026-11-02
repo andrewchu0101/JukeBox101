@@ -9,6 +9,7 @@ from datetime import datetime
 
 from bot.evidence_record import EvidenceRecord, EvidenceSourceType, VersionClaimKind, record_evidence
 from bot.song_identity import VideoIdentity
+from bot.version_concerns import ConcernCode, VersionConcern
 from bot.version_identity import RecordingVersionIdentity
 
 WATCH_URL_PREFIX = "https://www.youtube.com/watch?v="  # [recognizable link]: Built from the video id, so tracking parameters never reach a source reference.
@@ -32,6 +33,14 @@ OTHER_MENU_TEXT = ("其他情況：請選擇這支影片屬於哪一種。\n"
 SOURCE_REQUIRED_TEXT = ("判斷依據不符合既有規則（需要 8 到 512 個字元、可追溯的連結或說明，不能是純數字或互動編號）。"
                         "沒有建立任何版本，案件維持待處理。")
 INSUFFICIENT_TEXT = "證據不足：依既有規則，這份證據不足以確認此影片的版本。沒有建立任何版本，案件維持待處理。"
+NEAR_DUPLICATE_NOTE = "高度相同，建議不發放"  # [Owner advice, not a state]: Shown only when one existing song matches on channel, duration and title together.
+CONCERN_LABELS = {
+    ConcernCode.SAME_CHANNEL_CLOSE_DURATION: "與既有歌曲同一頻道，且影片長度非常接近",
+    ConcernCode.SIMILAR_TITLE: "歌名與既有歌曲高度相似",
+    ConcernCode.VERSION_KEYWORD: "歌名含有版本字樣（例如 remix、live、cover）",
+    ConcernCode.TITLE_UNJUDGEABLE: "歌名過短或空白，系統無法比對",
+    ConcernCode.COMPARISON_INCOMPLETE: "與既有歌曲的比對沒有完成",
+}  # [draft wording]: Plain-language reasons shown on the Owner card; the Owner may reword them here without touching the logic.
 PROMISE_LINES = (
     "• 「確認為新的錄音版本」表示由你判斷：這支影片是一個獨立的錄音版本。來源記為「人工核對：此影片連結」。",
     "• 「確認為同一錄音」表示你已比對兩支影片，判斷是同一個錄音；不宣稱特定類別（MV、純音源、重製等），來源記為兩支影片連結。",
@@ -130,3 +139,27 @@ def category_headline(label: str, remaster: bool) -> str:
     if remaster:
         return f"已記錄：此影片為所選版本的{label}（由 Owner 判斷，依你輸入的判斷依據）。"
     return f"已記錄：此影片為新的錄音版本，類別：{label}（由 Owner 判斷，依你輸入的判斷依據）。"
+
+
+def concern_lines(concerns: tuple[VersionConcern, ...]) -> list[str]:
+    """@description: List why the automatic comparison sent the case to the Owner, with a watch link for each concern that names an existing song.
+    @param concerns: Doubts stored with the case.
+    @return: Card lines, ending with the near-duplicate advice when one existing song matches on channel, duration and title together; empty without concerns.
+    """
+    if not concerns:
+        return []
+    lines = ["自動比對疑慮："]
+    for concern in concerns:
+        link = f"（既有歌曲：{watch_url(concern.other_video_id)}）" if concern.other_video_id else ""
+        lines.append(f"• {CONCERN_LABELS[concern.code]}{link}")
+    return lines + ([NEAR_DUPLICATE_NOTE] if _has_near_duplicate(concerns) else [])
+
+
+def _has_near_duplicate(concerns: tuple[VersionConcern, ...]) -> bool:
+    """@description: Tell whether one single existing song is behind both the duration concern and the title concern.
+    @param concerns: Doubts stored with the case.
+    @return: True only when both concerns point at the same existing video.
+    """
+    close = {concern.other_video_id for concern in concerns if concern.code is ConcernCode.SAME_CHANNEL_CLOSE_DURATION}
+    similar = {concern.other_video_id for concern in concerns if concern.code is ConcernCode.SIMILAR_TITLE}
+    return bool(close & similar - {None})

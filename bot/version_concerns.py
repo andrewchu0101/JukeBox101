@@ -21,6 +21,8 @@ FEATURING_TAIL = re.compile(r"(?<![a-z0-9])(?:feat|ft|featuring)(?![a-z0-9]).*$"
 ENGLISH_KEYWORDS = ("remix\\w*", "cover", "live", "acoustic", "instrumental", "sped up", "slowed", "nightcore", "remaster\\w*",
                     "version", "mix", "edit", "demo", "unplugged", "karaoke", "8d", "lo-?fi", "bass boosted")  # [word-boundary terms]: Never matched inside another word.
 ENGLISH_KEYWORD_PATTERN = re.compile(r"(?<![a-z0-9])(?:" + "|".join(ENGLISH_KEYWORDS) + r"|ver\.)(?![a-z])")
+CONCERN_FIELD = " concerns="  # [audit marker]: Starts the concern list inside an automatic-review reason; the card reads it back.
+MAX_CITED_VIDEO_IDS = 10  # [audit bound]: The reason column holds 1024 characters; only this many existing videos are cited.
 CHINESE_KEYWORDS = ("翻唱", "現場", "混音", "純音樂", "伴奏", "加速", "降速", "重製", "重新錄製")  # [substring terms]: Chinese has no word boundary.
 
 
@@ -141,3 +143,30 @@ def assess_concerns(candidate: VideoMetadata, others: Iterable[VideoMetadata],
     for other in others:
         found.extend(concerns_against(candidate, other, thresholds))
     return tuple(found)
+
+
+def format_concern_detail(concerns: tuple[VersionConcern, ...]) -> str:
+    """@description: Write the concerns into audit text as code:video pairs, so the Owner card can tell which concerns point at the same existing song.
+    @param concerns: Doubts found.
+    @return: Text starting with a space; only codes and video IDs, never a title or channel.
+    """
+    by_video: dict[str | None, list[str]] = {}  # [grouping]: Concerns that name the same existing song stay together.
+    for concern in concerns:
+        by_video.setdefault(concern.other_video_id, []).append(concern.code.value)
+    own = by_video.pop(None, [])
+    cited = sorted(by_video.items(), key=lambda entry: -len(set(entry[1])))[:MAX_CITED_VIDEO_IDS]  # [most telling first]: A song with several codes survives the bound.
+    entries = list(dict.fromkeys(own)) + [f"{code}:{video_id}" for video_id, codes in cited for code in dict.fromkeys(codes)]
+    return CONCERN_FIELD + ",".join(entries)
+
+
+def parse_concern_detail(reason: str) -> tuple[VersionConcern, ...]:
+    """@description: Read the concerns back from an automatic-review reason, ignoring anything that is not a known code.
+    @param reason: Stored audit reason.
+    @return: Concerns in stored order; empty when the reason carries none.
+    """
+    if CONCERN_FIELD not in reason:
+        return ()
+    field = reason.split(CONCERN_FIELD, 1)[1].split(" ", 1)[0]
+    known = {code.value: code for code in ConcernCode}
+    pairs = [entry.partition(":") for entry in field.split(",") if entry]
+    return tuple(VersionConcern(known[code], video_id or None) for code, _separator, video_id in pairs if code in known)
