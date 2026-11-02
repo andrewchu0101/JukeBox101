@@ -10,6 +10,13 @@ Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord �
 
 > 狀態（2026-10-31）：PR #2 已合併，CI 已啟用；首筆 Discord 投稿已查證寫入 Supabase，使用者確認完成時長補登與歌曲核准，版本仍未確認、Nickel 0。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。CD 尚未啟用；下一個 [自動審核與發獎 MVP](docs/mvp-auto-review-nickel.md) 尚未實作，不能據此視為已自動發獎或完整部署驗收。
 
+## 首筆投稿與認可頻道（Owner 說明，2026-11-02）
+
+- **首筆投稿歌曲**：XG - HYPNOTIZE (Official Music Video)，即 2026-10-31 驗證時的首筆 Discord 投稿（案件 `discord:1565766654502113430`），歌曲已核准、版本尚未確認。Owner 已決定**確認其版本**；實際操作由 Owner 在 Discord 案件卡片完成，**截至本說明尚未執行**。
+- **Owner 認可的唯一頻道**：<https://www.youtube.com/channel/UC12HMtO5MYph9dCZZ7yygng>（頻道 ID `UC12HMtO5MYph9dCZZ7yygng`）。
+- **尚未生效**：認可頻道清單（`YOUTUBE_TRUSTED_CHANNEL_IDS`）尚未寫入 VM，自動審核尚未部署。啟用前所有投稿仍由 Owner 手動審核。
+- 擴充認可頻道的方法尚待設計（另案處理）；在此之前清單只有上述一個頻道。
+
 ## 使用者說明（user）
 
 ### 怎麼加入
