@@ -20,6 +20,19 @@ VERIFYING_SSL_MODES = frozenset({"verify-full", "verify-ca"})
 ALLOWED_SSL_MODES = VERIFYING_SSL_MODES | {"disable"}
 # [administrative roles]: Names the Bot must never use; the application role is a separate least-privilege login.
 ADMINISTRATIVE_DATABASE_USERS = frozenset({"postgres", "root", "rdsadmin", "azure_superuser", "cloudsqladmin"})
+# [Supabase pooler suffix]: Supavisor logins read "<role>.<project-ref>" but the server-side session role is just "<role>".
+SUPABASE_POOLER_HOST_SUFFIX = ".pooler.supabase.com"
+
+
+def database_account_name(database_user: str, database_host: str) -> str:
+    """@description: Name the server-side role behind a login so identity checks compare what PostgreSQL reports.
+    @param database_user: Login name exactly as configured in DB_USER.
+    @param database_host: Configured database host; only a Supabase pooler host carries the project suffix.
+    @return: The role without its pooler project suffix, or the login unchanged for any other host.
+    """
+    if not database_host.casefold().endswith(SUPABASE_POOLER_HOST_SUFFIX):
+        return database_user
+    return database_user.split(".", 1)[0]
 
 
 FORMAL_EXCHANGE_ENV = "JUKEBOX_FORMAL_EXCHANGE"  # [formal /exchange switch]: Absent or a disabling value keeps the route closed; anything else refuses startup.
@@ -142,11 +155,12 @@ def load_database_settings(dotenv_path: Path | None = None) -> DatabaseSettings:
         load_dotenv(dotenv_path=dotenv_path, override=False)
     # [application account]: Administrative accounts are forbidden for application access.
     database_user = required_environment_value("DB_USER")
-    if database_user.casefold() in ADMINISTRATIVE_DATABASE_USERS:
+    database_host = required_environment_value("DB_HOST")
+    if database_account_name(database_user, database_host).casefold() in ADMINISTRATIVE_DATABASE_USERS:
         raise ConfigurationError("DB_USER must be a non-administrative application account")
     sslmode, sslrootcert = configured_tls()
     return DatabaseSettings(
-        host=required_environment_value("DB_HOST"),
+        host=database_host,
         port=configured_database_port(),
         user=database_user,
         password=required_secret_value("DB_PASSWORD"),

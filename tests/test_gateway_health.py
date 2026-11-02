@@ -103,6 +103,30 @@ def test_db_ready_cannot_mask_gateway_failure(monkeypatch):
     assert healthcheck.check_health()['result'] == 'not_ready'
 
 
+@pytest.mark.parametrize('host,user,account,expected', [
+    ('aws-0-us-east-1.pooler.supabase.com', 'jukebox101_app.projectref', 'jukebox101_app', 'ready'),
+    ('aws-0-us-east-1.pooler.supabase.com', 'postgres.projectref', 'jukebox101_app', 'not_ready'),
+    ('db.example.internal', 'jukebox101_app', 'jukebox101_app', 'ready'),
+    ('db.example.internal', 'jukebox101_app.projectref', 'jukebox101_app', 'not_ready'),
+])
+def test_database_identity_accepts_pooler_suffix_only_on_a_pooler_host(monkeypatch, host, user, account, expected):
+    """@description: Compare the role PostgreSQL reports with the configured login without the pooler suffix.
+    @param monkeypatch: Fake readiness and Gateway evidence.
+    @param host: Configured database host.
+    @param user: Configured login name.
+    @param account: Role PostgreSQL reports for the session.
+    @param expected: Combined health result.
+    @return: None.
+    """
+    for name, value in dict(DISCORD_EXPECTED_APPLICATION_ID=str(APPLICATION), JUKEBOX_FORMAL_EXCHANGE='off',
+                            JUKEBOX_NICKEL_CLAIM='off', DB_HOST=host, DB_USER=user, DB_NAME='postgres').items():
+        monkeypatch.setenv(name, value)
+    database = {'result': 'ready', 'problems': [], 'account': account, 'database': 'postgres', 'tls_mode': 'verify-full'}
+    monkeypatch.setattr(healthcheck, 'check_readiness', lambda: database)
+    monkeypatch.setattr(healthcheck, 'check_gateway', lambda _: {'result': 'ready', 'problems': []})
+    assert healthcheck.check_health()['result'] == expected
+
+
 def test_pinned_discord_raw_ack_event_and_close(tmp_path, monkeypatch):
     """@description: Use the pinned framework websocket parser to dispatch a real fake ACK.
     @param tmp_path: Evidence directory.

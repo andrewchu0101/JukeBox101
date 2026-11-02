@@ -8,7 +8,7 @@ import os
 import sys
 
 from bot.auto_startup import load_auto_settings
-from bot.config import ConfigurationError, load_formal_exchange_enabled, load_nickel_claim_enabled
+from bot.config import ConfigurationError, database_account_name, load_formal_exchange_enabled, load_nickel_claim_enabled
 from bot.database.errors import DatabaseError
 from bot.gateway_health import check_gateway
 from bot.readiness import check_readiness
@@ -33,7 +33,8 @@ def check_health() -> dict:
     problems.extend(database['problems'])
     if database.get('tls_mode') != 'verify-full':
         problems.append('DATABASE_TLS_POLICY')
-    if database.get('account') != os.environ.get('DB_USER') or database.get('database') != os.environ.get('DB_NAME'):
+    expected_account = database_account_name(os.environ.get('DB_USER', ''), os.environ.get('DB_HOST', ''))
+    if database.get('account') != expected_account or database.get('database') != os.environ.get('DB_NAME'):
         problems.append('DATABASE_IDENTITY_MISMATCH')
     return {'result': 'not_ready' if problems else 'ready', 'problems': problems,
             'gateway': gateway, 'database': database}
