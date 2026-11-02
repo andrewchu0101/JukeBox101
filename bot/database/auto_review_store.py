@@ -12,6 +12,7 @@ from bot.eligibility import DurationEligibility
 from bot.song_identity import VideoIdentity
 from bot.database.persisted_snapshot import decode_current_review, fetch_all
 from bot.database.review_persistence import ReviewCommand, _current_request, apply_review
+from bot.database.auto_version_store import checked_for_staleness, confirm_version_by_system
 from bot.database.reward_settlement import current_decisions
 from bot.review import ApprovalSource, DurationVerdict, ReviewSnapshot, ReviewStatus, ValidationError
 from bot.reward_candidates import RewardCandidateStatus, RewardDecision
@@ -65,10 +66,29 @@ def apply_verdict(cursor: Any, control: dict, operation_id: str, expected_revisi
         return current  # [stale result]: Newer Owner or automatic facts always win.
     if verdict.kind is AutoReviewKind.UNAVAILABLE and current.status is ReviewStatus.VALIDATION_FAILED:
         return current  # [no churn]: Repeating the same failure adds no audit fact.
+    verdict = checked_for_staleness(cursor, verdict)  # [stale clearance]: A submission accepted during the comparison sends the case to the Owner.
     approve = verdict.kind is AutoReviewKind.AUTO_APPROVE and request.identity.status is not VersionIdentityStatus.CONFLICT
     if retain_api_values:
-        return _apply_retained(cursor, control, operation_id, expected_revision, verdict, approve)
-    command = ReviewCommand(f"auto-review:{current.video.video_id}:{expected_revision}", operation_id, SYSTEM_ACTOR_ID, verdict.reason,
+        review = _apply_retained(cursor, control, operation_id, expected_revision, verdict, approve)
+    else:
+        review = _apply_plain(cursor, control, operation_id, expected_revision, verdict, approve)
+    confirm_version_by_system(cursor, operation_id, verdict, review)  # [same transaction]: Approval and its system-judged version commit or roll back together.
+    return review
+
+
+def _apply_plain(cursor: Any, control: dict, operation_id: str, expected_revision: int, verdict: AutoReviewVerdict,
+                 approve: bool) -> ReviewSnapshot:
+    """@description: Write a verdict whose official values go straight into the audited review path (retention mode off).
+    @param cursor: Cursor holding the writer gate.
+    @param control: Locked control row.
+    @param operation_id: Accepted operation.
+    @param expected_revision: Revision the lookup was made for.
+    @param verdict: Verdict after the staleness check.
+    @param approve: Whether this verdict also approves the song.
+    @return: The review after this call.
+    """
+    video_id = _current_request(cursor, operation_id, expected_revision).review.video.video_id
+    command = ReviewCommand(f"auto-review:{video_id}:{expected_revision}", operation_id, SYSTEM_ACTOR_ID, verdict.reason,
                             expected_revision, duration=verdict.duration,
                             validation_error=ValidationError.METADATA_UNAVAILABLE if verdict.kind is AutoReviewKind.UNAVAILABLE else None,
                             approval_source=ApprovalSource.AUTO if approve else None, song_eligible=True if approve else None)
