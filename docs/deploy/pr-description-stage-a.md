@@ -19,7 +19,7 @@
 | CI 契約 `scripts/ci/runtime_smoke.py` | controlled 的秘密集合由「剛好 3 個」改成「剛好 4 個、名稱鎖死為 `youtube_api_key`」；自動開關渲染結果必須全是 off、清單必須為空；金鑰檔路徑固定。base `compose.yaml` 仍是 3 個 | 新增秘密是必要的，但不能放寬成「至少 3 個」讓日後任何秘密都能被掛進去 | `tests/test_controlled_compose_policy.py`（新增 11 種故障：額外秘密、缺秘密、被換名、開關被設成 on、清單預設有值、金鑰路徑被改） |
 | 部署 compose `deploy/controlled/compose.yaml` | 新增六個設定（預設 `${...:-off}` 或空）與秘密 `youtube_api_key`（固定路徑 `/etc/jukebox101/secrets/youtube_api_key.txt`） | CD 只用單一 compose 檔，疊加檔進不了 CD 路徑 | 上列兩個測試，加真實 `docker compose config` 渲染三種設定 |
 | 主機腳本 `deploy/host/jukebox101-deploy`（H-1） | compose 若提到 `youtube_api_key` 而金鑰檔不是一般檔案，在**停舊 Bot 之前**回 `rejected` | 新 compose 一律掛載這個秘密；沒有這道檢查時，缺檔會在停舊 Bot 之後才讓 `docker compose up` 失敗，雖會自動回滾但有停機 | `tests/test_deploy_host_script.py`（缺檔拒絕且舊 Bot 不停、檔案存在可部署且內容不外洩、舊 compose 不受影響、目錄不是檔案則拒絕） |
-| CI 數量下限 | 離線 1747 → 2261；PostgreSQL 35 → 126 | 下限不會隨新增測試自動調高，新測試可能被悄悄跳過 | `scripts/ci/offline.py`、`scripts/dev/verify-fresh-postgres.py` |
+| CI 數量下限 | 離線 1747 → 2264；PostgreSQL 35 → 141 | 下限不會隨新增測試自動調高，新測試可能被悄悄跳過 | `scripts/ci/offline.py`、`scripts/dev/verify-fresh-postgres.py` |
 
 ## 上線時必須注意（不會自動發生）
 
@@ -32,15 +32,16 @@
 
 | 狀態 | 項目 |
 |---|---|
-| Passed | 離線全套 2261（`--network none`）；PostgreSQL 18.6 全套 124；階段 A 的 PG 整合測試 13；既有 Owner 裁決特徵測試 5；`docker compose config` 渲染三種設定；執行期映像 `python -m bot.runtime_policy` 與匯入檢查 |
+| Passed | 離線全套 2264（`--network none`）；PostgreSQL 18.6 全套 139（另 2 個 skip）；階段 A 的 PG 整合測試 13、文案測試 10、回滾測試 5；既有 Owner 裁決特徵測試 5；`docker compose config` 渲染三種設定；執行期映像 `python -m bot.runtime_policy` 與匯入檢查 |
 | Skipped | 2 個 TLS 測試（本機拋棄式伺服器未開 TLS；CI 不允許 skip） |
 | Not Run | PostgreSQL 17.11（只在 CI）；`scripts.ci.runtime_smoke.main` 與 `verify-fresh-postgres.py` 完整流程（只在 CI） |
 | Manual Pending | 真實 YouTube API 批次回應與額度；Supabase Session Pooler；真實 VM 的新 compose、金鑰檔權限、`rolled_back` 路徑；Discord 卡片顯示 |
 
 ## 已知限制與未做
 
-- 「高度相同，建議不發放」卡片文案（三條件全成立）尚未實作。
-- 回滾到舊映像時，舊版能否讀懂 `system_judgement` 證據列尚未證明。
+- 回滾到不含 `SYSTEM_JUDGEMENT` 的舊映像：已用基底提交 `51ee43a` 的程式實測，只有「對有系統證據的影片，舊版 Owner 檢視／確認版本／重審」會 `ValueError`；投稿、待處理清單、結算與餘額正常。**為 0 才是乾淨回滾**；移除證據列需 Owner 授權（見啟用與回滾清單）。
+- 卡片與回覆文案（`NEAR_DUPLICATE_NOTE`、`SIMILAR_REVIEW_REPLY`）由 PM 在 Sean 達使用上限後完成，需 Sean 回來審查。
+- 圈複雜度：`bot/runtime_policy.py::check_policy` 以粗估約 11，略高於目標 10（函式長度與巢狀深度由 `tests/test_phase2_quality.py` 強制，全數通過）。
 - 階段 B（失敗退點）、階段 C（`/daily` 自訂時間、半遮蔽）不在本 PR。
 - 既有問題，非本 PR 引入：`bot/share_replies.py:59` 在重審核准過的案件重放同一 operation 時拋 `ValueError`（發獎不受影響）。
 - Google 回覆範圍待 Owner 確認；所有 API 比對測試都是 mock，沒有實際呼叫 YouTube。
