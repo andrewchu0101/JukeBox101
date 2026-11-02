@@ -9,7 +9,9 @@ import json
 import os
 
 from bot.command_contract import verify_local_contract
-from bot.config import ConfigurationError, load_formal_exchange_enabled, load_nickel_claim_enabled
+from bot.config import (AUTO_REVIEW_ENV, AUTO_SETTLEMENT_ENV, AUTO_VERSION_CONFIRM_ENV, API_RETENTION_ENV, ConfigurationError,
+                        load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled,
+                        load_auto_version_confirm_enabled, load_formal_exchange_enabled, load_nickel_claim_enabled)
 from bot.database.submission_repository import SubmissionRepository
 from bot.discord_app import JukeBoxClient
 from bot.services import MusicService
@@ -23,6 +25,18 @@ def forbid_connection():
     raise RuntimeError('disabled route opened a connection')
 
 
+def require_automatic_modes_closed() -> dict[str, str]:
+    """@description: Prove the published image defaults to every automatic mode closed; an invalid value fails in its own loader.
+    @param: none
+    @return: Switch name to "off" for each automatic mode.
+    """
+    loaders = {AUTO_REVIEW_ENV: load_auto_review_enabled, API_RETENTION_ENV: load_api_retention_enabled,
+               AUTO_SETTLEMENT_ENV: load_auto_settlement_enabled, AUTO_VERSION_CONFIRM_ENV: load_auto_version_confirm_enabled}
+    if any(loader() for loader in loaders.values()):
+        raise ConfigurationError('CI/CD requires every automatic mode off')
+    return {name: 'off' for name in loaders}
+
+
 async def check_policy() -> dict:
     """@description: Exercise real closed routes and the full local command baseline.
     @param: none
@@ -32,6 +46,7 @@ async def check_policy() -> dict:
         raise ConfigurationError('CI/CD requires explicit off feature policy')
     if load_formal_exchange_enabled() or load_nickel_claim_enabled():
         raise ConfigurationError('closed feature policy mismatch')
+    automatic_modes = require_automatic_modes_closed()  # [closed by default]: The receipt records that no automatic mode is on.
     repository = SubmissionRepository(forbid_connection, 123)
     service = MusicService(None, repository, nickel_connection_factory=forbid_connection)
     client = JukeBoxClient(service)
@@ -45,7 +60,7 @@ async def check_policy() -> dict:
         raise RuntimeError('business policy enabled')
     await client.close()
     return {'result': 'passed', 'claim_registered': False, 'formal_exchange': False,
-            'compensation': False, 'local_contract': 'matched', 'login': 'not_run'}
+            'compensation': False, 'local_contract': 'matched', 'login': 'not_run', 'auto_modes': automatic_modes}
 
 
 if __name__ == '__main__':

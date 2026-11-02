@@ -10,6 +10,7 @@ from enum import Enum
 from bot.song_identity import VideoIdentity
 from bot.version_identity import RecordingVersionIdentity, require_reference
 
+SYSTEM_JUDGE_ID = 0  # [audit identity]: Same value as the automatic review actor; no Discord snowflake is zero, so it can never read as the Owner.
 MAX_REASON_LENGTH = 1024  # [audit explanation limit]: Matches the persisted reason column.
 
 
@@ -19,6 +20,7 @@ class EvidenceSourceType(Enum):
     OWNER_REVIEW = "owner_review"  # [internal inspection]: An Owner's written judgment after review.
     RECORDING_REFERENCE = "recording_reference"  # [documented reference]: An internal citation to a known recording.
     PLATFORM_METADATA = "platform_metadata"  # [weak signal]: Titles, tags, channels and IDs are never sufficient.
+    SYSTEM_JUDGEMENT = "system_judgement"  # [Owner-authorised automation]: A no-concern comparison; not an Owner record and not proof of a recording.
 
 
 class VersionClaimKind(Enum):
@@ -78,6 +80,8 @@ def record_evidence(evidence_id: str, video: VideoIdentity, source_type: Evidenc
         raise ValueError("Valid video and optional version identity are required")
     if type(owner_confirmed) is not bool:
         raise ValueError("A boolean owner confirmation flag is required")
+    if owner_confirmed and source_type is EvidenceSourceType.SYSTEM_JUDGEMENT:
+        raise ValueError("A system judgement can never claim Owner confirmation")
     if version_kind is not None and not isinstance(version_kind, VersionClaimKind):
         raise ValueError("A declared version category or None is required")
     return EvidenceRecord(evidence_id, video, source_type, source_reference, retrieved_at, reason, judged_by, version,
@@ -91,6 +95,8 @@ def assess_evidence(record: EvidenceRecord) -> EvidenceReliability:
     """
     if record.source_type is EvidenceSourceType.PLATFORM_METADATA or record.version is None:
         return EvidenceReliability.PENDING
+    if record.source_type is EvidenceSourceType.SYSTEM_JUDGEMENT:
+        return EvidenceReliability.RELIABLE  # [Owner-authorised]: The version is named and the judge is the system identity, never the Owner.
     if record.owner_confirmed is not True:
         return EvidenceReliability.PENDING
     return EvidenceReliability.RELIABLE
@@ -116,5 +122,15 @@ def _validate_provenance(evidence_id: str, source_type: EvidenceSourceType, sour
         raise ValueError("A declared evidence source type is required")
     if not isinstance(retrieved_at, datetime) or retrieved_at.tzinfo is None:
         raise ValueError("A timezone-aware retrieval time is required")
-    if type(judged_by) is not int or judged_by <= 0:
-        raise ValueError("A positive internal judge identity is required")
+    _require_judge(source_type, judged_by)
+
+
+def _require_judge(source_type: EvidenceSourceType, judged_by: int) -> None:
+    """@description: Keep the system identity exclusive to system judgements and every other source on a real positive identity.
+    @param source_type: Declared source category.
+    @param judged_by: Judge identity.
+    @return: None.
+    """
+    expected_system = source_type is EvidenceSourceType.SYSTEM_JUDGEMENT
+    if type(judged_by) is not int or (judged_by != SYSTEM_JUDGE_ID if expected_system else judged_by <= 0):
+        raise ValueError("The judge identity does not match the evidence source")

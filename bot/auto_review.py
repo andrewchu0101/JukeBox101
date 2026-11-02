@@ -4,14 +4,15 @@ Input is a metadata lookup and the allowlist; output is a verdict the repository
 Automatic approval requires every condition below; anything less keeps the Owner in the loop rather than guessing.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 from bot.eligibility import DurationEligibility, DurationEvidence, assess_duration
 from bot.song_identity import VideoIdentity
+from bot.version_concerns import VersionConcern
 from bot.youtube_metadata import SOURCE_LABEL, LookupStatus, MetadataLookup, VideoMetadata
 
-AUTO_REVIEW_POLICY_VERSION = "trusted-channel-v1"  # [audit]: Written in every automatic decision; change it when the conditions change.
+AUTO_REVIEW_POLICY_VERSION = "trusted-channel-v2"  # [audit]: Written in every automatic decision; change it when the conditions change.
 MUSIC_CATEGORY_ID = "10"  # [YouTube category]: Music; a trusted channel's vlogs and notices do not qualify.
 NON_SONG_TITLE_HINTS = ("trailer", "teaser", "preview", "clip", "shorts", "#short", "highlight", "reaction", "interview",
                         "behind the scenes", "making of", "full album", "playlist", "預告", "片段", "剪輯", "精華", "幕後",
@@ -39,6 +40,14 @@ class ObservedValues:
 
 
 @dataclass(frozen=True)
+class ComparisonBasis:
+    """Describe the world a clean comparison saw, so the writing transaction can refuse a stale clearance."""
+
+    compared_count: int  # [requested songs]: How many existing songs the comparison asked about.
+    last_accepted_sequence: int | None = None  # [staleness mark]: Newest accepted submission when the comparison began; set by the pipeline.
+
+
+@dataclass(frozen=True)
 class AutoReviewVerdict:
     """Carry one verdict with the evidence and audit reason it would write."""
 
@@ -47,6 +56,8 @@ class AutoReviewVerdict:
     duration: DurationEvidence | None = None  # [official evidence]: Only for verdicts that record a duration.
     public_reason: str = ""  # [retention-mode explanation]: Policy version and reason code only; no channel or time.
     observation: ObservedValues | None = None  # [short-lived values]: Present only for verdicts that recorded a duration.
+    concerns: tuple[VersionConcern, ...] = ()  # [Owner card reasons]: Codes and existing video IDs only, never a title.
+    version_basis: ComparisonBasis | None = None  # [clean comparison]: Present only when the Owner authorised an automatic version confirmation.
 
 
 def decide_auto_review(lookup: MetadataLookup, trusted_channel_ids: frozenset[str]) -> AutoReviewVerdict:
@@ -124,3 +135,23 @@ def _audit(reason_code: str, metadata: VideoMetadata | None = None) -> str:
     """
     facts = "" if metadata is None else f" channel={metadata.channel_id} fetched_at={metadata.fetched_at.isoformat(timespec='seconds')}"
     return f"auto-review policy={AUTO_REVIEW_POLICY_VERSION} reason={reason_code}{facts}"
+
+
+def refined_verdict(base: AutoReviewVerdict, kind: AutoReviewKind, reason_code: str, metadata: VideoMetadata | None, *,
+                    detail: str = "", keep_evidence: bool = True, concerns: tuple[VersionConcern, ...] = (),
+                    version_basis: ComparisonBasis | None = None) -> AutoReviewVerdict:
+    """@description: Change a verdict's effect and reason after the version comparison, rebuilding both audit texts the same way as the original.
+    @param base: Verdict produced by the trust policy.
+    @param kind: New effect.
+    @param reason_code: Stable decision reason.
+    @param metadata: Official metadata for the full audit text.
+    @param detail: Extra audit text, limited to codes and video IDs by the caller.
+    @param keep_evidence: False drops the duration evidence and short-lived values, as for a verdict that wrote nothing.
+    @param concerns: Doubts to show the Owner.
+    @param version_basis: Comparison basis for an automatic version confirmation.
+    @return: New verdict.
+    """
+    evidence = (base.duration, base.observation) if keep_evidence else (None, None)
+    return replace(base, kind=kind, reason=_audit(reason_code, metadata if keep_evidence else None) + detail,
+                   public_reason=_audit(reason_code) + detail, duration=evidence[0], observation=evidence[1],
+                   concerns=concerns, version_basis=version_basis)
