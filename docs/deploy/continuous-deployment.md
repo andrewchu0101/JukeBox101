@@ -1,6 +1,6 @@
 # JukeBox101 持續部署（2026-11-01 精簡版）
 
-> 原 Hostinger VPS 狀態（2026-11-02）：已停止 JukeBox101 服務並撤銷專用帳號存取，舊的 repository secret `HOSTINGER_SSH_KEY` 也已移除。GitHub 實際設定的 `CD_ENABLED` 目前為 `false`，Production 已配置另一個部署目標；該目標、環境憑證與本文件的部署流程保留，由專案維護者管理。此手冊不構成重新連回原 VPS 的授權。驗證與交接見 [VPS 停用紀錄](vps-retirement-2026-11-02.md)。
+> 原 Hostinger VPS 狀態（2026-11-02）：已停止 JukeBox101 服務並撤銷專用帳號存取，舊的 repository secret `HOSTINGER_SSH_KEY` 也已移除。GitHub 實際設定的 `CD_ENABLED`（2026-11-02 以 `gh variable list` 實查）為 `true`，Production 的 `DEPLOY_HOST` 指向 GCP VM；推送 main 會自動部署到該 VM，該目標、環境憑證與本文件的部署流程由專案維護者管理。此手冊不構成重新連回原 VPS 的授權。驗證與交接見 [VPS 停用紀錄](vps-retirement-2026-11-02.md)。
 
 > 取代先前的 queue／worker／journal／四道 gate 架構。舊架構的診斷留在 [cd-rejected-2026-11-01.md](cd-rejected-2026-11-01.md) 供追溯，不再是現行做法。
 
@@ -44,7 +44,7 @@ push main → CI 測試 → 發布同一個已測映像到 GHCR（附 GitHub 來
 | `/etc/sudoers.d/jukebox101-deploy` | 只允許 `jukebox-deploy` 無參數執行上面那支腳本 | `install-host.sh` |
 | `/etc/ssh/authorized_keys/jukebox-deploy` | 一行受限公鑰（`restrict,command="sudo -n …"`） | `install-host.sh` |
 | `/etc/jukebox101/compose.cd.yaml` | 單一 `bot` 服務；已存在就保留，不覆寫 | 既有或安裝器放範本 |
-| `/etc/jukebox101/bot.env` | `DB_HOST`、`DB_NAME`、`DB_USER`、`DISCORD_EXPECTED_APPLICATION_ID`、`DISCORD_OWNER_USER_ID` 等 | 管理者（既有） |
+| `/etc/jukebox101/bot.env` | `DB_HOST`、`DB_NAME`、`DB_USER`、`DISCORD_EXPECTED_APPLICATION_ID`、`DISCORD_OWNER_USER_ID` 等；選用 `DISCORD_OWNER_GUILD_ID`（未設時程式刻意不註冊 `/owner` 指令） | 管理者（既有） |
 | `/etc/jukebox101/secrets/*.txt`、CA 檔 | Discord token、DB 密碼、TLS CA（0400，uid/gid 10001） | 管理者（既有） |
 | `/etc/jukebox101/deploy.conf`（選用） | 只有一行 `LEGACY_CONTAINER=<容器名稱>`：第一次接手一個沒有 application 標籤的舊 Bot 時使用 | 管理者 |
 | `/var/lib/jukebox101-deploy/` | 腳本自己的狀態（最高 run、結果、`locked`） | 腳本 |
@@ -82,7 +82,7 @@ awk -v h=<DEPLOY_HOST 的值> '{print h, $1, $2}' /etc/ssh/ssh_host_ed25519_key.
 **4. 設定 GitHub**
 
 - Environment `production`（限制只有 main 可部署）→ Secrets：`DEPLOY_SSH_KEY`（私鑰全文）、`DEPLOY_KNOWN_HOSTS`（上一步那行）。
-- Repository variables：`DEPLOY_HOST`（主機名稱或 IP）、`CD_ENABLED=true`（總開關）。
+- Variables：`DEPLOY_HOST`（主機名稱或 IP；目前設在 Environment `production`，設在 Repository 層也讀得到）、Repository variable `CD_ENABLED=true`（總開關，必須在 Repository 層，否則 job 的 `if` 讀不到）。
 - 設完後刪掉本機的私鑰檔：`shred -u jukebox101-deploy-key` 或安全刪除。
 
 **5. 放好設定與秘密（第一次部署前）**
@@ -115,7 +115,10 @@ awk -v h=<DEPLOY_HOST 的值> '{print h, $1, $2}' /etc/ssh/ssh_host_ed25519_key.
 | 看結果 | Actions 的 `Release` run；`Notify` 會把結果（含部署 job）貼到 [Issue #7](https://github.com/andrewchu0101/JukeBox101/issues/7) |
 | `rolled_back` | 新版在主機上不健康、已換回舊版。看 `docker logs` 找原因，修正後再 push |
 | `rollback_failed` | 主機鎖住。確認 Bot 只有一個容器且健康後，刪除 `/var/lib/jukebox101-deploy/locked` |
-| `rejected` | 見 Actions 日誌的說明：常見原因是 run 編號過舊、映像標籤不符、`locked` 存在、compose／bot.env 權限被改動 |
+| `rejected` | Actions 日誌會有 `jukebox101-deploy:` 開頭的一行原因（主機腳本寫到 stderr）：run 編號過舊、映像標籤不符、`locked` 存在、compose／bot.env 權限被改動、`DISCORD_EXPECTED_APPLICATION_ID` 缺漏、已有多個 Gateway 等 |
+| 部署失敗但原因不明 | 日誌只放固定句子（repository 是 public，日誌任何人看得到）。`docker compose up` 的原始輸出存在主機 `/var/lib/jukebox101-deploy/last-compose-failure.log`（root 才讀得到），登入後 `sudo cat` 查看 |
+| 只改了 `bot.env` | 主機要求 run 編號嚴格遞增，**同一個 run 在成功部署後按 Re-run 會被拒絕**。請推一個新 commit 讓 CD 重建容器；不要手動重建，會繞過 CD 的狀態紀錄 |
+| 更新主機腳本 | 部署只換 Bot 映像，不會更新 `/usr/local/libexec/jukebox101-deploy`。修改 `deploy/host/jukebox101-deploy` 後，要在 VM 更新 clone 並重跑 `install-host.sh --pubkey <受限公鑰檔> --apply` 才生效 |
 | 看主機最後狀態 | `cat /var/lib/jukebox101-deploy/{current,highwater}`、`ls /var/lib/jukebox101-deploy/results` |
 | 換 SSH key | 步驟 1、2、4 重做一次 |
 
@@ -126,5 +129,6 @@ awk -v h=<DEPLOY_HOST 的值> '{print h, $1, $2}' /etc/ssh/ssh_host_ed25519_key.
 ## 驗證與限制
 
 - 自動測試：主機腳本以假 Docker 驗證成功、回滾、回滾失敗鎖定、首次安裝、標籤不符、過期 run、冪等重送、格式錯誤、雙 Gateway、舊容器接手、設定檔權限（`tests/test_deploy_host_script.py`）；workflow 的 Bash 以假 SSH 驗證輪詢與結果判讀（`tests/test_deploy_workflow_polling.py`）；workflow 邊界與通知有文字契約測試。
-- **尚未驗證**：真實 Docker／Compose 在主機上的切換、真實 SSH／sudo 路徑、真實 GHCR 拉取、`bot.healthcheck` 對真實 Gateway 的結果。這些要等第一次實際部署（建議在維護時段自己盯著）才算驗收。
+- **已實測（2026-11-02，GCP VM）**：真實 SSH／sudo 路徑、GHCR 拉取、Docker／Compose 切換與 `bot.healthcheck` 對真實 Gateway，兩次 Release（`aa0b48d`、`0ec72f4`）部署成功並回報 healthy。這是人工觀察到的結果，不是自動測試。
+- **尚未實測**：回滾路徑（新版不健康時換回舊版）在真實主機上尚未驗證，只有假 Docker 的自動測試涵蓋。
 - 取捨：主機不再自行重驗 GitHub 簽章。防護來自：受限 key 只能觸發此腳本、映像限定在本 repo 的 GHCR 命名空間、標籤須符合請求的 commit、run 單調遞增、`production` Environment 限制 main。若 GitHub 帳號或 main 本身被入侵，攻擊者能改 workflow，這個風險與舊架構相同。

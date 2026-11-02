@@ -6,7 +6,7 @@
 
 Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**。自動整合測試使用 PostgreSQL 18.6；目前 Supabase PostgreSQL 17.11 已完成首筆指定投稿落盤驗證，尚非完整版本相容性驗收。
 
-> 部署現況（2026-11-02，Asia/Taipei）：借用的 Hostinger VPS 已停止提供 JukeBox101 服務，Bot／專用 PostgreSQL 已停止，專用 SSH 與 sudo 授權已撤銷。舊的 repository secret `HOSTINGER_SSH_KEY` 已移除，`CD_ENABLED` 目前為 `false`；另一部署目標與既有 CI／Release 流程保留。資料與受限備存檔仍保留。詳見 [VPS 停用與權限撤銷紀錄](docs/deploy/vps-retirement-2026-11-02.md)。以下較早的上線／驗收敘述為歷史狀態，不代表目前仍有 VPS 服務。
+> 部署現況（2026-11-02，Asia/Taipei）：借用的 Hostinger VPS 已停止提供 JukeBox101 服務，Bot／專用 PostgreSQL 已停止，專用 SSH 與 sudo 授權已撤銷。舊的 repository secret `HOSTINGER_SSH_KEY` 已移除，`CD_ENABLED` 於 2026-11-02 以 `gh variable list` 實查為 `true`，Production 的 `DEPLOY_HOST` 指向 GCP VM，推送 main 會經 CI／Release 自動部署到該 VM（見[持續部署手冊](docs/deploy/continuous-deployment.md)）。資料與受限備存檔仍保留。詳見 [VPS 停用與權限撤銷紀錄](docs/deploy/vps-retirement-2026-11-02.md)。以下較早的上線／驗收敘述為歷史狀態，不代表目前仍有 VPS 服務。
 
 > 狀態（2026-10-31）：PR #2 已合併，CI 已啟用；首筆 Discord 投稿已查證寫入 Supabase，使用者確認完成時長補登與歌曲核准，版本仍未確認、Nickel 0。證據與限制見 [首筆審核紀錄](docs/deploy/supabase-first-review-2026-10-31.md)。CD 尚未啟用；下一個 [自動審核與發獎 MVP](docs/mvp-auto-review-nickel.md) 尚未實作，不能據此視為已自動發獎或完整部署驗收。
 

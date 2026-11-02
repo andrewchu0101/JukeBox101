@@ -66,6 +66,7 @@ elif args[0] == 'compose':
     if 'up' in args:
         image = os.environ['JB_IMAGE']
         if image in state['bad'] or state['tags'].get(image) in state['bad']:
+            print('detail-from-compose', file=sys.stderr)
             save()
             sys.exit(1)
         resolved = state['tags'].get(image, image)
@@ -293,6 +294,58 @@ def test_unlabeled_legacy_container_is_taken_over_when_the_admin_names_it(host):
     assert host.run().stdout == 'succeeded\n'
     assert host.state['tags'][ROLLBACK] == OLD_DIGEST
     assert [c['id'] for c in host.state['running']] != ['legacy']
+
+
+def test_refusal_says_why_on_stderr_while_stdout_stays_one_word(host):
+    """@description: A person reading the Actions log must see the cause without logging in to the host.
+    @param host: Fake host.
+    @return: None.
+    """
+    (host.state_dir / 'locked').touch()
+    locked = host.run()
+    assert (locked.stdout, 'is locked' in locked.stderr) == ('rejected\n', True)
+    (host.state_dir / 'locked').unlink()
+    assert host.run(run=50).stdout == 'succeeded\n'
+    stale = host.run(run=49)
+    assert (stale.stdout, 'not newer than the highest deployed run 50' in stale.stderr) == ('rejected\n', True)
+    assert 'deploy-v2 <commit>' in host.run('nonsense\n').stderr
+
+
+def test_each_admission_refusal_names_its_own_cause(host):
+    """@description: Provenance, permissions and gateway-count refusals must be distinguishable.
+    @param host: Fake host.
+    @return: None.
+    """
+    host.edit_state(images={CANDIDATE: f'{"d" * 40} https://github.com/andrewchu0101/JukeBox101 10001:10001'})
+    assert 'image labels do not match' in host.run().stderr
+    host.edit_state(images={CANDIDATE: GOOD_FACTS}, running=[dict(id='a', image=OLD_DIGEST, labeled=True),
+                                                             dict(id='b', image=OLD_DIGEST, labeled=True)])
+    assert 'more than one Gateway' in host.run(attempt=2).stderr
+    (host.root / 'bot.env').chmod(0o664)
+    assert 'bot.env must be' in host.run(attempt=3).stderr
+
+
+def test_compose_failure_is_explained_without_publishing_raw_docker_output(host):
+    """@description: The public workflow log gets a fixed sentence; raw compose output stays on the host.
+    @param host: Fake host.
+    @return: None.
+    """
+    host.edit_state(bad=[CANDIDATE])
+    result = host.run()
+    assert result.stdout == 'rolled_back\n'
+    assert 'docker compose up failed' in result.stderr and 'restoring the previous image' in result.stderr
+    assert 'detail-from-compose' not in result.stderr
+    assert 'detail-from-compose' in (host.state_dir / 'last-compose-failure.log').read_text()
+
+
+def test_failed_rollback_says_the_host_is_locked(host):
+    """@description: The log must tell the maintainer which file to remove after checking the Bot.
+    @param host: Fake host.
+    @return: None.
+    """
+    host.edit_state(bad=[CANDIDATE, OLD_DIGEST])
+    result = host.run()
+    assert (result.stdout, 'host is locked until' in result.stderr) == ('rollback_failed\n', True)
 
 
 @pytest.mark.parametrize('name', ['compose.yaml', 'bot.env'])
