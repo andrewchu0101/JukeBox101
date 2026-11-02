@@ -152,6 +152,20 @@ class FakeRepository:
         self.events.append("apply")
         self.applied.append((operation_id, verdict))
 
+    def purge_api_observations(self):
+        """@description: Answer the retention purge that every sweep starts with when retention is on.
+        @param self: Fake repository.
+        @return: No rows cleared.
+        """
+        return 0
+
+    def api_retention_status(self):
+        """@description: Report no retention debt.
+        @param self: Fake repository.
+        @return: None, meaning nothing is overdue.
+        """
+        return None
+
     def ready_operations(self):
         """@description: Report nothing ready.
         @param self: Fake repository.
