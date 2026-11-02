@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from bot.auto_pipeline import AutoPipeline
-from bot.config import ConfigurationError, load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled, load_auto_version_confirm_enabled, load_trusted_channel_ids, load_youtube_api_key
+from bot.config import TRUST_MODE_ALLOWLIST, TRUST_MODE_MUSIC_CATEGORY, ConfigurationError, load_auto_trust_mode, load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled, load_auto_version_confirm_enabled, load_trusted_channel_ids, load_youtube_api_key
 from bot.youtube_metadata import YouTubeMetadataClient
 
 
@@ -22,6 +22,11 @@ VERSION_CONFIRM_REQUIRES_MESSAGE = (  # [refusal text]: Names the prerequisites;
     "JUKEBOX_AUTO_VERSION_CONFIRM=on 需要 JUKEBOX_AUTO_REVIEW=on 與 JUKEBOX_API_RETENTION=on，否則無法比對也無法遵守 API 資料保存規則。拒絕啟動。")
 
 
+MUSIC_CATEGORY_REQUIRES_MESSAGE = (  # [refusal text]: Names the prerequisites; the mode value is never echoed.
+    "JUKEBOX_AUTO_TRUST_MODE=music_category 需要 JUKEBOX_AUTO_REVIEW、JUKEBOX_API_RETENTION 與 JUKEBOX_AUTO_VERSION_CONFIRM 全部為 on，"
+    "否則沒有人檢查重複歌曲。拒絕啟動。")
+
+
 @dataclass(frozen=True)
 class AutoSettings:
     """Carry the validated automatic modes; the representation hides the credential."""
@@ -32,13 +37,14 @@ class AutoSettings:
     api_key: str | None  # [credential]: Present only when lookups may run.
     api_retention: bool = False  # [API data lifecycle]: Official values live only in the short-lived table, and the purge job runs.
     version_confirm: bool = False  # [Owner-authorised automation]: A clean comparison may confirm the version; off keeps every version with the Owner.
+    trust_mode: str = TRUST_MODE_ALLOWLIST  # [channel rule]: allowlist needs a listed channel; music_category does not.
 
     def __repr__(self) -> str:
         """@description: Keep the credential out of every representation.
         @param self: Settings.
         @return: Text without the key.
         """
-        return f"AutoSettings(review_enabled={self.review_enabled}, settlement_enabled={self.settlement_enabled}, api_retention={self.api_retention}, version_confirm={self.version_confirm})"
+        return f"AutoSettings(review_enabled={self.review_enabled}, settlement_enabled={self.settlement_enabled}, api_retention={self.api_retention}, version_confirm={self.version_confirm}, trust_mode={self.trust_mode})"
 
 
 def load_auto_settings(environ=None) -> AutoSettings:
@@ -53,8 +59,11 @@ def load_auto_settings(environ=None) -> AutoSettings:
     version_confirm = load_auto_version_confirm_enabled(environ)
     if version_confirm and not (review_enabled and api_retention):
         raise ConfigurationError(VERSION_CONFIRM_REQUIRES_MESSAGE)
+    trust_mode = load_auto_trust_mode(environ)
+    if trust_mode == TRUST_MODE_MUSIC_CATEGORY and not (review_enabled and api_retention and version_confirm):
+        raise ConfigurationError(MUSIC_CATEGORY_REQUIRES_MESSAGE)
     return AutoSettings(review_enabled, load_auto_settlement_enabled(environ), load_trusted_channel_ids(environ),
-                        load_youtube_api_key(environ) if review_enabled else None, api_retention, version_confirm)
+                        load_youtube_api_key(environ) if review_enabled else None, api_retention, version_confirm, trust_mode)
 
 
 def build_auto_pipeline(repository: Any, settings: AutoSettings) -> AutoPipeline | None:
@@ -67,4 +76,4 @@ def build_auto_pipeline(repository: Any, settings: AutoSettings) -> AutoPipeline
         return None
     client = YouTubeMetadataClient(settings.api_key) if settings.review_enabled else None
     return AutoPipeline(repository, client, settings.trusted_channel_ids, settlement_enabled=settings.settlement_enabled,
-                        api_retention=settings.api_retention, version_confirm=settings.version_confirm)
+                        api_retention=settings.api_retention, version_confirm=settings.version_confirm, trust_mode=settings.trust_mode)

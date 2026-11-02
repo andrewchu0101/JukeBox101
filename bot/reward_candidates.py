@@ -40,6 +40,7 @@ class RewardDecisionReason(Enum):
     EVIDENCE_CONFLICT = "evidence_conflict"
     INCOMPLETE_SNAPSHOT = "incomplete_snapshot"
     FIRST_ELIGIBLE = "first_eligible"
+    DAILY_LIMIT = "daily_limit"  # [computed only]: Never written to a receipt, so older code never has to read it.
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class RewardEvaluationInput:
     historical_versions: frozenset[RecordingVersionIdentity] = frozenset()  # [legacy catalog]: Never reopened.
     exclusions: tuple[VersionExclusion, ...] = ()  # [negative evidence]: Explicit release of unknown blockers.
     complete: bool = False  # [scope assertion]: Missing scope cannot authorize READY.
+    daily_limit_exceeded: frozenset[str] = frozenset()  # [daily limit]: Operations past their person's daily reward limit; they earn nothing and release priority.
 
     def __post_init__(self) -> None:
         """@description: Keep mutable or mistyped caller facts outside deterministic evaluation.
@@ -95,6 +97,8 @@ class RewardEvaluationInput:
             raise ValueError("Exclusions must be immutable trusted evidence")
         if type(self.complete) is not bool:
             raise ValueError("Completeness must be an explicit boolean")
+        if not isinstance(self.daily_limit_exceeded, frozenset):
+            raise ValueError("Daily limit facts must be immutable")
 
 
 @dataclass(frozen=True)
@@ -173,6 +177,8 @@ def _evaluate_candidate(candidate: RewardCandidate, ordered: tuple[RewardCandida
     """
     if candidate.awarded:
         return _decision(candidate, RewardCandidateStatus.AWARDED, RewardDecisionReason.PREVIOUSLY_AWARDED)
+    if candidate.operation_id in context.daily_limit_exceeded:  # [past the daily limit]: Stored and answered, but never paid; a paid award above is never taken back.
+        return _decision(candidate, RewardCandidateStatus.INELIGIBLE, RewardDecisionReason.DAILY_LIMIT)
     if _has_identity_conflict(candidate, ordered, context):
         return _decision(candidate, RewardCandidateStatus.CONFLICT, RewardDecisionReason.EVIDENCE_CONFLICT)
     # [qualification gate]: History, rejection and identity must be settled before queue readiness.
@@ -229,7 +235,8 @@ def _blocks_priority(earlier: RewardCandidate, candidate: RewardCandidate, conte
     @return: Whether this earlier operation retains priority over the candidate.
     """
     # [released priority]: A rejection, including one later reopened, never restores the predecessor's blocking power.
-    priority_released = earlier.review.status is ReviewStatus.REJECTED or earlier.review.priority_released
+    over_limit = earlier.operation_id in context.daily_limit_exceeded and not earlier.awarded  # [past the daily limit]: It can never be paid, so it must not hold others back.
+    priority_released = earlier.review.status is ReviewStatus.REJECTED or earlier.review.priority_released or over_limit
     if earlier.accepted_sequence >= candidate.accepted_sequence or priority_released:
         return False
     if earlier.identity.version is not None:

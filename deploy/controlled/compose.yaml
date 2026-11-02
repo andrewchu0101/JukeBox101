@@ -52,6 +52,8 @@ services:
       JUKEBOX_API_RETENTION: ${JUKEBOX_API_RETENTION:-off}
       JUKEBOX_AUTO_SETTLEMENT: ${JUKEBOX_AUTO_SETTLEMENT:-off}
       JUKEBOX_AUTO_VERSION_CONFIRM: ${JUKEBOX_AUTO_VERSION_CONFIRM:-off}
+      # allowlist (default) or music_category; the open mode needs review, retention and version confirmation all on or the Bot refuses to start.
+      JUKEBOX_AUTO_TRUST_MODE: ${JUKEBOX_AUTO_TRUST_MODE:-allowlist}
       YOUTUBE_TRUSTED_CHANNEL_IDS: ${YOUTUBE_TRUSTED_CHANNEL_IDS:-}
       YOUTUBE_API_KEY_FILE: /run/secrets/youtube_api_key
     secrets: [discord_bot_token, db_password, db_ca.crt, youtube_api_key]

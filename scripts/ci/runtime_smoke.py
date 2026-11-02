@@ -14,7 +14,7 @@ from pathlib import Path
 BASE_SECRETS = {'discord_bot_token', 'db_password', 'db_ca.crt'}  # [reviewed secret names]: The base stack mounts exactly these.
 YOUTUBE_SECRET = 'youtube_api_key'  # [reviewed secret name]: The only secret the controlled stack may add.
 CLOSED_AUTO_SETTINGS = {'JUKEBOX_AUTO_REVIEW': 'off', 'JUKEBOX_API_RETENTION': 'off', 'JUKEBOX_AUTO_SETTLEMENT': 'off',
-                        'JUKEBOX_AUTO_VERSION_CONFIRM': 'off', 'YOUTUBE_TRUSTED_CHANNEL_IDS': '',
+                        'JUKEBOX_AUTO_VERSION_CONFIRM': 'off', 'JUKEBOX_AUTO_TRUST_MODE': 'allowlist', 'YOUTUBE_TRUSTED_CHANNEL_IDS': '',
                         'YOUTUBE_API_KEY_FILE': '/run/secrets/youtube_api_key'}  # [published defaults]: Every automatic mode starts closed.
 YOUTUBE_KEY_HOST_FILE = '/etc/jukebox101/secrets/youtube_api_key.txt'  # [fixed host path]: Same directory as the other secrets.
 

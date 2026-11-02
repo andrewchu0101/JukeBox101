@@ -222,6 +222,9 @@ AUTO_REVIEW_ENV = "JUKEBOX_AUTO_REVIEW"  # [automatic review switch]: Absent or 
 API_RETENTION_ENV = "JUKEBOX_API_RETENTION"  # [API retention switch]: On keeps official values only in the short-lived table and runs the purge; off keeps the previous behaviour.
 AUTO_VERSION_CONFIRM_ENV = "JUKEBOX_AUTO_VERSION_CONFIRM"  # [automatic version confirmation switch]: Absent or disabling keeps every version with the Owner.
 AUTO_SETTLEMENT_ENV = "JUKEBOX_AUTO_SETTLEMENT"  # [automatic settlement switch]: Must agree with the database settlement flag.
+AUTO_TRUST_MODE_ENV = "JUKEBOX_AUTO_TRUST_MODE"  # [automatic trust mode]: allowlist (default) or music_category; anything else refuses startup.
+TRUST_MODE_ALLOWLIST = "allowlist"  # [today's behaviour]: Only the Owner's listed channels may be approved automatically.
+TRUST_MODE_MUSIC_CATEGORY = "music_category"  # [open mode]: Any channel may be approved while every other check passes.
 TRUSTED_CHANNELS_ENV = "YOUTUBE_TRUSTED_CHANNEL_IDS"  # [Owner allowlist]: Comma-separated stable channel IDs; empty approves nothing.
 YOUTUBE_API_KEY_SETTING = "YOUTUBE_API_KEY"  # [API credential]: Environment value or the file named by its _FILE setting.
 _CHANNEL_ID_PATTERN = re.compile(r"UC[0-9A-Za-z_-]{22}")  # [stable channel ID]: Handles and display names are refused.
@@ -272,6 +275,18 @@ def load_auto_review_enabled(environ: Mapping[str, str] | None = None) -> bool:
     @return: Whether official metadata lookups may run.
     """
     return _strict_switch(AUTO_REVIEW_ENV, environ)
+
+
+def load_auto_trust_mode(environ: Mapping[str, str] | None = None) -> str:
+    """@description: Read which channels automatic review may approve, so a typo can never silently open the system.
+    @param environ: Mapping to read; None reads the process environment.
+    @return: TRUST_MODE_ALLOWLIST when unset or explicit, TRUST_MODE_MUSIC_CATEGORY when explicitly chosen.
+    """
+    source = os.environ if environ is None else environ
+    value = source.get(AUTO_TRUST_MODE_ENV, TRUST_MODE_ALLOWLIST).strip().lower()
+    if value not in {TRUST_MODE_ALLOWLIST, TRUST_MODE_MUSIC_CATEGORY}:
+        raise ConfigurationError(f"{AUTO_TRUST_MODE_ENV} must be allowlist or music_category")
+    return value
 
 
 def load_trusted_channel_ids(environ: Mapping[str, str] | None = None) -> frozenset[str]:

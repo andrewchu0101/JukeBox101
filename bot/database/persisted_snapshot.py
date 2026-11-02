@@ -7,6 +7,7 @@ from dataclasses import replace
 from datetime import timezone
 from typing import Any
 
+from bot.daily_limit import AcceptedSubmission, over_limit_operation_ids
 from bot.database.submission_codec import decode_contract
 from bot.review import ReviewSnapshot, effective_priority_released
 from bot.reward_candidates import RewardCandidate
@@ -53,7 +54,8 @@ def load_snapshot(cursor: Any, control: dict) -> SubmissionSnapshot:
     legacy_scope = fetch_all(cursor, LEGACY_ROWS_SQL)
     # [canonical projection]: A merge never rewrites original evidence or original claims.
     roots = {row["version_id"]: row["canonical_id"] for row in fetch_all(cursor, "SELECT version_id, canonical_id FROM jb2_versions")}
-    candidates = tuple(_candidate(row, roots) for row in fetch_all(cursor, EVENT_ROWS_SQL))
+    event_rows = fetch_all(cursor, EVENT_ROWS_SQL)
+    candidates = tuple(_candidate(row, roots) for row in event_rows)
     history = tuple(_legacy(row, roots) for row in fetch_all(cursor, LEGACY_ROWS_SQL))
     exclusions = tuple(_exclusion(row, roots) for row in fetch_all(cursor, "SELECT evidence_json FROM jb2_exclusions"))
     exclusion_scope = fetch_all(cursor, "SELECT evidence_reference FROM jb2_exclusions")
@@ -62,7 +64,9 @@ def load_snapshot(cursor: Any, control: dict) -> SubmissionSnapshot:
     manifest = SnapshotManifest(str(control["revision"]), frozenset(row["operation_id"] for row in operations),
                                 frozenset(row["video_id"] for row in legacy_scope), control["accepted_sequence"],
                                 certified, len(legacy_scope), frozenset(row["evidence_reference"] for row in exclusion_scope))
-    return SubmissionSnapshot(manifest, str(control["revision"]), candidates, history, exclusions)
+    over_limit = over_limit_operation_ids(AcceptedSubmission(row["operation_id"], row["discord_user_id"], row["accepted_sequence"], row["accepted_at"])
+                                          for row in event_rows)  # [daily limit]: Ranked from the intake sequence and database clock, not the reexamination order.
+    return SubmissionSnapshot(manifest, str(control["revision"]), candidates, history, exclusions, over_limit)
 
 
 def _canonical(identity: VersionAssignment, roots: dict[str, str]) -> VersionAssignment:

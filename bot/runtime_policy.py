@@ -9,7 +9,7 @@ import json
 import os
 
 from bot.command_contract import verify_local_contract
-from bot.config import (AUTO_REVIEW_ENV, AUTO_SETTLEMENT_ENV, AUTO_VERSION_CONFIRM_ENV, API_RETENTION_ENV, ConfigurationError,
+from bot.config import (AUTO_REVIEW_ENV, AUTO_TRUST_MODE_ENV, TRUST_MODE_ALLOWLIST, load_auto_trust_mode, AUTO_SETTLEMENT_ENV, AUTO_VERSION_CONFIRM_ENV, API_RETENTION_ENV, ConfigurationError,
                         load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled,
                         load_auto_version_confirm_enabled, load_formal_exchange_enabled, load_nickel_claim_enabled)
 from bot.database.submission_repository import SubmissionRepository
@@ -34,7 +34,9 @@ def require_automatic_modes_closed() -> dict[str, str]:
                AUTO_SETTLEMENT_ENV: load_auto_settlement_enabled, AUTO_VERSION_CONFIRM_ENV: load_auto_version_confirm_enabled}
     if any(loader() for loader in loaders.values()):
         raise ConfigurationError('CI/CD requires every automatic mode off')
-    return {name: 'off' for name in loaders}
+    if load_auto_trust_mode() != TRUST_MODE_ALLOWLIST:
+        raise ConfigurationError('CI/CD requires the allowlist trust mode')
+    return {**{name: 'off' for name in loaders}, AUTO_TRUST_MODE_ENV: TRUST_MODE_ALLOWLIST}
 
 
 def require_feature_switches_closed() -> None:
