@@ -339,17 +339,16 @@ class MusicService:
         @return: Private current submission states, distinct from successful recommendation history.
         """
         submissions = await _database_operation(self.submission_repository.history, discord_user_id)
-        if not submissions:
+        received = list(await _database_operation(self.submission_repository.received_history, discord_user_id))
+        if not submissions and not received:
             return "目前沒有你的投稿紀錄。"
-        lines = ["最近本人投稿與目前審核狀態："]
-        for submission in submissions[:SUBMISSION_HISTORY_DISPLAY_LIMIT]:
-            line = _submission_history_line(submission)
-            if self.auto_pipeline is not None:
-                line = f"{line} · {reward_label(submission['reward_status'])}"
-            if len("\n".join(lines)) + len(line) + 1 > MAX_REPLY_LENGTH:
+        lines = _own_submission_lines(submissions, self.auto_pipeline is not None) + _received_lines(received, bool(submissions))
+        kept: list[str] = []
+        for line in lines:
+            if len("\n".join(kept)) + len(line) + 1 > MAX_REPLY_LENGTH:
                 break
-            lines.append(line)
-        return "\n".join(lines)
+            kept.append(line)
+        return "\n".join(kept)
 
 
 async def _database_operation(operation: Callable[..., OperationResult], *arguments) -> OperationResult:
@@ -378,6 +377,49 @@ def _history_line(delivery: DeliveryHistoryEntry) -> str:
         canonical_url = "網址待確認"
     delivered_at = delivery.delivered_at.replace(tzinfo=timezone.utc)
     return f"{delivered_at:%Y-%m-%d %H:%M:%S} · {canonical_url}"
+
+
+def _own_submission_lines(submissions: list[dict], show_reward: bool) -> list[str]:
+    """@description: Build the labelled section of the caller's own submissions, so they are never mistaken for received songs.
+    @param submissions: Caller-scoped submission rows, newest first.
+    @param show_reward: Whether the automatic reward state is appended to each line.
+    @return: Section heading and one line per displayed submission, or nothing when there are none.
+    """
+    if not submissions:
+        return []
+    lines = ["最近本人投稿與目前審核狀態："]
+    for submission in submissions[:SUBMISSION_HISTORY_DISPLAY_LIMIT]:
+        line = _submission_history_line(submission)
+        lines.append(f"{line} · {reward_label(submission['reward_status'])}" if show_reward else line)
+    return lines
+
+
+def _received_lines(received: list[dict], after_submissions: bool) -> list[str]:
+    """@description: Build the labelled section of the songs other members recommended to the caller, each line tagged as received.
+    @param received: Caller's delivered recommendations, newest first.
+    @param after_submissions: Whether a submission section precedes this one, which then needs a blank separator.
+    @return: Section heading and one tagged line per displayed song, or nothing when none were received.
+    """
+    if not received:
+        return []
+    lines = [""] if after_submissions else []
+    lines.append("你收到的推薦（UTC）：")
+    for delivery in received[:SUBMISSION_HISTORY_DISPLAY_LIMIT]:
+        lines.append(f"收到 · {_received_line(delivery)}")
+    return lines
+
+
+def _received_line(delivery: dict) -> str:
+    """@description: Show one received song's time and a validated, unexpanded link, never a raw stored value.
+    @param delivery: Row with the stored link and the acceptance time.
+    @return: UTC time and wrapped canonical link, or an unavailable marker.
+    """
+    try:
+        link = f"<{parse_youtube_url(delivery['youtube_url']).canonical_url}>"
+    except (InvalidVideoUrl, TypeError):
+        link = "網址待確認"
+    delivered_at = delivery["delivered_at"].astimezone(timezone.utc)
+    return f"{delivered_at:%Y-%m-%d %H:%M} · {link}"
 
 
 def _submission_history_line(submission: dict) -> str:

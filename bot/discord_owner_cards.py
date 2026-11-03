@@ -88,6 +88,18 @@ def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
 
+def _missing_duration_line(item) -> str:
+    """@description: Tell the Owner the system fetches a missing duration by itself, so entering one is an optional shortcut and not the only way forward.
+    @param item: Pending row without a usable duration.
+    @return: One phrase naming the automatic lookup, or why it could not run.
+    """
+    if item.api_basis == "expired":
+        return "官方時長資料已過期，系統會自動重新驗證；也可以先補時長"
+    if item.review_status is ReviewStatus.VALIDATION_FAILED:
+        return "系統無法取得影片資料（可能已刪除或未公開）；可以補時長，或回答「不是」"
+    return "系統正在自動取得影片時長；也可以先補時長"
+
+
 def _status_line(item, choices) -> str:
     """@description: Say in plain words why a case needs more than a yes or no, or that it is already half decided.
     @param item: Pending row of the card.
@@ -97,7 +109,7 @@ def _status_line(item, choices) -> str:
     if choices.frozen_conflict:
         return FROZEN_TEXT
     if choices.needs_duration:
-        return "官方時長資料已過期，請先補時長" if item.api_basis == "expired" else "尚無完整影片時長，請先補時長"
+        return _missing_duration_line(item)
     if item.review_status is ReviewStatus.APPROVED:
         return "已通過，尚未確認是否重複"
     if item.review_status is ReviewStatus.VALIDATION_FAILED:

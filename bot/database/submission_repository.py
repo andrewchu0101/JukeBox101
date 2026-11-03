@@ -139,6 +139,22 @@ class SubmissionRepository:
                 )
                 return list(cursor.fetchall())
 
+    def received_history(self, discord_user_id: int) -> list[dict]:
+        """@description: Let a member see the songs other members recommended to them, limited to their own accepted deliveries.
+        @param self: Existing repository with worker-owned connections.
+        @param discord_user_id: Authenticated recipient, never a slash-command option.
+        @return: Bounded newest-first rows with the stored link and acceptance time, without who recommended it or any token.
+        """
+        with closing(self._factory()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT s.youtube_url,r.delivered_at FROM recommendations r JOIN songs s ON s.song_id=r.song_id "
+                    "WHERE r.discord_user_id=%s AND r.status='delivered' AND r.delivered_at IS NOT NULL "
+                    "ORDER BY r.delivered_at DESC,r.recommendation_id DESC LIMIT %s",
+                    (discord_user_id, HISTORY_LIMIT),
+                )
+                return list(cursor.fetchall())
+
     def snapshot(self) -> SubmissionSnapshot:
         """@description: Supply a globally covered current projection without a caller completeness switch.
         @param self: Synchronous repository boundary.

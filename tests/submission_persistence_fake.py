@@ -277,6 +277,13 @@ def read_rows(connection: FakeConnection, sql: str, parameters: tuple) -> list[d
                 key=lambda row: row["recommendation_id"]) if row["status"] == "failed" and row["released_at"] is None][:parameters[0]]
     if sql.startswith("SELECT ledger_id,discord_user_id,credit_delta,reason FROM credit_ledger WHERE recommendation_id=%s"):
         return [row for row in connection.working["credit_ledger"].values() if row.get("recommendation_id") == parameters[0]]
+    if sql.startswith("SELECT s.youtube_url,r.delivered_at FROM recommendations r JOIN songs s"):  # [received history]: The caller's delivered songs, newest first.
+        state = connection.database.state  # [read-only connection]: The history read opens no transaction, so there is no working copy.
+        songs = {row["song_id"]: row for row in state["songs"].values()}
+        delivered = sorted((row for row in state["recommendations"].values() if row["discord_user_id"] == parameters[0]
+                            and row["status"] == "delivered" and row.get("delivered_at") is not None),
+                           key=lambda row: (row["delivered_at"], row["recommendation_id"]), reverse=True)
+        return [{"youtube_url": songs[row["song_id"]]["youtube_url"], "delivered_at": row["delivered_at"]} for row in delivered[:parameters[1]]]
     if "FROM recommendations r JOIN songs s" in sql:
         return _claim_reservation_rows(connection, parameters[0])
     if sql.startswith("SELECT resolution_status,youtube_url FROM songs"):  # [publish state]: Read back by the approval link.
