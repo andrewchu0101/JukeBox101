@@ -50,6 +50,7 @@ from bot.database.auto_review_store import (
 )
 from bot.database.auto_version_store import RecentComparison, read_recent_comparison
 from bot.database.reward_settlement import settle_reward
+from bot.database.conflict_resolution import resolve_conflict_to_owner_record
 from bot.database.submission_maintenance import merge_versions, pending_summary, store_exclusion
 from bot.database.submission_store import accept_submission
 from bot.database.submission_transaction import PersistenceNotReady, submission_transaction
@@ -646,6 +647,22 @@ class SubmissionRepository:
         require_owner(command.actor_id, self._owner_id, command.reason)
         with submission_transaction(self._factory) as (cursor, control):
             return apply_review(cursor, control, command)
+
+    def resolve_conflict(self, requester_id: int, decision_id: str, operation_id: str, keep_evidence_id: str, reason: str,
+                         expected_revision: int) -> ReviewSnapshot:
+        """@description: Let the Owner end a frozen version conflict by keeping one stored Owner record, so contradicting records stop blocking rewards.
+        @param self: Repository retaining deployment Owner identity.
+        @param requester_id: Caller; must be the configured Owner.
+        @param decision_id: Idempotency key of the resolution.
+        @param operation_id: Any accepted operation of the conflicted video.
+        @param keep_evidence_id: Stored Owner evidence whose version wins.
+        @param reason: Owner's audit explanation.
+        @param expected_revision: Review revision the Owner examined.
+        @return: Review after the resolution, or the stored result of a repeated decision key.
+        """
+        require_owner(requester_id, self._owner_id, reason)
+        with submission_transaction(self._factory) as (cursor, control):
+            return resolve_conflict_to_owner_record(cursor, control, requester_id, decision_id, operation_id, keep_evidence_id, reason, expected_revision)
 
     def reexamine(self, command: ReexaminationCommand) -> ReviewSnapshot:
         """@description: Reopen a decided review on reliable new evidence through the audited persistence boundary.

@@ -270,7 +270,8 @@ def apply_review(cursor: Any, control: dict, command: ReviewCommand) -> ReviewSn
     if proposed.video != request.identity.video:
         raise ValueError("Identity update targets another video")
     _require_content_subject(command, request.identity.video)
-    identity = request.identity if command.identity is None else check_identity_write(cursor, request.identity, proposed, request.identity.video)
+    identity = request.identity if command.identity is None else check_identity_write(
+        cursor, request.identity, proposed, request.identity.video, resolving_conflict=command.clear_conflict_freeze)
     ensure_version(cursor, identity)
     review = _apply_transitions(cursor, request, command, identity, audit_reason(command))
     _publish_owner_approved_link(cursor, command, request.identity.video, review)  # [same transaction]: Approval and its verified link commit or roll back together.
@@ -548,7 +549,7 @@ def _require_reliable_evidence(evidence: EvidenceRecord, judge_id: int, video: V
 
 
 def check_identity_write(cursor: Any, current: VersionAssignment, proposed: VersionAssignment, video: VideoIdentity,
-                         *, pending_evidence: EvidenceRecord | None = None) -> VersionAssignment:
+                         *, pending_evidence: EvidenceRecord | None = None, resolving_conflict: bool = False) -> VersionAssignment:
     """@description: Decide which identity a write may store, so ordinary review commands and formal confirmations share one rule set.
     CONFIRMED needs a cited Owner record that resolves over all Owner evidence to the same canonical root; a different confirmed
     root than the current one becomes CONFLICT citing the new record, so A is never overwritten by B; CONFLICT and UNRESOLVED pass through as freezes.
@@ -557,10 +558,11 @@ def check_identity_write(cursor: Any, current: VersionAssignment, proposed: Vers
     @param proposed: Identity the write asks to store.
     @param video: Video of the accepted operation.
     @param pending_evidence: Owner-stamped record that the formal path has not stored yet, or None when every citation is stored.
+    @param resolving_conflict: True only for the explicit Owner resolution, which may replace a frozen conflict by a confirmed identity that every stored Owner record agrees with.
     @return: The identity that may be stored; never a payable identity without matching Owner evidence.
     """
-    if current.status is VersionIdentityStatus.CONFLICT:
-        return current  # [frozen conflict]: No ordinary or formal write lifts or downgrades it; resolution is not opened in this stage.
+    if current.status is VersionIdentityStatus.CONFLICT and not (resolving_conflict and proposed.status is VersionIdentityStatus.CONFIRMED):
+        return current  # [frozen conflict]: No ordinary or formal write lifts or downgrades it; only the explicit Owner resolution does.
     if proposed.status is not VersionIdentityStatus.CONFIRMED:
         return proposed  # [safe directions]: Conflicts freeze and unresolved states never create a payable identity.
     roots = _canonical_roots(cursor)
@@ -782,7 +784,9 @@ def _record_identity_resolution(cursor: Any, command: ReviewCommand, identity: V
     if command.identity is not None:
         _mirror_legacy_identity(cursor, identity)
     if command.clear_conflict_freeze is True:
-        cursor.execute("UPDATE jb2_events SET conflict_frozen=FALSE WHERE video_id=%s", (identity.video.video_id,))
+        # [bystanders]: persist_decisions froze every unsettled candidate while the conflict stood; any whose own video is not in conflict is released and re-evaluated.
+        cursor.execute("UPDATE jb2_events e SET conflict_frozen=FALSE FROM jb2_videos v WHERE v.video_id=e.video_id AND e.conflict_frozen "
+                       f"AND (v.identity_json::jsonb #>> '{{value,fields,status,value}}') <> '{VersionIdentityStatus.CONFLICT.value}'")
 
 
 def _mirror_legacy_identity(cursor: Any, identity: VersionAssignment) -> None:
