@@ -11,7 +11,10 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
+from functools import partial
+
 from bot.auto_pipeline import format_share_outcome, reward_label
+from bot.daily_schedule import InvalidDailyHour, parse_daily_hour
 from bot.database.errors import DatabaseError
 from bot.database.nickel_grant_store import ClaimResult, ClaimStatus, claim_nickel_grants
 from bot.nickel_claim_replies import format_claim_reply
@@ -24,7 +27,8 @@ from bot.urls import InvalidVideoUrl, parse_youtube_url
 
 OperationResult = TypeVar("OperationResult")
 LOGGER = logging.getLogger(__name__)
-SYNTHETIC_LABEL = "【合成測試】"  # [acceptance marker]: Every synthetic reply and DM carries it; production text never does.
+DAILY_HOUR_RANGE_TEXT = "每日推薦時間請輸入 0 到 23 的整點（台北時間）；本次沒有更改任何設定。"  # [reviewed wording]: Shown for an invalid hour; nothing is saved.
+SYNTHETIC_LABEL ="【合成測試】"  # [acceptance marker]: Every synthetic reply and DM carries it; production text never does.
 
 
 class _LabelledSender:
@@ -77,7 +81,8 @@ class MusicService:
 
     def __init__(self, repository: MusicRepository, submission_repository: SubmissionRepository | None = None,
                  synthetic_exchange: bool = False, formal_exchange: bool = False,
-                 nickel_claim_enabled: bool = False, nickel_connection_factory=None, auto_pipeline: Any | None = None) -> None:
+                 nickel_claim_enabled: bool = False, nickel_connection_factory=None, auto_pipeline: Any | None = None,
+                 formal_daily: bool = False) -> None:
         """@description: Keep Discord-independent business operations injectable for tests.
         @param self: Application service instance.
         @param repository: Synchronous persistence collaborator, including test replacements.
@@ -87,8 +92,10 @@ class MusicService:
         @param nickel_claim_enabled: /claim switch, off by default; when off, /claim never opens a connection.
         @param nickel_connection_factory: Callable returning a fresh connection for one claim transaction; required only when the switch is on.
         @param auto_pipeline: Automatic review and settlement coordinator, or None while those modes are off.
+        @param formal_daily: Formal /daily switch, off by default; only an exact True saves schedules instead of the closed reply.
         @return: None.
         """
+        self._formal_daily = formal_daily  # [scheduled daily switch]: Off unless the deployment setting explicitly enables it.
         self.auto_pipeline = auto_pipeline  # [automatic modes]: None keeps /share and /history replies unchanged.
         self.nickel_claim_enabled = nickel_claim_enabled is True  # [/claim switch]: Only an exact True opens the grant route.
         self._nickel_connection_factory = nickel_connection_factory  # [claim connection]: One fresh connection per claim, closed after it.
@@ -112,6 +119,14 @@ class MusicService:
         @return: True only when the formal switch is exactly True and a submission repository is configured.
         """
         return self._formal_exchange is True and self.submission_repository is not None
+
+    @property
+    def formal_daily_enabled(self) -> bool:
+        """@description: Tell whether /daily saves real schedules; off unless explicitly enabled and a submission repository exists.
+        @param self: Application service instance.
+        @return: True only when the daily switch is exactly True and a submission repository is configured.
+        """
+        return self._formal_daily is True and self.submission_repository is not None
 
     async def synthetic_exchange(self, discord_user_id: int, request_key: str, sender: Any, replier: Any) -> Any:
         """@description: Run the labelled synthetic acceptance flow through the shared delivery program, labelling every message and reply.
@@ -261,18 +276,40 @@ class MusicService:
         available_exchange_credits = await _database_operation(self.repository.balance, discord_user_id)
         return f"目前可用 Nickel：{available_exchange_credits}。"
 
-    async def daily(self, discord_user_id: int, enabled: bool) -> str:
-        """@description: Save the desired opt-in state while clearly identifying inactive scheduling.
+    async def daily(self, discord_user_id: int, enabled: bool, hour: int | str | None = None) -> str:
+        """@description: Save the desired opt-in state and Taipei hour when the formal switch is on, otherwise keep the closed or legacy reply.
         @param self: Application service coordinating persistence.
         @param discord_user_id: Recipient changing their preference.
         @param enabled: Desired final daily delivery preference.
-        @return: Confirmation of persisted preference and scheduler limitation.
+        @param hour: Optional Taipei hour as typed; turning on without one stores the default.
+        @return: Confirmation built from the stored preference, or the closed or legacy reply.
         """
+        if self.formal_daily_enabled:
+            return await self._save_daily_schedule(discord_user_id, enabled, hour)
         if self.submission_repository is not None:
             return "私人 Beta 尚未開放每日推薦；本次未保存偏好，也不會發送 DM。"
         await _database_operation(self.repository.set_daily, discord_user_id, enabled)
         preference_label = "開啟" if enabled else "關閉"
         return f"已{preference_label}每日推薦偏好。每日排程尚未啟用，目前不會自動發送 DM。"
+
+    async def _save_daily_schedule(self, discord_user_id: int, enabled: bool, hour: int | str | None) -> str:
+        """@description: Validate the typed hour before any write and save the schedule, so a bad input never changes the old setting.
+        @param self: Service with the daily switch on and a submission repository.
+        @param discord_user_id: Subscriber changing their schedule.
+        @param enabled: Requested subscription state.
+        @param hour: Typed hour or None.
+        @return: Reply built from the stored preference, or the allowed-range guidance.
+        """
+        try:
+            parsed_hour = parse_daily_hour(hour)  # [validated first]: None becomes the default 20.
+        except InvalidDailyHour:
+            return DAILY_HOUR_RANGE_TEXT
+        stored_hour = parsed_hour if enabled or hour is not None else None  # [off keeps the hour]: Turning off without an hour changes nothing else.
+        save = partial(self.submission_repository.save_daily_preference, discord_user_id, enabled=enabled, delivery_hour=stored_hour)
+        preference = await _database_operation(save)
+        if not preference.enabled:
+            return f"已關閉每日推薦，之後不會再自動私訊；歷史紀錄會保留。目前保存的時間為台北時間 {preference.delivery_hour:02d}:00。"
+        return f"已開啟每日推薦：每天台北時間 {preference.delivery_hour:02d}:00 私訊你 1 首推薦，每次扣 1 Nickel。"
 
     async def history(self, discord_user_id: int) -> str:
         """@description: Present caller-scoped submission history in Beta while preserving the legacy delivery reader.

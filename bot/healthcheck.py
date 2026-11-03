@@ -8,7 +8,7 @@ import os
 import sys
 
 from bot.auto_startup import load_auto_settings
-from bot.config import ConfigurationError, database_account_name, load_formal_exchange_enabled, load_nickel_claim_enabled
+from bot.config import ConfigurationError, database_account_name, load_formal_daily_enabled, load_formal_exchange_enabled, load_nickel_claim_enabled
 from bot.database.errors import DatabaseError
 from bot.gateway_health import check_gateway
 from bot.readiness import check_readiness
@@ -22,6 +22,7 @@ def check_health() -> dict:
     problems = []
     try:
         load_formal_exchange_enabled()  # [fail closed]: An invalid value is unhealthy; a valid "on" is the approved stage B state and is not flagged.
+        load_formal_daily_enabled()  # [fail closed]: An invalid value is unhealthy; a valid "on" is the approved stage C state and is not flagged.
         if load_nickel_claim_enabled():
             problems.append('FEATURE_POLICY_ENABLED')
         load_auto_settings()  # [fail closed]: A switched-on mode with an invalid allowlist or no credential is unhealthy.

@@ -37,7 +37,7 @@ class DiscordDirectMessageSender:
             LOGGER.warning("Recipient lookup failed: %s", type(error).__name__)
             return DmResult.not_sent("recipient_lookup_failed")
         try:
-            message = await user.send(text)
+            message = await user.send(text, allowed_mentions=discord.AllowedMentions.none())  # [never ping]: No DM text can mention anyone.
         except discord.Forbidden as error:
             return DmResult.unknown(f"forbidden_{getattr(error, 'code', 0)}")  # [last response only]: Earlier retried attempts may have been accepted.
         except Exception as error:

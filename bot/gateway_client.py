@@ -7,10 +7,12 @@ import asyncio
 import json
 import logging
 
+from bot.daily_runner import run_daily_loop
 from bot.discord_app import JukeBoxClient
 
 
 LOGGER = logging.getLogger(__name__)
+DAILY_STOP_WAIT_SECONDS = 5.0  # [bounded stop]: An in-flight daily pass gets this long to finish before it is cancelled at close.
 AUTO_SWEEP_INTERVAL_SECONDS = 300  # [resume cadence]: Unfinished lookups and settlements are resumed this often and once at startup.
 
 
@@ -28,6 +30,8 @@ class ProductionGatewayClient(JukeBoxClient):
         self._enable_debug_events = True  # [pinned adapter]: discord.py 2.7.1 gates raw receive dispatch here.
         self.gateway_health = None
         self._auto_sweep_task = None  # [automatic resume]: Created only when the service has a pipeline.
+        self._daily_task = None  # [scheduled daily]: Created only when the formal daily switch is on.
+        self._daily_stop = asyncio.Event()  # [stop signal]: Set at close so the daily loop ends between passes.
 
     async def setup_hook(self) -> None:
         """@description: Start health sampling on the Gateway's own event loop before connecting.
@@ -36,6 +40,7 @@ class ProductionGatewayClient(JukeBoxClient):
         """
         if self.gateway_health is not None:
             self.gateway_health.task = asyncio.create_task(self.gateway_health.monitor(self), name='gateway-health')
+        self._start_daily_loop()
         pipeline = getattr(self.handlers.service, 'auto_pipeline', None)
         if pipeline is not None:
             try:
@@ -43,6 +48,27 @@ class ProductionGatewayClient(JukeBoxClient):
             except Exception as error:  # [startup boundary]: A failed purge never blocks startup; reads already refuse expired values and the sweep retries.
                 LOGGER.error('Startup retention maintenance failed: %s', type(error).__name__)
             self._auto_sweep_task = asyncio.create_task(self._auto_sweep(pipeline), name='auto-review-sweep')
+
+    def _start_daily_loop(self) -> None:
+        """@description: Start the scheduled daily delivery loop only when the formal daily switch is exactly on.
+        @param self: Client owned by the main process.
+        @return: None.
+        """
+        service = self.handlers.service
+        if getattr(service, 'formal_daily_enabled', False) is not True:
+            return  # [default off]: No task, no scan, no database access.
+        self._daily_task = asyncio.create_task(run_daily_loop(service.submission_repository, self, self._daily_stop), name='daily-delivery')
+
+    async def _stop_daily_loop(self) -> None:
+        """@description: Ask the daily loop to stop, give a running pass a short time to finish, then cancel it.
+        @param self: Closing production client.
+        @return: None.
+        """
+        if self._daily_task is None:
+            return
+        self._daily_stop.set()
+        await asyncio.wait({self._daily_task}, timeout=DAILY_STOP_WAIT_SECONDS)
+        self._daily_task.cancel()  # [deadline]: A still-running pass leaves its claim to the durable recovery records.
 
     async def _auto_sweep(self, pipeline) -> None:
         """@description: Resume unfinished automatic work at startup and periodically, off the event loop; one failed round never ends the loop.
@@ -100,6 +126,7 @@ class ProductionGatewayClient(JukeBoxClient):
                 self.gateway_health.mark('stopping')
         finally:
             await self._stop_health_writer()
+            await self._stop_daily_loop()
             if self._auto_sweep_task is not None:
                 self._auto_sweep_task.cancel()
             await super().close()

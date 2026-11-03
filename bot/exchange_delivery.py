@@ -231,6 +231,9 @@ async def _refund_if_unsent(repository: Any, outcome: DeliveryOutcome, now: date
     return result.status
 
 
+refund_if_unsent = _refund_if_unsent  # [public name]: The scheduled daily flow reuses the same proof-gated refund without importing a private name.
+
+
 def _delivery_text(outcome: DeliveryOutcome, refund: str | None) -> str:
     """@description: Word the recorded delivery and refund state for the requester without any link.
     @param outcome: Recorded delivery outcome.

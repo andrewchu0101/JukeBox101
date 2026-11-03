@@ -26,6 +26,9 @@ from bot.database.exchange_delivery_store import (
     user_results,
 )
 from bot.database.exchange_reservation import ExchangeOutcome, reserve_exchange
+from bot.daily_schedule import parse_daily_hour
+from bot.database import daily_store
+from bot.database.daily_store import DailyPreference, DailyTaskStart
 from bot.database.compensation_schema import CompensationDisabled, compensation_tables_present, require_schema
 from bot.database.compensation_store import (
     approve_incident, claim_grant, record_not_system_fault, expire_grant_claims, open_grants, record_grant_delivery,
@@ -560,6 +563,79 @@ class SubmissionRepository:
         """
         with submission_transaction(self._factory) as (cursor, _):
             return refund_undelivered(cursor, recommendation_id, now)
+
+    def save_daily_preference(self, discord_user_id: int, *, enabled: bool | None, delivery_hour: int | None, now: datetime | None = None) -> DailyPreference:
+        """@description: Save a subscriber's daily schedule, validating the hour before any write; None leaves a field unchanged.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param discord_user_id: Authenticated subscriber.
+        @param enabled: New subscription state, or None to keep it.
+        @param delivery_hour: New Taipei hour, or None to keep it.
+        @param now: Optional naive UTC clock; defaults to the current time.
+        @return: The stored preference.
+        """
+        if delivery_hour is not None:
+            parse_daily_hour(delivery_hour)  # [refuse before write]: InvalidDailyHour leaves the old setting untouched.
+        clock = now if now is not None else datetime.now(timezone.utc).replace(tzinfo=None)
+        with submission_transaction(self._factory) as (cursor, _):
+            return daily_store.save_preference(cursor, discord_user_id, enabled, delivery_hour, clock)
+
+    def daily_preference(self, discord_user_id: int) -> DailyPreference | None:
+        """@description: Read a subscriber's stored daily schedule.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param discord_user_id: Subscriber.
+        @return: The preference, or None when none was saved.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return daily_store.read_preference(cursor, discord_user_id)
+
+    def daily_schedule_candidates(self) -> list[tuple]:
+        """@description: List enabled subscribers with the Taipei day of their latest task for the sweep.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @return: (user, hour, latest task day) per subscriber.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return daily_store.schedule_candidates(cursor)
+
+    def begin_daily_task(self, discord_user_id: int, now: datetime, rng: Random) -> DailyTaskStart:
+        """@description: Claim a subscriber's single task for the Taipei day, reserving and debiting through the shared exchange rules.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param discord_user_id: Due subscriber.
+        @param now: Naive UTC clock.
+        @param rng: Injected random source for the draw.
+        @return: What the sweep must do next.
+        """
+        with submission_transaction(self._factory) as (cursor, control):
+            return daily_store.begin_task(cursor, control, discord_user_id, now, rng, self._compensation_enabled)
+
+    def daily_recommender_id(self, recommendation_id: int) -> int | None:
+        """@description: Find who recommended the reserved song, for a live display-name lookup that is never stored.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param recommendation_id: Reservation.
+        @return: The recommender's Discord id, or None.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            return daily_store.recommender_of(cursor, recommendation_id)
+
+    def finish_daily_dispatch(self, recommendation_id: int, status: str) -> None:
+        """@description: Mirror a recorded delivery result on the daily task row.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param recommendation_id: Reservation of the task.
+        @param status: Recorded delivery status.
+        @return: None.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            daily_store.finish_dispatch(cursor, recommendation_id, status)
+
+    def finish_daily_notice(self, discord_user_id: int, notice_day: Any, delivery: str) -> None:
+        """@description: Record the result of a notice message on its task row.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param discord_user_id: Subscriber.
+        @param notice_day: Taipei day of the notice.
+        @param delivery: sent, failed or uncertain.
+        @return: None.
+        """
+        with submission_transaction(self._factory) as (cursor, _):
+            daily_store.finish_notice(cursor, discord_user_id, notice_day, delivery)
 
     def review(self, command: ReviewCommand) -> ReviewSnapshot:
         """@description: Authorize Owner decisions before entering the database transaction.

@@ -11,7 +11,7 @@ import os
 from bot.command_contract import verify_local_contract
 from bot.config import (AUTO_REVIEW_ENV, AUTO_TRUST_MODE_ENV, TRUST_MODE_ALLOWLIST, load_auto_trust_mode, AUTO_SETTLEMENT_ENV, AUTO_VERSION_CONFIRM_ENV, API_RETENTION_ENV, ConfigurationError,
                         load_api_retention_enabled, load_auto_review_enabled, load_auto_settlement_enabled,
-                        load_auto_version_confirm_enabled, load_formal_exchange_enabled, load_nickel_claim_enabled)
+                        load_auto_version_confirm_enabled, load_formal_daily_enabled, load_formal_exchange_enabled, load_nickel_claim_enabled)
 from bot.database.submission_repository import SubmissionRepository
 from bot.discord_app import JukeBoxClient
 from bot.services import MusicService
@@ -46,7 +46,7 @@ def require_feature_switches_closed() -> None:
     """
     if any(os.environ.get(key) != 'off' for key in ('JUKEBOX_FORMAL_EXCHANGE', 'JUKEBOX_NICKEL_CLAIM')):
         raise ConfigurationError('CI/CD requires explicit off feature policy')
-    if load_formal_exchange_enabled() or load_nickel_claim_enabled():
+    if load_formal_exchange_enabled() or load_nickel_claim_enabled() or load_formal_daily_enabled():  # [daily stays off]: Absent or off passes; the published image never opens scheduled daily delivery.
         raise ConfigurationError('closed feature policy mismatch')
 
 
@@ -56,7 +56,7 @@ def require_business_routes_closed(service: MusicService, repository: Submission
     @param repository: Repository built over the connection trap.
     @return: None; any enabled route raises.
     """
-    enabled = (service.auto_pipeline is not None, service.formal_exchange_enabled, service.synthetic_exchange_enabled, repository._compensation_enabled)
+    enabled = (service.auto_pipeline is not None, service.formal_exchange_enabled, service.synthetic_exchange_enabled, repository._compensation_enabled, service.formal_daily_enabled)
     if any(enabled):
         raise RuntimeError('business policy enabled')
 

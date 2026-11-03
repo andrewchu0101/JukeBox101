@@ -31,6 +31,13 @@
               "value": "off"
             }
           ]
+        },
+        {
+          "name": "hour",
+          "type": 4,
+          "required": false,
+          "min_value": 0,
+          "max_value": 23
         }
       ],
       "contexts": [

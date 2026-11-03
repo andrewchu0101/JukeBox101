@@ -46,11 +46,12 @@ class GatewayAcceptanceService:
         """
         return f"{MODE_LABEL}：資料庫停用，無法查詢歷史紀錄。"
 
-    async def daily(self, discord_user_id: int, enabled: bool) -> str:
+    async def daily(self, discord_user_id: int, enabled: bool, hour: int | None = None) -> str:
         """@description: Acknowledge daily choice transport while refusing persistent preferences or jobs.
         @param self: Transport-only acceptance service.
         @param discord_user_id: Requester identity, not stored or logged.
         @param enabled: Received preference choice; deliberately never persisted.
+        @param hour: Received optional hour; deliberately never persisted.
         @return: Explicit unsaved-setting outcome with no scheduler or DM.
         """
         preference = "on" if enabled else "off"
