@@ -16,6 +16,7 @@ from bot.reward_candidates import RewardCandidateStatus
 from bot.song_judgement import ContentJudgement
 from bot.version_identity import VersionIdentityStatus
 from bot.youtube_metadata import BatchLookup, BatchStatus, LookupStatus, MetadataLookup, VideoMetadata
+from bot.database.auto_version_store import STALE_TOLERANCE_SUBMISSIONS
 from tests.postgres_support import admin_query
 from tests.test_postgres_auto_pipeline import (ALICE, BOB, NOW, OWNER_ID, TRUSTED, VIDEO_A, VIDEO_B, VIDEO_C, FakeMetadata, World, url)
 
@@ -200,13 +201,23 @@ def test_the_owner_can_still_confirm_a_flagged_case_the_old_way_and_it_then_pays
     world.assert_books_balance(2)
 
 
-def test_a_submission_accepted_during_the_comparison_makes_the_clearance_stale(world) -> None:
-    """@description: Another share accepted after the comparison began is not covered by it, so the transaction downgrades to Owner review.
+def test_many_submissions_accepted_during_the_comparison_make_the_clearance_stale(world) -> None:
+    """@description: More than the tolerated number of shares accepted after the comparison began are not covered by it, so the transaction downgrades to Owner review.
+    Owner ruling 2026-11-03: a few concurrent submissions are tolerated (the later one compares itself with this one anyway).
     @param world: Comparing world.
     @return: None.
     """
     world.share(ALICE, VIDEO_A, "discord:1")
-    world.metadata.during_comparison = lambda: world.repository.accept_pending(ALICE, url(VIDEO_C), "discord:9")
+
+    def crowd() -> None:
+        """@description: Accept one more than the tolerated number of shares while the comparison runs.
+        @param: none
+        @return: None.
+        """
+        for index in range(STALE_TOLERANCE_SUBMISSIONS + 1):
+            world.repository.accept_pending(ALICE, url(f"x{index:010d}"), f"discord:9{index}")
+
+    world.metadata.during_comparison = crowd
     outcome = world.share(BOB, VIDEO_B, "discord:2")
     world.metadata.during_comparison = None
     assert outcome.review_status is ReviewStatus.PENDING_REVIEW

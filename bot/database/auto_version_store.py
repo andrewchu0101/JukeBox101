@@ -38,8 +38,11 @@ def read_recent_comparison(cursor: Any, exclude_video_id: str, limit: int) -> Re
     return RecentComparison(tuple(row["video_id"] for row in rows), cursor.fetchone()["latest"])
 
 
+STALE_TOLERANCE_SUBMISSIONS = 30  # [Owner ruling 2026-11-03]: Shares accepted during one comparison that are tolerated; each later share compares itself with this one anyway.
+
+
 def checked_for_staleness(cursor: Any, verdict: AutoReviewVerdict) -> AutoReviewVerdict:
-    """@description: Turn a clean comparison into an Owner review when any submission was accepted after it began, because it did not see that song.
+    """@description: Turn a clean comparison into an Owner review only when a crowd (more than the tolerance) of submissions was accepted after it began.
     @param cursor: Locked cursor.
     @param verdict: Verdict computed outside the transaction.
     @return: The same verdict, or the stale-clearance downgrade; a missing staleness mark counts as stale.
@@ -48,8 +51,9 @@ def checked_for_staleness(cursor: Any, verdict: AutoReviewVerdict) -> AutoReview
     if basis is None:
         return verdict
     if basis.last_accepted_sequence is not None:
-        cursor.execute("SELECT 1 FROM jb2_events WHERE accepted_sequence > %s LIMIT 1", (basis.last_accepted_sequence,))
-        if cursor.fetchone() is None:
+        cursor.execute("SELECT count(*) AS newer FROM (SELECT 1 FROM jb2_events WHERE accepted_sequence > %s LIMIT %s) AS crowd",
+                       (basis.last_accepted_sequence, STALE_TOLERANCE_SUBMISSIONS + 1))
+        if cursor.fetchone()["newer"] <= STALE_TOLERANCE_SUBMISSIONS:
             return verdict
     return stale_verdict(verdict)
 
