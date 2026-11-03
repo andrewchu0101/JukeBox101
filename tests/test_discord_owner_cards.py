@@ -323,6 +323,19 @@ def press(cards: OwnerCards, action: str, sequence: int, revision: int, interact
     return interaction
 
 
+def first_card(cards: OwnerCards):
+    """@description: Open the single-case card of the oldest pending case the way the Owner does: from the list page, press its detail button.
+    @param cards: Card handler.
+    @return: Object with the card's text and view.
+    """
+    page = asyncio.run(cards.first_replies(OWNER_ID))[0]
+    detail = next(child for child in page.view.children if child.custom_id.startswith("ocard:detail:"))
+    _, _, sequence, revision, *_ = detail.custom_id.split(":")
+    opened = Press()
+    asyncio.run(cards.button_class("detail", int(sequence), int(revision)).callback(opened))  # [standalone card]: The same detail button without a list marker, so the card has no list to return to.
+    return SimpleNamespace(text=opened.shown(), view=opened.edits[-1]["view"])
+
+
 def labels(view) -> dict[str, bool]:
     """@description: Map each button label to whether it is enabled.
     @param view: Card view.
@@ -358,11 +371,11 @@ def test_only_the_applicable_buttons_are_enabled_for_each_state():
     @param: none
     @return: None.
     """
-    reviewable = asyncio.run(cards_for(CardService(case())).first_replies(OWNER_ID))[0].view
+    reviewable = first_card(cards_for(CardService(case()))).view
     assert labels(reviewable) == {"確認通過": True, "拒絕": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
-    missing = asyncio.run(cards_for(CardService(case(review=ReviewStatus.PENDING_VALIDATION, duration=None))).first_replies(OWNER_ID))[0].view
+    missing = first_card(cards_for(CardService(case(review=ReviewStatus.PENDING_VALIDATION, duration=None)))).view
     assert labels(missing) == {"確認通過": False, "拒絕": True, "補時長": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
-    waiting = asyncio.run(cards_for(CardService(case(review=ReviewStatus.APPROVED))).first_replies(OWNER_ID))[0].view
+    waiting = first_card(cards_for(CardService(case(review=ReviewStatus.APPROVED)))).view
     assert labels(waiting) == {"確認通過": False, "拒絕": False, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
 
 
@@ -610,9 +623,9 @@ def test_a_missing_version_mapping_is_never_described_as_a_new_recording():
     @param: none
     @return: None.
     """
-    unresolved = asyncio.run(cards_for(CardService(case(review=ReviewStatus.APPROVED))).first_replies(OWNER_ID))[0].text
+    unresolved = first_card(cards_for(CardService(case(review=ReviewStatus.APPROVED)))).text
     assert "沒有這支影片的版本對應" in unresolved and "不代表它是新錄音" in unresolved
-    known = asyncio.run(cards_for(CardService(case(identity=VersionIdentityStatus.CONFIRMED))).first_replies(OWNER_ID))[0].text
+    known = first_card(cards_for(CardService(case(identity=VersionIdentityStatus.CONFIRMED)))).text
     assert "沒有這支影片的版本對應" not in known and "版本狀態：已確認" in known
 
 
@@ -646,7 +659,7 @@ def test_an_unknown_version_lists_known_versions_by_link_and_never_by_internal_i
     @return: None.
     """
     service = version_service(known(5, MV_ID, "rv-secret-a"), known(9, OTHER_ID, "rv-secret-b"))
-    reply = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0]
+    reply = first_card(cards_for(service))
     assert f"watch?v={MV_ID}" in reply.text and f"watch?v={OTHER_ID}" in reply.text and "rv-secret" not in reply.text
     assert "不代表它是新錄音" in reply.text and "不宣稱特定類別" in reply.text
     ids = [child.custom_id for child in reply.view.children]
@@ -771,7 +784,7 @@ def test_more_known_versions_are_paged_without_any_write():
     """
     service = version_service(*[known(10 + number, f"V{number:010d}", f"rv-{number}") for number in range(7)])
     cards = cards_for(service)
-    first = asyncio.run(cards.first_replies(OWNER_ID))[0]
+    first = first_card(cards)
     assert sum(1 for name in labels(first.view) if name.startswith("確認為同一錄音")) == 5 and labels(first.view)["更多已知版本"]
     cursor = int(next(c.custom_id for c in first.view.children if c.custom_id.startswith("ocard:vpage")).rsplit(":", 1)[1])
     second = press(cards, "vpage", 1, 3, extra=cursor)
@@ -965,8 +978,8 @@ def test_long_submitted_link_is_shown_as_the_canonical_watch_link_never_a_cut_ur
     long_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&" + "t=1&" * 500
     service = version_service(known(1000000000, "V0000000000", "rv-0"))
     service.items[1].source_url = long_url
-    text = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0].text
-    assert "影片：https://www.youtube.com/watch?v=dQw4w9WgXcQ\n" in text
+    text = first_card(cards_for(service)).text
+    assert "影片：<https://www.youtube.com/watch?v=dQw4w9WgXcQ>\n" in text
     assert "…" not in text and "t=1" not in text
 
 
@@ -977,8 +990,8 @@ def test_short_submitted_link_is_shown_unchanged():
     """
     service = version_service(known(1000000000, "V0000000000", "rv-0"))
     service.items[1].source_url = "https://youtu.be/dQw4w9WgXcQ?t=5"
-    text = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0].text
-    assert "影片：https://youtu.be/dQw4w9WgXcQ?t=5\n" in text
+    text = first_card(cards_for(service)).text
+    assert "影片：<https://youtu.be/dQw4w9WgXcQ?t=5>\n" in text
 
 
 def test_a_case_resting_on_an_expired_api_conclusion_cannot_be_approved_from_the_card():
@@ -991,7 +1004,7 @@ def test_a_case_resting_on_an_expired_api_conclusion_cannot_be_approved_from_the
     service = CardService(item)
     service.preview_error = DurationEvidenceExpired("expired")
     cards = cards_for(service)
-    first = asyncio.run(cards.first_replies(OWNER_ID))[0]
+    first = first_card(cards)
     assert "官方資料已過期" in first.text and "不能核准" in first.text
     shown = labels(first.view)
     assert shown["確認通過"] is False and shown["補時長"] is True
@@ -1007,7 +1020,7 @@ def test_a_valid_api_conclusion_shows_no_seconds_and_keeps_approval_available():
     """
     item = case(review=ReviewStatus.PENDING_REVIEW, duration=None)
     item.api_basis = "valid"
-    first = asyncio.run(cards_for(CardService(item)).first_replies(OWNER_ID))[0]
+    first = first_card(cards_for(CardService(item)))
     assert "官方資料已驗證在範圍內" in first.text and labels(first.view)["確認通過"] is True and "補時長" not in labels(first.view)
 
 
