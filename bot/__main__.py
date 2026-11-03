@@ -19,7 +19,7 @@ from typing import Callable
 import discord
 
 from bot.auto_startup import AutoSettings, build_auto_pipeline, load_auto_settings
-from bot.config import (SECRET_FILE_SUFFIX, ConfigurationError, load_database_settings, load_formal_exchange_enabled,
+from bot.config import (SECRET_FILE_SUFFIX, ConfigurationError, load_database_settings, load_formal_daily_enabled, load_formal_exchange_enabled,
                         load_nickel_claim_enabled)
 from bot.database.api_retention_job import verify_retention_schema
 from bot.database.repository import MusicRepository
@@ -348,6 +348,7 @@ def main() -> None:
         owner_id = discord_settings.owner_id
         database_settings = load_database_settings()
         formal_exchange = load_formal_exchange_enabled()  # [formal /exchange]: Off unless the setting is explicitly enabled.
+        formal_daily = load_formal_daily_enabled()  # [formal /daily]: Off unless the setting is explicitly enabled.
         nickel_claim = load_nickel_claim_enabled()  # [/claim]: Off unless the setting is explicitly enabled.
         verify_mounted_secrets()
         auto_settings = load_auto_settings()  # [automatic modes]: Off unless explicitly enabled; invalid settings refuse startup.
@@ -359,7 +360,7 @@ def main() -> None:
                                                  automatic_settlement=auto_settings.settlement_enabled,
                                                  api_retention=auto_settings.api_retention)
     pipeline = build_auto_pipeline(submission_repository, auto_settings)
-    service = MusicService(MusicRepository(database_settings), submission_repository, formal_exchange=formal_exchange,
+    service = MusicService(MusicRepository(database_settings), submission_repository, formal_exchange=formal_exchange, formal_daily=formal_daily,
                            nickel_claim_enabled=nickel_claim, nickel_connection_factory=partial(open_connection, database_settings), auto_pipeline=pipeline)
     owner_review = _optional_owner_review(submission_repository, discord_settings, pipeline, auto_settings)
     gate = ShutdownGate(MultiGuildInteractionGuard(discord_settings.application_id))

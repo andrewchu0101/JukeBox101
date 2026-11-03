@@ -40,13 +40,17 @@ _ENABLING_VALUES = frozenset({"1", "true", "yes", "on"})  # [explicit enable]: T
 _DISABLING_VALUES = frozenset({"0", "false", "no", "off"})  # [explicit disable]: Stated closed, not merely unrecognised.
 
 
-def load_formal_exchange_enabled(environ: Mapping[str, str] | None = None) -> bool:
-    """@description: Read the formal /exchange switch so an unrecognised value can never open the route by accident.
+FORMAL_DAILY_ENV = "JUKEBOX_FORMAL_DAILY"  # [formal /daily switch]: Absent or a disabling value keeps scheduled daily delivery closed; anything else refuses startup.
+
+
+def _load_switch(variable_name: str, environ: Mapping[str, str] | None) -> bool:
+    """@description: Read one on/off switch so an unrecognised value can never open a route by accident.
+    @param variable_name: Environment variable holding the switch.
     @param environ: Mapping to read; None reads the process environment. No dotenv file is ever consulted here.
     @return: True only for an explicit enabling value; False when absent or explicitly disabled.
     """
     source = os.environ if environ is None else environ
-    raw = source.get(FORMAL_EXCHANGE_ENV)
+    raw = source.get(variable_name)
     if raw is None:
         return False  # [default closed]: The absence of the setting is the closed state.
     value = raw.strip().lower()
@@ -54,7 +58,23 @@ def load_formal_exchange_enabled(environ: Mapping[str, str] | None = None) -> bo
         return True
     if value in _DISABLING_VALUES:
         return False
-    raise ConfigurationError(f"{FORMAL_EXCHANGE_ENV} must be one of 1, true, yes, on, 0, false, no, off")
+    raise ConfigurationError(f"{variable_name} must be one of 1, true, yes, on, 0, false, no, off")
+
+
+def load_formal_exchange_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """@description: Read the formal /exchange switch so an unrecognised value can never open the route by accident.
+    @param environ: Mapping to read; None reads the process environment. No dotenv file is ever consulted here.
+    @return: True only for an explicit enabling value; False when absent or explicitly disabled.
+    """
+    return _load_switch(FORMAL_EXCHANGE_ENV, environ)
+
+
+def load_formal_daily_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """@description: Read the formal /daily switch so scheduled delivery opens only on an explicit enabling value.
+    @param environ: Mapping to read; None reads the process environment. No dotenv file is ever consulted here.
+    @return: True only for an explicit enabling value; False when absent or explicitly disabled.
+    """
+    return _load_switch(FORMAL_DAILY_ENV, environ)
 
 
 class ConfigurationError(ValueError):

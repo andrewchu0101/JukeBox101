@@ -12,7 +12,7 @@ import pytest
 from bot.discord_app import JukeBoxClient
 from bot.guild_acceptance import EXPECTED_COMMAND_NAMES, approved_option_names, read_only_remote_report, remote_command_report
 
-APPROVED = {"balance": (), "daily": ("mode",), "exchange": (), "history": (), "share": ("url",)}
+APPROVED = {"balance": (), "daily": ("hour", "mode"), "exchange": (), "history": (), "share": ("url",)}
 
 
 def remote(name: str, *options: str):
@@ -31,7 +31,7 @@ def test_the_approved_names_and_options_come_from_the_local_tree_and_match_the_e
     """
     approved = approved_option_names(JukeBoxClient(SimpleNamespace()))
     assert tuple(sorted(approved)) == tuple(sorted(EXPECTED_COMMAND_NAMES))
-    assert approved["share"] == ("url",) and approved["daily"] == ("mode",)
+    assert approved["share"] == ("url",) and approved["daily"] == ("hour", "mode")
 
 
 def test_matching_names_and_options_report_no_difference() -> None:
@@ -39,7 +39,7 @@ def test_matching_names_and_options_report_no_difference() -> None:
     @param: none
     @return: None.
     """
-    commands = [remote("balance"), remote("daily", "mode"), remote("exchange"), remote("history"), remote("share", "url")]
+    commands = [remote("balance"), remote("daily", "hour", "mode"), remote("exchange"), remote("history"), remote("share", "url")]
     assert remote_command_report(commands, APPROVED) == {"missing_remotely": [], "not_approved_remotely": [], "option_differences": {}}
 
 
@@ -54,7 +54,7 @@ def test_missing_unapproved_and_differing_options_are_all_named_and_the_input_is
     assert report == {
         "missing_remotely": ["exchange", "history"],
         "not_approved_remotely": ["owner"],
-        "option_differences": {"daily": {"remote": (), "approved": ("mode",)}, "share": {"remote": (), "approved": ("url",)}},
+        "option_differences": {"daily": {"remote": (), "approved": ("hour", "mode")}, "share": {"remote": (), "approved": ("url",)}},
     }
     assert [(command.name, tuple(option.name for option in command.options)) for command in commands] == before
 

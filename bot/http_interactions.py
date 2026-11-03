@@ -179,22 +179,25 @@ class InteractionDispatcher:
         if command_name == "history":
             return self._complete(token, self._service.history(user_id))
         if command_name == "daily":
-            return self._daily_work(token, user_id, options.get("mode"))
+            return self._daily_work(token, user_id, options.get("mode"), options.get("hour"))
         if command_name == "exchange":
             return self._exchange_work(token, user_id, request_key)
         return None
 
-    def _daily_work(self, token: str, user_id: int, mode: Any) -> Coroutine[Any, Any, None]:
+    def _daily_work(self, token: str, user_id: int, mode: Any, hour: Any = None) -> Coroutine[Any, Any, None]:
         """@description: Persist an explicit on or off preference and refuse any other choice without guessing.
         @param self: Dispatcher instance.
         @param token: Interaction token for the private reply.
         @param user_id: Invoking user.
         @param mode: Submitted option value.
+        @param hour: Submitted optional hour; the service validates it, and the old call shape is kept when absent.
         @return: Awaitable completing the interaction.
         """
         if mode not in DAILY_CHOICES:
             return self._complete(token, _immediate(DAILY_CHOICE_TEXT))
-        return self._complete(token, self._service.daily(user_id, mode == "on"))
+        if hour is None:
+            return self._complete(token, self._service.daily(user_id, mode == "on"))
+        return self._complete(token, self._service.daily(user_id, mode == "on", hour))
 
     def _exchange_work(self, token: str, user_id: int, request_key: str) -> Coroutine[Any, Any, None]:
         """@description: Route /exchange to the formal flow only when its switch is exactly on; otherwise keep the fixed closed reply.

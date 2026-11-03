@@ -4,6 +4,7 @@ Construction needs no credentials or network; remote synchronization requires an
 """
 
 import logging
+from typing import Optional
 from dataclasses import dataclass
 from datetime import datetime
 from collections.abc import Awaitable, Callable
@@ -159,17 +160,22 @@ class CommandHandlers:
         await _respond(interaction, self.service.history, interaction.user.id)
 
     @app_commands.choices(mode=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
-    async def daily(self, interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
-        """@description: Persist an explicit on or off preference without scheduling work.
+    async def daily(self, interaction: discord.Interaction, mode: app_commands.Choice[str],
+                    hour: Optional[app_commands.Range[int, 0, 23]] = None) -> None:
+        """@description: Persist an explicit on or off preference and an optional Taipei delivery hour.
         @param self: Handler routing this command.
         @param interaction: Discord request carrying the recipient identity.
         @param mode: Registered on/off slash-command choice.
+        @param hour: Optional whole Taipei hour from 0 to 23; omitted keeps the call shape without an hour.
         @return: None.
         """
         if mode.value not in {"on", "off"}:
             await _respond(interaction, _invalid_daily_choice)
             return
-        await _respond(interaction, self.service.daily, interaction.user.id, mode.value == "on")
+        if hour is None:
+            await _respond(interaction, self.service.daily, interaction.user.id, mode.value == "on")
+            return
+        await _respond(interaction, self.service.daily, interaction.user.id, mode.value == "on", hour)
 
 
 GUILD_ONLY_CONTEXTS = app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False)  # [where usable]: Guild channels only.

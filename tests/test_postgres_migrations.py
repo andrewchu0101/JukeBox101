@@ -140,7 +140,8 @@ def test_application_role_has_least_privilege(pg_database):
     @return: None.
     """
     statements = ["DELETE FROM users", "TRUNCATE users", "DROP TABLE users", "CREATE TABLE jukebox101.intruder (x int)",
-                  "UPDATE credit_ledger SET credit_delta = 0", "SELECT * FROM jb_schema_migrations", "SELECT * FROM daily_dispatches"]
+                  "UPDATE credit_ledger SET credit_delta = 0", "SELECT * FROM jb_schema_migrations",
+                  "DELETE FROM daily_dispatches", "DELETE FROM daily_preferences", "DELETE FROM daily_notices"]  # [stage C]: 0005 lets the Bot read and write the daily tables (Owner-approved /daily); deleting them stays forbidden.
     for statement in statements:
         connection = open_connection(pg_database.app)
         try:
