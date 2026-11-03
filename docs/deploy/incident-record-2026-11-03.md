@@ -1,0 +1,52 @@
+# 2026-11-03 啟用過程的問題紀錄與處理（#18、#20、#21 上線後）
+
+本文件記錄 2026-11-03 在 VM 啟用自動審核、正式 `/exchange`、`/daily` 時實際遇到的問題、原因、處理與仍未解決的事項。不含秘密、專案代碼或使用者識別資料。程式與測試的細節見各 PR；VM 步驟見 `vm-enable-procedure-2026-11-03.md`。Agent 不連線 VM、正式資料庫與 Discord，下列正式環境操作均由 Owner 執行。
+
+## 1. 版本衝突凍結了整個發獎（PR #29，已合併部署）
+
+- **現象**：三筆案件在 `/history` 顯示「版本衝突待處理」，沒有人能領到 Nickel。
+- **原因**：
+  1. Owner 先手動「確認為新的錄音版本」，影片仍是待驗證；自動審核開啟後，同一支影片被自動核准，系統又蓋上自己的版本 → 同一影片兩個矛盾版本 → 凍結為衝突。這是缺陷：自動版本確認沒有檢查影片是否已有 Owner 確認的版本。
+  2. 依保守規則，**未知版本的衝突會連帶凍結所有尚未發放的案件**，且 `conflict_frozen` 是黏性的，之後才進來的投稿也會被凍結。
+- **修正（PR #29）**：自動版本確認遇到已確認版本或已凍結衝突時不再蓋章（Owner 優先）；新增 Owner 專用 `owner_cli conflict-resolve preview/write`（驗證碼綁定、決定鍵冪等）：保留指定的 Owner 證據、把矛盾版本併為同一個、解凍僅因此衝突而被連帶凍結的案件。
+- **正式環境處理**：`preview` 確認證據與版本號 → `write`（帶驗證碼與版本號）→ `/history` 三筆恢復；以 `owner_cli settle`（只對指名案件短暫開啟發獎開關）發出該兩筆，健康檢查 `ready`、無 `SETTLEMENT_*`。
+- **預防**：自動審核開啟期間，不要對仍在待驗證的投稿手動確認版本；需要時先把四個自動審核開關改回 off。
+
+## 2. `owner_cli` 在正式容器的連線問題（尚未修，PR 待開）
+
+- `owner_cli` 只認 `DB_PASSWORD`，不認容器使用的 `DB_PASSWORD_FILE`；也沒有帶 `DB_SSLROOTCERT`，`verify-full` 因找不到 CA 而失敗（只回 `OperationalError`）。
+- **暫時繞法**（密碼不顯示、不落地）：
+  `docker exec jukebox101-bot-1 sh -c 'PGSSLROOTCERT="$DB_SSLROOTCERT" DB_PASSWORD="$(cat "$DB_PASSWORD_FILE")" python -m bot.owner_cli <子命令>'`
+- 此繞法適用於 `exchange-stuck`、`conflict-resolve`、`settle`、`settlement-switch`。
+- **待辦**：讓 `owner_cli` 直接支援 `DB_PASSWORD_FILE`、`DB_SSLROOTCERT`、`DB_SSLMODE`，並補測試。
+
+## 3. Discord 指令出現兩套、Windows 桌面版沒有 `hour`
+
+- **原因**：Owner 伺服器上留有舊的「伺服器專屬」使用者指令（`daily` 只有 `mode`），與全域更新後的指令並存；全域 `apply` 不會覆蓋伺服器專屬指令。
+- **處理**：`command_sync fetch --target owner-guild` 證實後，`apply --target owner-guild` 以本地只含 `owner` 的指令集覆蓋該伺服器；之後只剩一份使用者指令且 `/daily` 有 `hour`，`owner` 補上 `duration`。
+- **注意**：更新全域指令後，也要檢查 Owner 伺服器是否留有舊的伺服器專屬副本。
+
+## 4. 指令與卡片「慢半拍」（原因確認，尚未處理）
+
+- **量測**：VM 在 GCP `us-central1-c`，資料庫為 Supabase `eu-central-1` 連線池；TCP 連線時間約 0.12 秒（單趟往返約 120 毫秒）。容器 CPU 約 0.1%、記憶體約 10%，日誌無逾時。
+- **程式面**（唯讀調查，未獨立壓測）：每個資料庫操作新建連線（TCP＋TLS＋驗證，約 5 到 6 趟）；每個交易取全域鎖前還有 3 趟起手式；Owner 按鈕確認約開 8 到 12 條連線；審核與發獎每次讀出全部事件重算並逐筆 UPDATE（持鎖時間隨事件數線性成長）。
+- **選項**（未決）：把 VM 搬到歐洲區域（效果最大，可能離開 GCP 免費方案）；在美國另建 Supabase 專案並遷移（風險較高）；改程式減少來回（連線重用、只更新有變的事件、純讀取不拿寫入鎖）。
+- 這不是故障，沒有資料損壞；建議之後有決定再處理。
+
+## 5. Owner 卡片重複按（PR #30，已合併）
+
+- 重複按本來不會重複執行（同案件鎖、版本號比對、資料庫冪等），但第二次按會用「卡片已失效」覆蓋第一次的成功結果。
+- 修正：按下按鈕的第一個回應改為移除按鈕的 `edit_message(view=None)`，不增加來回；表單送出維持原樣。失敗時按鈕已移除，需重新 `/owner list`。
+
+## 6. 真實 Discord 驗收進度
+
+- 已驗證：自動審核通過並由系統確認版本（無衝突）、未開自動發獎時回「符合首次獎勵資格，但自動發獎尚未開啟」；`settle` 指名結算；`/exchange`（B 抽到 Owner 的歌並以私訊收到連結、Owner 抽到 B 的歌、頻道回覆不含連結）；餘額不足與無候選歌曲不扣點；`exchange-stuck` 無卡住案件；`/daily on [hour]` 設定生效。
+- 尚未驗證：整點的每日推薦實際送達、餘額不足與無候選的每日提醒、同日不重複與關閉後停止、私訊失敗的退點、成功的每日推薦與推薦者半遮蔽（含名稱含 `*` 的顯示）、`/history` 目前只顯示自己的投稿而非收到的推薦（既有設計）。
+
+## 7. 仍未解決或待決定
+
+1. `owner_cli` 支援 `DB_PASSWORD_FILE` 與 `DB_SSLROOTCERT`（見第 2 節）。
+2. 延遲改善方向（見第 4 節）。
+3. 是否開啟自動發獎（`JUKEBOX_AUTO_SETTLEMENT` 與資料庫旗標兩道鎖，需一致）。
+4. 向 Google 確認「用標題或頻道跨影片比對」是否在先前回覆範圍內（正式啟用的政策風險，Owner 尚未提問）。
+5. 遮蔽字元 `*` 在 Discord 可能被當成 Markdown，需實際驗證顯示。
