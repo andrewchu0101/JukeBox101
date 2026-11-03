@@ -11,11 +11,11 @@
 set -euo pipefail
 
 mode=${1:-}
-case "$mode" in offline | postgres) shift ;; *) echo "usage: $0 offline|postgres [pytest args]" >&2; exit 2 ;; esac
+case "$mode" in offline | postgres | stress) shift ;; *) echo "usage: $0 offline|postgres [pytest args] | stress [stress_simulation.py options]" >&2; exit 2 ;; esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 copy="$(mktemp -d)"
-trap '[ "$mode" != postgres ] || (cd "$copy" 2> /dev/null && docker compose -f compose.test.yaml down -v > /dev/null 2>&1) || true; rm -rf "$copy"' EXIT
+trap '[ "$mode" = offline ] || (cd "$copy" 2> /dev/null && docker compose -f compose.test.yaml down -v > /dev/null 2>&1) || true; rm -rf "$copy"' EXIT
 
 cd "$repo_root"
 tar --exclude=.git --exclude=.venv --exclude=.pytest_tmp --exclude=.pytest_cache --exclude='__pycache__' --exclude='*.pdf' \
@@ -28,6 +28,11 @@ cd "$copy"
 if [ "$mode" = offline ]; then
   docker build -q -f test.Dockerfile -t jukebox101-test:v7-local . > /dev/null
   MSYS_NO_PATHCONV=1 docker run --rm --network none jukebox101-test:v7-local -q -p no:cacheprovider -m "not postgres" "$@"
+elif [ "$mode" = stress ]; then
+  JB_LOCALTEST_PG_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))' 2> /dev/null || python -c 'import secrets; print(secrets.token_hex(16))')"
+  export JB_LOCALTEST_PG_PASSWORD
+  docker compose -f compose.test.yaml up -d postgres > /dev/null 2>&1
+  docker compose -f compose.test.yaml --profile tests run --build --rm --entrypoint python tests scripts/dev/stress_simulation.py "$@"
 else
   JB_LOCALTEST_PG_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(16))' 2> /dev/null || python -c 'import secrets; print(secrets.token_hex(16))')"
   export JB_LOCALTEST_PG_PASSWORD
