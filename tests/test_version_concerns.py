@@ -85,7 +85,7 @@ def test_same_channel_close_duration_boundary_is_three_seconds_inclusive(gap, ex
     @param expected: Whether the concern is raised.
     @return: None.
     """
-    other = video("othr0000001", UNRELATED_TITLE, seconds=180 + gap)
+    other = video("othr0000001", "Beta Gamma Delta", seconds=180 + gap)
     result = concerns_against(video("cand0000001", "Alpha Beta Gamma", seconds=180), other, ConcernThresholds())
     assert (ConcernCode.SAME_CHANNEL_CLOSE_DURATION in codes(result)) is expected
     if expected:

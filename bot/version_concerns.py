@@ -15,11 +15,13 @@ from bot.youtube_metadata import VideoMetadata
 
 DEFAULT_MAX_DURATION_GAP_SECONDS = 3  # [Owner rule]: Same channel and a duration this close (inclusive) is suspicious.
 SIMILARITY_THRESHOLD = 0.65  # [conservative start]: Lower than common values so a false clearance costs less than a false concern; calibrate with real samples.
+MIN_CLOSE_DURATION_TITLE_SIMILARITY = 0.4  # [Owner rule]: A same-channel close duration also needs at least this title similarity (inclusive).
+MIN_CONTAINMENT_LENGTH = 6  # [Owner rule]: Title containment only counts when the shorter normalized title has at least this many characters.
 MIN_JUDGEABLE_TITLE_LENGTH = 3  # [comparison floor]: A shorter normalized title cannot be compared and must go to the Owner.
 BRACKET_PAIRS = r"\([^()]*\)|（[^（）]*）|\[[^\[\]]*\]|【[^【】]*】|「[^「」]*」|『[^『』]*』|<[^<>]*>|《[^《》]*》"  # [label text]: Bracketed tags carry no song identity.
 FEATURING_TAIL = re.compile(r"(?<![a-z0-9])(?:feat|ft|featuring)(?![a-z0-9]).*$")  # [credited artists]: Everything after the marker is dropped.
 ENGLISH_KEYWORDS = ("remix\\w*", "cover", "live", "acoustic", "instrumental", "sped up", "slowed", "nightcore", "remaster\\w*",
-                    "version", "mix", "edit", "demo", "unplugged", "karaoke", "8d", "lo-?fi", "bass boosted")  # [word-boundary terms]: Never matched inside another word.
+                    "unplugged", "karaoke", "8d", "lo-?fi", "bass boosted")  # [word-boundary terms]: Never matched inside another word.
 ENGLISH_KEYWORD_PATTERN = re.compile(r"(?<![a-z0-9])(?:" + "|".join(ENGLISH_KEYWORDS) + r"|ver\.)(?![a-z])")
 CONCERN_FIELD = " concerns="  # [audit marker]: Starts the concern list inside an automatic-review reason; the card reads it back.
 MAX_CITED_VIDEO_IDS = 10  # [audit bound]: The reason column holds 1024 characters; only this many existing videos are cited.
@@ -51,6 +53,8 @@ class ConcernThresholds:
     max_duration_gap_seconds: int = DEFAULT_MAX_DURATION_GAP_SECONDS  # [duration rule]: Inclusive.
     min_title_similarity: float = SIMILARITY_THRESHOLD  # [title rule]: Inclusive minimum difflib ratio.
     min_judgeable_title_length: int = MIN_JUDGEABLE_TITLE_LENGTH  # [comparison floor]: Shorter normalized titles are unjudgeable.
+    min_close_duration_title_similarity: float = MIN_CLOSE_DURATION_TITLE_SIMILARITY  # [duration rule]: Inclusive title floor for the duration signal.
+    min_containment_length: int = MIN_CONTAINMENT_LENGTH  # [containment rule]: Inclusive length floor of the shorter title.
 
 
 def normalize_title(title: str | None) -> str:
@@ -95,7 +99,7 @@ def _is_similar(first_title: str | None, second_title: str | None, thresholds: C
     shorter, longer = sorted((first, second), key=len)
     if len(shorter) < thresholds.min_judgeable_title_length:
         return False
-    return shorter in longer or title_similarity(first, second) >= thresholds.min_title_similarity
+    return (len(shorter) >= thresholds.min_containment_length and shorter in longer) or title_similarity(first, second) >= thresholds.min_title_similarity
 
 
 def _is_close_duration(candidate: VideoMetadata, other: VideoMetadata, thresholds: ConcernThresholds) -> bool:
@@ -103,13 +107,15 @@ def _is_close_duration(candidate: VideoMetadata, other: VideoMetadata, threshold
     @param candidate: New video.
     @param other: Existing video.
     @param thresholds: Active limits.
-    @return: True when both videos share a channel and their durations differ by no more than the limit.
+    @return: True when both videos share a channel, their durations differ by no more than the limit and their titles are alike enough.
     """
     if candidate.channel_id is None or candidate.channel_id != other.channel_id:
         return False
     if candidate.duration_seconds is None or other.duration_seconds is None:
         return False
-    return abs(candidate.duration_seconds - other.duration_seconds) <= thresholds.max_duration_gap_seconds
+    if abs(candidate.duration_seconds - other.duration_seconds) > thresholds.max_duration_gap_seconds:
+        return False
+    return title_similarity(candidate.title or "", other.title or "") >= thresholds.min_close_duration_title_similarity
 
 
 def concerns_against(candidate: VideoMetadata, other: VideoMetadata, thresholds: ConcernThresholds) -> tuple[VersionConcern, ...]:

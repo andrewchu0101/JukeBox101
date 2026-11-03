@@ -66,6 +66,16 @@ PAGE_ITEM_ACTIONS = ("approve", "reject", "duration", "new", "other", "detail") 
 MAX_PRIOR_PAGE_CASES = 20  # [read size]: Rows read per request while finding the page before the current one.
 _PAGE_CONTEXT: contextvars.ContextVar[int | None] = contextvars.ContextVar("owner_card_page", default=None)  # [list page]: Cursor of the list page an action came from, so its replies return there.
 FORM_ACTIONS = {"reject", "duration", "kind", "remaster"}  # [forms]: Actions that open a modal instead of acting at once.
+PAY_LABEL = "核准並發獎"  # [approve label]: The press approves the song and the version is, or becomes, confirmed, so the reward can be settled.
+PENDING_VERSION_LABEL = "核准（版本待定）"  # [approve label]: The press approves the song only; the Owner still judges the version.
+COMBINED_REASON = "核准時一併確認為新的錄音版本"  # [audit reason]: Stored with the version confirmation made by the same press as an approval.
+COMBINED_HEADLINE = "已核准歌曲資格，並一併記錄：此影片為一個獨立的錄音版本（由 Owner 判斷）。"
+VERSION_STEP_FAILED_TEXT = ("已核准、版本未確認、尚未發放 Nickel：核准已儲存，但確認錄音版本這一步沒有完成。"
+                            "請按「確認為新的錄音版本」補完，或按「其他情況…」另行判斷。")
+APPROVED_ONLY_TEXT = "已核准歌曲資格。"  # [approval result]: Shown when the case left the queue right after its approval.
+APPROVE_NOTE_PAY = "「核准並發獎」會核准歌曲資格，並一併確認為新的錄音版本；是否發獎依既有規則與自動發獎設定，結果會在按下後顯示。"
+APPROVE_NOTE_CONFIRMED = "版本已由 Owner 確認，核准後結算；是否發獎依既有規則，結果會在按下後顯示。"
+APPROVE_NOTE_PENDING = "「核准（版本待定）」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。"
 
 
 def _duration_text(seconds: int | None, api_basis: str | None = None) -> str:
@@ -95,6 +105,26 @@ def waiting_reason(item) -> str:
                ReviewStatus.PENDING_REVIEW: "待 Owner 審核歌曲資格",
                ReviewStatus.APPROVED: "歌曲已核准，版本待 Owner 判斷"}
     return reasons.get(item.review_status, "待處理")
+
+
+def _approve_mode(item) -> str:
+    """@description: Decide what the approve button of a case does, from the stored doubts and the version state only.
+    @param item: Pending row of the card.
+    @return: "confirmed" when the Owner already confirmed the version, "combined" when no doubt exists and the version is unresolved, otherwise "pending".
+    """
+    if item.identity_status is VersionIdentityStatus.CONFIRMED:
+        return "confirmed"
+    if item.identity_status is VersionIdentityStatus.UNRESOLVED and not item.concerns:
+        return "combined"
+    return "pending"
+
+
+def approve_label(item) -> str:
+    """@description: Tell the Owner before pressing whether approval also settles the reward or leaves the version undecided.
+    @param item: Pending row of the card.
+    @return: The button text without the case order.
+    """
+    return PENDING_VERSION_LABEL if _approve_mode(item) == "pending" else PAY_LABEL
 
 
 def _may_enter_duration(item) -> bool:
@@ -157,7 +187,7 @@ def render_card(item, versions=None, has_more_versions: bool = False) -> str:
     """
     lines = ["待處理案件", f"投稿者：<@{item.submitter_id}>", f"影片：{_card_link(item.source_url)}", f"已知時長：{_duration_text(item.duration_seconds, item.api_basis)}",
              f"審核狀態：{REVIEW_LABELS[item.review_status]}", _version_line(item), f"待處理：{waiting_reason(item)}",
-             "「確認通過」只核准歌曲資格；錄音版本仍須另外確認，也不保證發獎。", *concern_lines(item.concerns)]
+             {"combined": APPROVE_NOTE_PAY, "confirmed": APPROVE_NOTE_CONFIRMED, "pending": APPROVE_NOTE_PENDING}[_approve_mode(item)], *concern_lines(item.concerns)]
     if versions is not None:
         lines += ["", render_known_versions(versions, has_more_versions), "", *PROMISE_LINES]
     return "\n".join(lines)
@@ -431,6 +461,8 @@ class OwnerCards:
         try:
             if action == "duration":
                 return await self._duration(actor_id, item, values)
+            if action == "approve" and _approve_mode(item) == "combined":
+                return await self._approve_with_version(actor_id, item)
             return await self._judgement(actor_id, item, action, values)
         except StaleReviewVersion:
             return self._stale_reply(item.accepted_sequence)
@@ -462,19 +494,22 @@ class OwnerCards:
         except StaleReviewVersion:
             return self._stale_reply(item.accepted_sequence)
 
-    async def _confirm_version(self, actor_id: int, item, action: str, extra: int) -> _Reply:
+    async def _confirm_version(self, actor_id: int, item, action: str, extra: int, new_reason: str = NEW_REASON,
+                               new_headline: str = NEW_HEADLINE) -> _Reply:
         """@description: Record the Owner's version judgement against the displayed revision: a new version, or the selected known one.
         @param self: Card handler.
         @param actor_id: Admitted Owner identifier.
         @param item: Pending row at the displayed revision.
         @param action: new or same.
         @param extra: First acceptance order of the selected known version; unused for a new version.
+        @param new_reason: Audit reason when a new version is recorded.
+        @param new_headline: Result sentence when a new version is recorded.
         @return: Result reply, or the stale reply when the selected version no longer exists.
         """
         known = None if action == "new" else await self._known_version(actor_id, extra)
         if action == "same" and known is None:
             return self._stale_reply(item.accepted_sequence)
-        retrieved_at, reason = self._now(), NEW_REASON if known is None else SAME_REASON
+        retrieved_at, reason = self._now(), new_reason if known is None else SAME_REASON
 
         def preview(service: OwnerReviewService):
             """@description: Build the evidence on the worker thread and preview the version confirmation at the displayed revision.
@@ -488,7 +523,7 @@ class OwnerCards:
             return service.preview_version_confirmation(actor_id, item.operation_id, evidence, reason, item.revision)
 
         key_action = "new" if known is None else f"same:{extra}"
-        return await self._confirm(actor_id, item, key_action, preview, NEW_HEADLINE if known is None else SAME_HEADLINE)
+        return await self._confirm(actor_id, item, key_action, preview, new_headline if known is None else SAME_HEADLINE)
 
     async def _confirm_category(self, actor_id: int, item, action: str, extra: int, source: str) -> _Reply:
         """@description: Record a version under an existing category with the Owner's own source, keeping the case pending when the existing rules find it insufficient.
@@ -587,12 +622,43 @@ class OwnerCards:
         projection = await _call_service(self._service_provider, lambda service: service.view(actor_id, item.operation_id))
         citation = f"{CITATION_PREFIX}{projection.review.video.video_id}"
         if action == "approve":
-            content = ContentJudgement(video=projection.review.video, judged_by=actor_id, reason=APPROVE_REASON,
-                                       retrieved_at=self._now(), evidence_reference=citation, is_song=True)
-            return await self._confirm(actor_id, item, action, lambda service: service.preview(
-                actor_id, item.operation_id, ReviewAction.APPROVE, APPROVE_REASON, item.revision, citation, content))
+            return await self._confirm(actor_id, item, action, self._approval_preview(actor_id, item, projection.review.video))
         return await self._confirm(actor_id, item, action, lambda service: service.preview(
             actor_id, item.operation_id, ReviewAction.REJECT, values[0], item.revision, citation))
+
+    def _approval_preview(self, actor_id: int, item, video) -> Callable[[OwnerReviewService], object]:
+        """@description: Build the worker-thread step that previews a song approval at the displayed revision, citing the viewed video.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param item: Pending row at the displayed revision.
+        @param video: Video the Owner just viewed.
+        @return: Function that takes the review service and returns the approval preview.
+        """
+        citation = f"{CITATION_PREFIX}{video.video_id}"
+        content = ContentJudgement(video=video, judged_by=actor_id, reason=APPROVE_REASON, retrieved_at=self._now(),
+                                   evidence_reference=citation, is_song=True)
+        return lambda service: service.preview(actor_id, item.operation_id, ReviewAction.APPROVE, APPROVE_REASON, item.revision, citation, content)
+
+    async def _approve_with_version(self, actor_id: int, item) -> _Reply:
+        """@description: Approve a case that has no version doubt and then confirm its version as new, in order, so one press can settle the reward.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param item: Pending row at the displayed revision; the case lock is already held.
+        @return: Result reply; when only the second step fails, the refreshed card saying the song is approved and the version is not.
+        """
+        projection = await _call_service(self._service_provider, lambda service: service.view(actor_id, item.operation_id))
+        preview = self._approval_preview(actor_id, item, projection.review.video)
+        if await self._commit(actor_id, item, "approve", preview) is None:
+            return await self._card_reply(actor_id, item, note=UNKNOWN_OUTCOME_TEXT)
+        approved = await self._item_at(actor_id, item.accepted_sequence)
+        if approved is None or approved.identity_status is not VersionIdentityStatus.UNRESOLVED:
+            note = await self._reward_note(actor_id, item.operation_id)
+            return _Reply(render_result(item, APPROVED_ONLY_TEXT, note), self._view([self._button("next", item.accepted_sequence, 0)]))
+        try:
+            return await self._confirm_version(actor_id, approved, "new", 0, COMBINED_REASON, COMBINED_HEADLINE)
+        except Exception as error:  # [committed approval]: Only the version step failed; the card shows the truth and offers the missing step.
+            _LOGGER.error("Version step after a card approval failed: %s", type(error).__name__)
+            return await self._card_reply(actor_id, approved, note=VERSION_STEP_FAILED_TEXT)
 
     async def _duration(self, actor_id: int, item, values: tuple[str, ...]) -> _Reply:
         """@description: Enter an Owner-stated duration, refusing anything that is not a whole number of seconds before any service call.
@@ -618,6 +684,26 @@ class OwnerCards:
         @param headline: Sentence stating what the Owner's judgement recorded, shown above the committed revision.
         @return: Result reply, or the unknown-outcome reply with the original buttons.
         """
+        snapshot = await self._commit(actor_id, item, action, preview_call)
+        if snapshot is None:
+            return await self._card_reply(actor_id, item, note=UNKNOWN_OUTCOME_TEXT)
+        note = await self._reward_note(actor_id, item.operation_id)
+        confirmed = f"{headline}\n{_confirmed_text(snapshot)}" if headline else _confirmed_text(snapshot)
+        page = _PAGE_CONTEXT.get()
+        if page is not None:
+            lead = " ".join(f"剛處理 #{item.accepted_sequence}：{confirmed} {note}".split())
+            return await self._page_reply(actor_id, page, lead=_clip(lead, LIST_LEAD_CHARS))
+        return _Reply(render_result(item, confirmed, note), self._view([self._button("next", item.accepted_sequence, 0)]))
+
+    async def _commit(self, actor_id: int, item, action: str, preview_call: Callable[[OwnerReviewService], object]):
+        """@description: Preview once and confirm, keeping the token when the outcome is unknown so a retry replays the same decision.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param item: Pending row at the displayed revision.
+        @param action: Action name, part of the token key.
+        @param preview_call: Service preview for this action.
+        @return: The committed snapshot, or None when the outcome is unknown.
+        """
         key = (item.accepted_sequence, item.revision, action)
         token_id = self._open_tokens.get(key)
         if token_id is None:
@@ -626,15 +712,9 @@ class OwnerCards:
         try:
             snapshot = await _call_service(self._service_provider, lambda service: service.confirm(actor_id, token_id))
         except ReviewOutcomeUnknown:
-            return await self._card_reply(actor_id, item, note=UNKNOWN_OUTCOME_TEXT)
+            return None
         self._open_tokens.pop(key, None)
-        note = await self._reward_note(actor_id, item.operation_id)
-        confirmed = f"{headline}\n{_confirmed_text(snapshot)}" if headline else _confirmed_text(snapshot)
-        page = _PAGE_CONTEXT.get()
-        if page is not None:
-            lead = " ".join(f"剛處理 #{item.accepted_sequence}：{confirmed} {note}".split())
-            return await self._page_reply(actor_id, page, lead=_clip(lead, LIST_LEAD_CHARS))
-        return _Reply(render_result(item, confirmed, note), self._view([self._button("next", item.accepted_sequence, 0)]))
+        return snapshot
 
     async def _reward_note(self, actor_id: int, operation_id: str) -> str:
         """@description: Report the reward and version state after a committed decision; a follow-up failure never rewrites the decision.
@@ -703,7 +783,8 @@ class OwnerCards:
         status, unresolved = item.review_status, item.identity_status is VersionIdentityStatus.UNRESOLVED
         applies = {"approve": status is ReviewStatus.PENDING_REVIEW and item.api_basis != "expired", "reject": status in DECIDABLE_STATES,
                    "duration": _may_enter_duration(item), "new": unresolved, "other": unresolved, "detail": True}
-        return [self.button_class(action, item.accepted_sequence, item.revision, row=row, label=f"{BUTTON_LABELS[action]} #{item.accepted_sequence}", page=cursor)
+        names = {**BUTTON_LABELS, "approve": approve_label(item)}
+        return [self.button_class(action, item.accepted_sequence, item.revision, row=row, label=f"{names[action]} #{item.accepted_sequence}", page=cursor)
                 for action in PAGE_ITEM_ACTIONS if applies[action]]
 
     async def _previous_page_reply(self, actor_id: int, first_sequence: int) -> _Reply:
@@ -810,7 +891,8 @@ class OwnerCards:
         @return: Card view.
         """
         sequence, revision, status = item.accepted_sequence, item.revision, item.review_status
-        buttons = [self._button("approve", sequence, revision, status is not ReviewStatus.PENDING_REVIEW or item.api_basis == "expired", row=0),
+        buttons = [self._button("approve", sequence, revision, status is not ReviewStatus.PENDING_REVIEW or item.api_basis == "expired", row=0,
+                                label=approve_label(item)),
                    self._button("reject", sequence, revision, status not in DECIDABLE_STATES, row=0)]
         if _may_enter_duration(item):
             buttons.append(self._button("duration", sequence, revision, row=0))

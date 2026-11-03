@@ -77,6 +77,7 @@ class JukeBoxClient(discord.Client):
         super().__init__(intents=discord.Intents.none(), allowed_mentions=discord.AllowedMentions.none())
         self.tree = SafeCommandTree(self, interaction_guard=interaction_guard)  # [command registry]: Local registration only.
         self.handlers = CommandHandlers(service)
+        self.owner_review = owner_review  # [Owner wiring]: Kept so the production client can remind the Owner; None means no Owner features.
         register_commands(self.tree, self.handlers, include_claim=getattr(service, "nickel_claim_enabled", False) is True)
         if owner_review is not None:
             owner_cards = OwnerCards(owner_review.service_provider, owner_review.owner_id, owner_review.guild_id, owner_review.now)
