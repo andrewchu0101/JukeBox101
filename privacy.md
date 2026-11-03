@@ -4,7 +4,7 @@ title: JukeBox101 隱私權政策 Privacy Policy
 
 # JukeBox101 隱私權政策 / Privacy Policy
 
-最後更新 / Last updated：2026-11-03
+最後更新 / Last updated：2026-11-03（rev. 2）
 
 本政策說明 Discord Bot「JukeBox101」（以下稱「本服務」）如何蒐集、使用與保存資料。使用本服務即表示你同意本政策。
 
@@ -20,6 +20,8 @@ This policy explains how the Discord bot "JukeBox101" (the "Service") collects, 
 - **投稿內容**：你提交的 YouTube 影片連結、投稿時間、審核狀態與操作紀錄。
 - **YouTube 影片公開資訊**：透過 YouTube Data API 取得影片標題、頻道、長度與公開狀態，用於審核。
 - **Nickel 紀錄**：餘額與發放／異動紀錄。
+- **交換紀錄**：你用 `/exchange` 交換的歌曲、扣除的 Nickel 與時間。
+- **每日推薦設定**：你是否開啟 `/daily`，以及已傳送給你的推薦紀錄（用來避免重複推薦）。
 - **互動來源驗證**：處理指令時會檢查請求來自哪個伺服器（不接受私訊），但不會在資料庫中保存伺服器名稱、頻道或成員資料。
 
 The Service only processes data when you use its slash commands (e.g. `/share`, `/balance`, `/history`):
@@ -28,31 +30,35 @@ The Service only processes data when you use its slash commands (e.g. `/share`, 
 - **Submissions** — the YouTube link you submit, submission time, review status, and operation records.
 - **Public YouTube video information** — title, channel, duration and availability, fetched via the YouTube Data API for review.
 - **Nickel records** — balance and transaction history.
+- **Exchange records** — songs you obtain with `/exchange`, Nickel spent, and timestamps.
+- **Daily settings** — whether `/daily` is on, and which recommendations were sent to you (to avoid repeats).
 - **Interaction checks** — the Service checks that a command comes from a server (DMs are rejected), but does not store server names, channels, or member lists.
 
 ## 2. 我們「不」蒐集的資料 / Data we do NOT collect
 
-- 本服務**不讀取訊息內容**，也不需要任何頻道權限。
+- 本服務**不讀取訊息內容**（包括私訊），也不需要任何頻道權限。
 - 不蒐集你的電子郵件、密碼、IP 位址、付款資訊或語音內容。
 - 不追蹤你在 YouTube 上的觀看、按讚、訂閱或留言。
 
-- The Service does **not read message content** and requests no channel permissions.
+- The Service does **not read message content** (including DMs) and requests no channel permissions.
 - We do not collect your email, password, IP address, payment information, or voice data.
 - We do not track your YouTube views, likes, subscriptions, or comments.
 
 ## 3. 資料用途 / How we use data
 
-資料僅用於提供本服務功能：記錄投稿、審核歌曲、計算與顯示 Nickel 餘額、顯示你的投稿紀錄，以及防止重複投稿與濫用。我們**不會出售、出租資料，也不用於廣告**。
+資料僅用於提供本服務功能：記錄投稿、審核歌曲、處理交換、傳送每日推薦私訊、計算與顯示 Nickel 餘額、顯示你的投稿紀錄，以及防止重複投稿與濫用。我們**不會出售、出租資料，也不用於廣告**。
 
-Data is used only to operate the Service: recording submissions, reviewing songs, calculating and showing Nickel balances, showing your submission history, and preventing duplicates and abuse. We **do not sell or rent data, or use it for advertising**.
+Data is used only to operate the Service: recording submissions, reviewing songs, processing exchanges, sending daily recommendation DMs, calculating and showing Nickel balances, showing your submission history, and preventing duplicates and abuse. We **do not sell or rent data, or use it for advertising**.
 
 ## 4. 資料可見範圍 / Who can see your data
 
-- 指令回覆僅你本人可見（ephemeral）。
+- 指令回覆僅你本人可見（ephemeral）；每日推薦以私訊傳送給你本人。
+- 交換到的歌曲可能是其他使用者投稿的；我們不會向你顯示投稿者的身分，也不會向投稿者顯示你的身分。
 - 本服務維護者（Owner）可在審核時查看投稿與相關紀錄。
 - 你的 Nickel 餘額與投稿紀錄跨伺服器共用，但不會向其他使用者顯示。
 
-- Command replies are visible only to you (ephemeral).
+- Command replies are visible only to you (ephemeral); daily recommendations are sent to you by DM.
+- Songs you get through exchange may come from other users' submissions; we do not reveal submitters to you or you to submitters.
 - The Service maintainers can view submissions and related records for review.
 - Your balance and history are shared across servers but never shown to other users.
 
