@@ -288,7 +288,7 @@ class OwnerCards:
         if action in FORM_ACTIONS:
             await interaction.response.send_modal(_CardModal(self, action, sequence, revision, extra))
             return
-        await interaction.response.defer()
+        await interaction.response.edit_message(view=None)  # [lock the card]: Acknowledge by removing the buttons, so nothing can be pressed while the slow work runs.
         reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, (), extra)))[0]
         await self._show(interaction, reply)
 

@@ -242,6 +242,14 @@ class FakeResponse:
         """
         self.deferrals.append(kwargs)
 
+    async def edit_message(self, **kwargs) -> None:
+        """@description: Record the acknowledgement that updates the pressed card, which removes its buttons while the work runs.
+        @param self: Fake response.
+        @param kwargs: Update options.
+        @return: None.
+        """
+        self.locks = getattr(self, "locks", []) + [kwargs]
+
     async def send_message(self, content=None, **kwargs) -> None:
         """@description: Record a direct reply.
         @param self: Fake response.
@@ -1026,3 +1034,48 @@ def test_an_unreadable_retention_status_never_hides_the_card():
     service.retention = RuntimeError("relation does not exist")
     first = asyncio.run(cards_for(service).first_replies(OWNER_ID))[0]
     assert "待處理案件" in first.text and "逾期" not in first.text
+
+
+def test_a_plain_button_press_removes_the_buttons_before_any_work_runs():
+    """@description: The acknowledgement itself removes the card's buttons, so nothing can be pressed during the slow database work.
+    @param: none
+    @return: None.
+    """
+    service = CardService(case())
+    seen = []
+    interaction = Press()
+    original = interaction.response.edit_message
+
+    async def recording_edit(**kwargs):
+        """@description: Note how many service calls had happened when the acknowledgement was sent.
+        @param kwargs: Update options.
+        @return: None.
+        """
+        seen.append(len(service.calls))
+        await original(**kwargs)
+
+    interaction.response.edit_message = recording_edit
+    press(cards_for(service), "approve", 1, 3, interaction)
+    assert seen == [0] and interaction.response.locks == [{"view": None}] and interaction.response.deferrals == []
+    assert interaction.edits and interaction.edits[-1]["view"] is not None
+
+
+def test_pressing_the_same_button_twice_at_once_decides_only_once_and_the_second_press_is_stale():
+    """@description: Two presses racing for one case serialize; the second sees the changed case and changes nothing.
+    @param: none
+    @return: None.
+    """
+    service = CardService(case())
+    cards = cards_for(service)
+    first, second = Press(), Press()
+
+    async def both():
+        """@description: Run two callbacks of the same displayed button concurrently.
+        @param: none
+        @return: None.
+        """
+        await asyncio.gather(cards.button_class("approve", 1, 3).callback(first), cards.button_class("approve", 1, 3).callback(second))
+
+    asyncio.run(both())
+    assert len(service.called("confirm")) == 1
+    assert "已失效" in second.shown() or "已變更" in second.shown() or "已處理" in second.shown()
