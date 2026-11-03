@@ -555,6 +555,20 @@ class SubmissionRepository:
         with submission_transaction(self._factory) as (cursor, _):
             return stuck_exchange_rows(cursor, now)
 
+    def owner_exchange_lookup(self, requester_id: int, operation_code: int, now: datetime | None = None) -> dict | None:
+        """@description: Let the Owner find one reported exchange by its operation code, read-only and independent of the compensation switch.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param requester_id: Identity making the request; must be the configured Owner.
+        @param operation_code: Code the user saw in the exchange reply.
+        @param now: Current time; defaults to the present UTC time.
+        @return: The case without links, tokens or balances, or None when the code is unknown.
+        """
+        from bot.database.exchange_delivery_store import exchange_case_by_code  # [local import]: Keeps this change to this single method.
+        self._require_owner(requester_id)
+        view_time = now if now is not None else datetime.now(timezone.utc)
+        with submission_transaction(self._factory) as (cursor, _):
+            return exchange_case_by_code(cursor, operation_code, view_time)
+
     def owner_review_reasons(self, requester_id: int, days: int) -> dict:
         """@description: Show the Owner why automatic review decided as it did, read-only.
         @param self: Synchronous repository boundary, called from a worker thread.

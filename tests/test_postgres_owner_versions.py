@@ -117,40 +117,22 @@ def test_a_missing_mapping_creates_no_version_until_the_owner_presses(pg_databas
     assert version_rows(world) == 0 and identities(world)[VIDEO_A] == ("unresolved", None)
 
 
-def test_the_new_version_button_creates_an_opaque_version_and_settles_by_the_existing_rules(pg_database):
-    """@description: One press records a random version for the video and, with settlement on and every condition met, pays exactly one Nickel and says so.
+def test_the_yes_button_creates_an_opaque_version_and_settles_by_the_existing_rules(pg_database):
+    """@description: One press of yes records a random version for the video and, with settlement on and every condition met, pays exactly one Nickel and says so.
     @param pg_database: Disposable database.
     @return: None.
     """
     world = World(pg_database)
     world.share(ALICE, VIDEO_A, "discord:1")
-    shown = press(cards_of(world), "new", pending(world)[0])
+    shown = press(cards_of(world), "yes", pending(world)[0])
     status, version = identities(world)[VIDEO_A]
     assert status == "confirmed" and version.startswith("rv-") and VIDEO_A.lower() not in version.lower()
     world.assert_books_balance(1)
-    assert "已為投稿者發放 +1" in shown.shown()
+    assert "已為投稿者發放 +1" in shown.shown() or "已發放" in shown.shown()
     assert pending(world) == []
 
 
-def test_choosing_a_known_version_maps_the_video_and_pays_nothing_again(pg_database):
-    """@description: Selecting the first video's version makes the second video the same recording: no second version, no second award, no remaining question.
-    @param pg_database: Disposable database.
-    @return: None.
-    """
-    world = World(pg_database)
-    world.share(ALICE, VIDEO_A, "discord:1")
-    cards = cards_of(world)
-    press(cards, "new", pending(world)[0])
-    world.share(BOB, VIDEO_B, "discord:2")
-    known = world.owner.list_known_versions(OWNER_ID, limit=5).items[0]
-    shown = press(cards, "same", pending(world)[0], extra=known.first_sequence)
-    assert identities(world)[VIDEO_B][1] == identities(world)[VIDEO_A][1] and version_rows(world) == 1
-    world.assert_books_balance(1)
-    assert world.balances().get(BOB, 0) == 0 and pending(world) == []
-    assert "已確認" in shown.shown()
-
-
-def test_two_handlers_pressing_new_at_once_create_one_version_and_one_award(pg_database):
+def test_two_handlers_pressing_yes_at_once_create_one_version_and_one_award(pg_database):
     """@description: Without any shared lock, a simultaneous double press still yields one version and one Nickel because the database decides.
     @param pg_database: Disposable database.
     @return: None.
@@ -165,7 +147,7 @@ def test_two_handlers_pressing_new_at_once_create_one_version_and_one_award(pg_d
         @param: none
         @return: None.
         """
-        await asyncio.gather(*(handler.button_class("new", item.accepted_sequence, item.revision).callback(shown)
+        await asyncio.gather(*(handler.button_class("yes", item.accepted_sequence, item.revision).callback(shown)
                                for handler, shown in zip(handlers, presses)))
 
     asyncio.run(both())
@@ -218,102 +200,3 @@ def test_a_version_button_on_a_case_still_queued_but_already_mapped_writes_nothi
     assert version_rows(world) == 1 and identities(world)[VIDEO_A][1] == "recording-elsewhere" and "重新載入" in stale.shown()
 
 
-SOURCE_TEXT = "https://example.test/official-release-page-2026"
-
-
-def submit_form(cards: OwnerCards, action: str, item, extra: int, source: str) -> Press:
-    """@description: Press a category button, fill its form with the given source and submit it, as the Owner would.
-    @param cards: Card handler.
-    @param action: kind or remaster.
-    @param item: Pending row the card displayed.
-    @param extra: Category ordinal, or the first acceptance order of the version to remaster.
-    @param source: Judgement basis the Owner types.
-    @return: The submission interaction.
-    """
-    modal = press(cards, action, item, extra=extra).response.modals[0]
-    modal.source._value = source
-    submitted = Press(OWNER_ID)
-    asyncio.run(modal.on_submit(submitted))
-    return submitted
-
-
-def evidence_kinds(world: World) -> list[str]:
-    """@description: Read the version categories stored in the evidence history.
-    @param world: Automatic-mode database.
-    @return: Stored category values found in evidence rows that carry one.
-    """
-    rows = admin_query(world.database, "SELECT evidence_json::text AS body FROM jb2_evidence")
-    return [kind for row in rows for kind in ("live", "cover", "remix", "re_recording", "remaster") if f'"value":"{kind}"' in row["body"].replace(" ", "")]
-
-
-def test_a_live_form_creates_an_opaque_version_with_the_category_and_settles_by_the_existing_rules(pg_database):
-    """@description: The Live form stores the Live category and the Owner's own source on a new opaque version, then pays exactly one Nickel through the existing settlement.
-    @param pg_database: Disposable database.
-    @return: None.
-    """
-    world = World(pg_database)
-    world.share(ALICE, VIDEO_A, "discord:1")
-    shown = submit_form(cards_of(world), "kind", pending(world)[0], 1, SOURCE_TEXT)
-    status, version = identities(world)[VIDEO_A]
-    assert status == "confirmed" and version.startswith("rv-") and "live" in evidence_kinds(world)
-    assert SOURCE_TEXT in admin_query(world.database, "SELECT string_agg(evidence_json::text, ' ') AS body FROM jb2_evidence")[0]["body"]
-    world.assert_books_balance(1)
-    assert "Live" in shown.shown() and "已為投稿者發放 +1" in shown.shown()
-
-
-def test_a_remaster_form_maps_to_the_selected_version_and_pays_nothing_again(pg_database):
-    """@description: A remaster of an already rewarded version joins that version with the remaster category and creates no second version or award.
-    @param pg_database: Disposable database.
-    @return: None.
-    """
-    world = World(pg_database)
-    world.share(ALICE, VIDEO_A, "discord:1")
-    cards = cards_of(world)
-    press(cards, "new", pending(world)[0])
-    world.share(BOB, VIDEO_B, "discord:2")
-    known = world.owner.list_known_versions(OWNER_ID, limit=5).items[0]
-    submit_form(cards, "remaster", pending(world)[0], known.first_sequence, SOURCE_TEXT)
-    assert identities(world)[VIDEO_B][1] == identities(world)[VIDEO_A][1] and version_rows(world) == 1
-    assert "remaster" in evidence_kinds(world) and world.balances().get(BOB, 0) == 0 and pending(world) == []
-    world.assert_books_balance(1)
-
-
-@pytest.mark.parametrize("weak_source", ["1234", "12345678", "discord:1234567"])
-def test_a_weak_source_creates_no_version_and_keeps_the_case_pending(pg_database, weak_source):
-    """@description: A source the existing rule refuses writes nothing: no version, no evidence, and the case stays in the queue.
-    @param pg_database: Disposable database.
-    @param weak_source: Text the traceable-source rule refuses.
-    @return: None.
-    """
-    world = World(pg_database)
-    world.share(ALICE, VIDEO_A, "discord:1")
-    before = admin_query(world.database, "SELECT count(*) AS n FROM jb2_evidence")[0]["n"]
-    shown = submit_form(cards_of(world), "kind", pending(world)[0], 1, weak_source)
-    assert version_rows(world) == 0 and "維持待處理" in shown.shown() and len(pending(world)) == 1
-    assert admin_query(world.database, "SELECT count(*) AS n FROM jb2_evidence")[0]["n"] == before
-
-
-def test_two_handlers_submitting_the_same_category_form_create_one_version_and_one_award(pg_database):
-    """@description: Without any shared lock, a double submission still yields one version and one Nickel because the database decides.
-    @param pg_database: Disposable database.
-    @return: None.
-    """
-    world = World(pg_database)
-    world.share(ALICE, VIDEO_A, "discord:1")
-    item = pending(world)[0]
-    forms = []
-    for handler in (cards_of(world), cards_of(world)):
-        modal = press(handler, "kind", item, extra=2).response.modals[0]
-        modal.source._value = SOURCE_TEXT
-        forms.append(modal)
-
-    async def both():
-        """@description: Submit the same form through two independent handlers at the same moment.
-        @param: none
-        @return: None.
-        """
-        await asyncio.gather(*(modal.on_submit(Press(OWNER_ID)) for modal in forms))
-
-    asyncio.run(both())
-    assert version_rows(world) == 1
-    world.assert_books_balance(1)

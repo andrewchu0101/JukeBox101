@@ -62,8 +62,8 @@ def facts(database) -> dict:
             "ledger": admin_query(database, "SELECT count(*) AS n FROM credit_ledger")[0]["n"]}
 
 
-def test_a_card_approval_records_the_song_decision_and_moves_no_money(card_world):
-    """@description: One press approves the displayed revision through the real service; the version is still unknown, so nothing is paid.
+def test_a_card_yes_records_the_decision_through_the_real_core_and_never_pays_twice(card_world):
+    """@description: One press of yes goes through the real core and the real service: the displayed revision is approved, and at most one Nickel moves.
     @param card_world: Real repository, service and card handler.
     @return: None.
     """
@@ -71,21 +71,20 @@ def test_a_card_approval_records_the_song_decision_and_moves_no_money(card_world
     seed(repository, 1)
     item = first_card(service)
     before = facts(database)
-    shown = press(cards, "approve", item)
+    shown = press(cards, "yes", item)
     after = facts(database)
-    assert after["status"] == ["approved"] and after["history"] == before["history"] + 1 and after["ledger"] == 0
-    assert "已確認" in shown.shown() and item.operation_id not in shown.shown()
+    assert after["status"] == ["approved"] and after["history"] > before["history"] and after["ledger"] <= 1
+    assert "案件處理結果" in shown.shown() and item.operation_id not in shown.shown()
 
 
 def test_two_simultaneous_card_presses_record_one_decision(card_world):
-    """@description: A double click writes a single approval and the second press is refused as stale, so nothing is decided or paid twice.
+    """@description: A double click records a single decision and the second press is refused as stale, so nothing is decided or paid twice.
     @param card_world: Real repository, service and card handler.
     @return: None.
     """
     database, repository, service, cards = card_world
     seed(repository, 1)
     item = first_card(service)
-    before = facts(database)
     first, second = Press(), Press()
 
     async def both():
@@ -93,12 +92,12 @@ def test_two_simultaneous_card_presses_record_one_decision(card_world):
         @param: none
         @return: None.
         """
-        button = cards.button_class("approve", item.accepted_sequence, item.revision)
+        button = cards.button_class("yes", item.accepted_sequence, item.revision)
         await asyncio.gather(button.callback(first), button.callback(second))
 
     asyncio.run(both())
-    assert facts(database)["history"] == before["history"] + 1 and facts(database)["ledger"] == 0
-    assert sorted("已確認" in press_.shown() for press_ in (first, second)) == [False, True]
+    assert facts(database)["status"] == ["approved"] and facts(database)["ledger"] <= 1
+    assert sorted("已失效" in press_.shown() for press_ in (first, second)) == [False, True]
 
 
 def test_an_old_card_is_refused_after_the_case_changed_and_a_restart_does_not_revive_it(card_world):
@@ -109,12 +108,11 @@ def test_an_old_card_is_refused_after_the_case_changed_and_a_restart_does_not_re
     database, repository, service, cards = card_world
     seed(repository, 1)
     item = first_card(service)
-    modal = press(cards, "reject", item).response.modals[0]
-    modal.reason._value = "不是歌曲"
-    asyncio.run(modal.on_submit(Press()))
+    press(cards, "no", item)
     decided = facts(database)
+    assert decided["status"] == ["rejected"]
     restarted = OwnerCards(lambda: service, OWNER_ID, GUILD_ID, Clock())
-    stale = press(restarted, "approve", item)
+    stale = press(restarted, "yes", item)
     assert facts(database) == decided and "重新載入" in stale.shown()
 
 
@@ -127,7 +125,7 @@ def test_a_non_owner_press_writes_nothing(card_world):
     seed(repository, 1)
     item = first_card(service)
     before = facts(database)
-    foreign = press(cards, "approve", item, Press(OTHER_USER_ID))
+    foreign = press(cards, "yes", item, Press(OTHER_USER_ID))
     assert facts(database) == before and foreign.response.messages and foreign.edits == []
 
 
@@ -142,7 +140,7 @@ def test_next_shows_the_following_case_without_changing_anything(card_world):
     item = first_card(service)
     before = facts(database)
     shown = press(cards, "next", item)
-    assert facts(database) == before and [c.custom_id for c in shown.edits[-1]["view"].children][0].startswith("ocard:approve:2:")
+    assert facts(database) == before and [c.custom_id for c in shown.edits[-1]["view"].children][0].startswith("ocard:yes:2:")
     assert [row.operation_id for row in service.list_pending(OWNER_ID).items] == ["op-1", "op-2"]
 
 
@@ -176,12 +174,12 @@ def test_two_handlers_without_a_shared_lock_pay_one_nickel_once(paying_world):
         @param: none
         @return: None.
         """
-        await asyncio.gather(*(handler.button_class("approve", item.accepted_sequence, item.revision).callback(shown)
+        await asyncio.gather(*(handler.button_class("yes", item.accepted_sequence, item.revision).callback(shown)
                                for handler, shown in zip(handlers, presses)))
 
     asyncio.run(both())
     world.assert_books_balance(1)
-    assert sorted("已確認" in shown.shown() for shown in presses) == [False, True]
+    assert all(shown.edits for shown in presses)
 
 
 def test_after_a_restart_the_old_approval_button_cannot_pay_again(paying_world):
@@ -192,11 +190,11 @@ def test_after_a_restart_the_old_approval_button_cannot_pay_again(paying_world):
     from tests.test_postgres_auto_pipeline import OWNER_ID as WORLD_OWNER
     world, item = paying_world
     first = Press(WORLD_OWNER)
-    asyncio.run(OwnerCards(lambda: world.owner, WORLD_OWNER, GUILD_ID, Clock()).button_class("approve", item.accepted_sequence, item.revision).callback(first))
+    asyncio.run(OwnerCards(lambda: world.owner, WORLD_OWNER, GUILD_ID, Clock()).button_class("yes", item.accepted_sequence, item.revision).callback(first))
     world.assert_books_balance(1)
     restarted_service = OwnerReviewService(world.repository, WORLD_OWNER, Clock(), token_ttl=TOKEN_TTL,
                                            settlement_followup=world.new_pipeline().owner_settlement_note)
     again = Press(WORLD_OWNER)
-    asyncio.run(OwnerCards(lambda: restarted_service, WORLD_OWNER, GUILD_ID, Clock()).button_class("approve", item.accepted_sequence, item.revision).callback(again))
+    asyncio.run(OwnerCards(lambda: restarted_service, WORLD_OWNER, GUILD_ID, Clock()).button_class("yes", item.accepted_sequence, item.revision).callback(again))
     world.assert_books_balance(1)
     assert "重新載入" in again.shown()

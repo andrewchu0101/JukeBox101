@@ -437,7 +437,7 @@ def test_a_user_without_a_point_gets_the_not_enough_message_once_a_day_and_is_no
     sender = ScriptedSender()
     for minute in range(3):
         world.sweep(sender, at(0, 20, minute))
-    assert sender.calls == [(ALICE, NOT_ENOUGH_NICKEL_TEXT)] and LINK_MARKER not in NOT_ENOUGH_NICKEL_TEXT
+    assert sender.calls == [(ALICE, NOT_ENOUGH_NICKEL_TEXT + "\n目前可用 Nickel：0")] and LINK_MARKER not in NOT_ENOUGH_NICKEL_TEXT
     assert world.balances()[ALICE] == 0 and world.debit_count() == 1 and len(world.rows()) == 1
     assert world.notices() == [(DAY0, "insufficient_credit", "sent")] and world.task_days() == [DAY0]
     world.assert_books_consistent()
@@ -453,7 +453,7 @@ def test_the_not_enough_message_is_silenced_after_three_days_and_resumes_after_a
     sender = ScriptedSender()
     for day in range(5):
         world.sweep(sender, at(day, 20))
-    assert [call[1] for call in sender.calls] == [NOT_ENOUGH_NICKEL_TEXT] * 3
+    assert [call[1] for call in sender.calls] == [NOT_ENOUGH_NICKEL_TEXT + "\n目前可用 Nickel：0"] * 3
     assert [delivery for _day, _kind, delivery in world.notices()] == ["sent", "sent", "sent", "silenced", "silenced"]
     world.add_song(ALICE)
     world.add_song(BOB)
@@ -462,7 +462,7 @@ def test_the_not_enough_message_is_silenced_after_three_days_and_resumes_after_a
     world.sweep(sender, at(5, 20))
     assert LINK_MARKER in sender.calls[3][1] and world.balances()[ALICE] == 0
     world.sweep(sender, at(6, 20))
-    assert sender.calls[4][1] == NOT_ENOUGH_NICKEL_TEXT and world.notices()[-1][2] == "sent"
+    assert sender.calls[4][1] == NOT_ENOUGH_NICKEL_TEXT + "\n目前可用 Nickel：0" and world.notices()[-1][2] == "sent"
 
 
 def test_a_user_with_a_point_but_no_song_gets_the_no_candidate_message_with_the_same_throttle_and_keeps_the_point(world) -> None:
@@ -476,7 +476,7 @@ def test_a_user_with_a_point_but_no_song_gets_the_no_candidate_message_with_the_
     sender = ScriptedSender()
     for day in range(4):
         world.sweep(sender, at(day, 20))
-    assert [call[1] for call in sender.calls] == [NO_CANDIDATE_DAILY_TEXT] * 3 and world.balances()[ALICE] == 1
+    assert [call[1] for call in sender.calls] == [NO_CANDIDATE_DAILY_TEXT + "\n目前可用 Nickel：1"] * 3 and world.balances()[ALICE] == 1
     assert [row[1:] for row in world.notices()] == [("no_candidate", "sent")] * 3 + [("no_candidate", "silenced")]
     assert world.debit_count() == 1
     world.add_song(BOB)

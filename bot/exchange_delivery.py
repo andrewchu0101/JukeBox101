@@ -122,6 +122,7 @@ class ExchangeFlowResult:
     refund_status: str | None  # [financial state]: refunded, already_released, pending, or None; separate from delivery.
 
 
+BALANCE_LINE_PREFIX = "目前可用 Nickel："  # [reply wording]: Shared by the exchange and daily replies so both read the same.
 _KIND_TO_STATE = {DmKind.DELIVERED: "delivered", DmKind.NOT_SENT: "failed", DmKind.UNKNOWN: "uncertain"}
 _STATE_TO_STATUS = {"delivered": DeliveryStatus.DELIVERED, "failed": DeliveryStatus.FAILED,
                     "uncertain": DeliveryStatus.UNCERTAIN, "sending": DeliveryStatus.IN_PROGRESS,
@@ -182,17 +183,31 @@ async def exchange_and_deliver(repository: Any, sender: DirectMessageSender, rep
     await asyncio.to_thread(repository.retry_pending_refunds, now)  # [refund retry]: A failed earlier refund is retried, still once.
     exchange = await asyncio.to_thread(_run_with_one_replay, partial(repository.exchange, discord_user_id, request_key, rng))  # [reservation first]: Debit and reservation commit together.
     if exchange.status is ExchangeStatus.NO_CANDIDATE:
-        return await _finish(replier, ExchangeFlowResult(NO_CANDIDATE_TEXT, False, None, None, None))
+        return await _finish(replier, ExchangeFlowResult(NO_CANDIDATE_TEXT + await _balance_line(repository, discord_user_id), False, None, None, None))
     if exchange.status is ExchangeStatus.INSUFFICIENT_CREDITS:
-        return await _finish(replier, ExchangeFlowResult(INSUFFICIENT_TEXT, False, None, None, None))
+        return await _finish(replier, ExchangeFlowResult(INSUFFICIENT_TEXT + await _balance_line(repository, discord_user_id), False, None, None, None))
     if exchange.status is ExchangeStatus.IN_PROGRESS:
         return await _finish(replier, ExchangeFlowResult(IN_PROGRESS_TEXT, False, None, None, None))  # [no debit, no DM]: The earlier exchange keeps its own state.
     if exchange.status is ExchangeStatus.PENDING_REVIEW:
         return await _finish(replier, ExchangeFlowResult(PENDING_REVIEW_TEXT, False, None, None, None))  # [no DM]: Nothing reserved, nothing sent.
     outcome = await deliver_recommendation(repository, sender, exchange.recommendation_id, now, new_token())
     refund = await _refund_if_unsent(repository, outcome, now)
-    flow = ExchangeFlowResult(_delivery_text(outcome, refund), False, outcome.recommendation_id, outcome.status, refund)
-    return await _finish(replier, flow)
+    text = _delivery_text(outcome, refund) + await _balance_line(repository, discord_user_id)  # [after commit]: The debit or refund is already durable here.
+    return await _finish(replier, ExchangeFlowResult(text, False, outcome.recommendation_id, outcome.status, refund))
+
+
+async def _balance_line(repository: Any, discord_user_id: int) -> str:
+    """@description: Tell the requester how many Nickel remain, read only after the exchange outcome is committed; an unreadable balance is omitted, never guessed.
+    @param repository: Repository exposing the requester's own balance.
+    @param discord_user_id: Requester whose own balance is read.
+    @return: A new line with the balance, or an empty string when it cannot be read.
+    """
+    try:
+        credits = await asyncio.to_thread(repository.user_exchange_balance, discord_user_id)
+    except Exception as error:
+        LOGGER.warning("Balance line omitted: %s", type(error).__name__)  # [no state change]: The recorded outcome is unaffected.
+        return ""
+    return "" if credits is None else "\n" + BALANCE_LINE_PREFIX + str(credits)
 
 
 def _run_with_one_replay(operation: Callable[[], T]) -> T:
@@ -231,6 +246,7 @@ async def _refund_if_unsent(repository: Any, outcome: DeliveryOutcome, now: date
     return result.status
 
 
+balance_line = _balance_line  # [public name]: The daily flow and the /daily reply word the balance the same way.
 refund_if_unsent = _refund_if_unsent  # [public name]: The scheduled daily flow reuses the same proof-gated refund without importing a private name.
 
 
@@ -240,9 +256,9 @@ def _delivery_text(outcome: DeliveryOutcome, refund: str | None) -> str:
     @param refund: Refund state for failed deliveries, otherwise None.
     @return: Link-free reply text with the operation code.
     """
-    code = f"操作 {outcome.recommendation_id}"
+    code = f"操作 {outcome.recommendation_id}（此編號可提供給 Owner 查找問題）"  # [problem cases only]: A successful delivery needs no technical code.
     if outcome.status is DeliveryStatus.DELIVERED:
-        return f"已將推薦私訊給你，請查看私訊。{code}"
+        return "已將推薦私訊給你，請查看私訊。"
     if outcome.status is DeliveryStatus.FAILED:
         if refund in ("refunded", "already_released"):
             return f"私訊未能送出，已退還 1 Nickel。{code}"

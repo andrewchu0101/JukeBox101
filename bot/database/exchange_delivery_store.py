@@ -243,6 +243,26 @@ def stuck_exchange_rows(cursor: Any, now: datetime) -> list[dict]:
     return stuck
 
 
+def exchange_case_by_code(cursor: Any, operation_code: int, now: datetime) -> dict | None:
+    """@description: Let the Owner look up one exchange by the code a user reported, in any state, read-only and without link, token or balance.
+    @param cursor: Cursor inside a transaction; nothing is written.
+    @param operation_code: Recommendation identifier shown to the requester.
+    @param now: Current time, naive UTC or timezone-aware UTC.
+    @return: Code, requester, delivery state, refund state, attention reason (None when fine), creation time and waiting seconds; None if unknown.
+    """
+    cursor.execute("SELECT recommendation_id,discord_user_id,status,created_at,claimed_at,released_at FROM recommendations "
+                   "WHERE recommendation_id=%s", (operation_code,))
+    row = cursor.fetchone()  # [single row]: The primary key selects at most one reservation.
+    if row is None:
+        return None
+    verdict = _stuck_reason(row, _as_utc(now))
+    refund_state = "refunded" if row["released_at"] is not None else ("refund_pending" if row["status"] == "failed" else "not_needed")
+    waiting = None if verdict is None else int((_as_utc(now) - _as_utc(verdict[1])).total_seconds())
+    return {"operation_code": row["recommendation_id"], "requester": row["discord_user_id"], "delivery_state": row["status"],
+            "refund_state": refund_state, "reason": None if verdict is None else verdict[0], "created_at": row["created_at"],
+            "waiting_seconds": waiting}
+
+
 def user_balance(cursor: Any, discord_user_id: int) -> int | None:
     """@description: Read one requester's own spendable credits, or None when no account exists.
     @param cursor: Cursor inside the transaction.

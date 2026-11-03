@@ -426,9 +426,9 @@ def test_no_candidate_and_insufficient_credits_send_nothing_and_say_so(world) ->
     verify_all_songs(database)
     sender = ScriptedDm()
     own_only = start(repository, sender, 101, "flow-own-only")
-    assert own_only.reply_text == "目前沒有符合條件的歌曲"
+    assert own_only.reply_text == "目前沒有符合條件的歌曲\n目前可用 Nickel：1"
     broke = start(repository, sender, 103, "flow-broke")
-    assert broke.reply_text == "Nickel 不足，交換一首歌曲需要 1 Nickel。"
+    assert broke.reply_text == "Nickel 不足，交換一首歌曲需要 1 Nickel。\n目前可用 Nickel：0"
     assert sender.attempts == [] and balance(database, 101) == 1
 
 
