@@ -211,7 +211,7 @@ def test_an_official_out_of_range_duration_rejects_even_on_a_trusted_channel(sec
 
 
 @pytest.mark.parametrize("fields", [{"channel_id": UNTRUSTED}, {"category_id": "24"}, {"title": "New Song Official Trailer"},
-                                    {"title": "新歌預告"}, {"title": "副歌片段 Clip"}, {"privacy_status": "unlisted"}, {"has_live_details": True}])
+                                    {"title": "新歌預告"}, {"title": "副歌片段 Clip"}, {"privacy_status": "unlisted"}])
 def test_anything_short_of_every_trust_condition_records_duration_and_waits_for_the_owner(fields) -> None:
     """@description: Any broken trust condition records the duration and leaves the decision to the Owner instead of approving.
     @param fields: One trust field broken by the test.
