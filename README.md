@@ -2,7 +2,7 @@
 
 此專案與 [yuipan0611](https://github.com/yuipan0611) 共同協作。
 
-對外顯示名稱：**JukeBox101 v1.0.0 (Beta)**。此名稱對應已驗證的 **v7** 交付包；打包檔名、映像 tag 與程式技術版本保持原樣。夥伴交接清單見 `docs/deploy/partner-handoff-v1.0.0-beta.md`。
+對外顯示名稱：**JukeBox101 v1.0.1 (Beta)**（原 v1.0.0 (Beta)；v1.0.1 納入音樂類別模式、每人每日 10 首上限、卡住交換唯讀檢視與 `/daily` 排程，**新功能預設全部關閉，是否對使用者開放以各開關為準**）。此名稱對應 **v7** 交付線；打包檔名、映像 tag 與程式技術版本（`pyproject.toml` 0.1.0）保持原樣。夥伴交接清單見 `docs/deploy/partner-handoff-v1.0.0-beta.md`。
 
 Discord 音樂交換 Bot。v7 起，**同一個 Bot 可以服務多個 Discord 伺服器**。自動整合測試使用 PostgreSQL 18.6；目前 Supabase PostgreSQL 17.11 已完成首筆指定投稿落盤驗證，尚非完整版本相容性驗收。
 
