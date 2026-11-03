@@ -25,3 +25,19 @@
 - compose：還原備份檔。
 - 功能：`bot.env` 改回 off 再觸發 CD；發獎另需 `settlement-switch write --enabled off`。
 - migration 0004、0005 不可回滾，只能靠備份。
+
+## 補充：開自動發獎的兩道鎖順序（2026-11-03）
+
+兩道鎖：資料庫旗標（`settlement-switch`）與 `bot.env` 的 `JUKEBOX_AUTO_SETTLEMENT`。**兩者不一致時：**
+
+| 資料庫旗標 | `JUKEBOX_AUTO_SETTLEMENT`（容器） | 後果 |
+|---|---|---|
+| on | off | 投稿入口停止（`/share` 被拒）、健康檢查回報 `SETTLEMENT_ENABLED` |
+| off | on | 健康檢查回報 `SETTLEMENT_SWITCH_OFF`，**CD 會因健康檢查不過而 rejected／回滾** |
+| on | on | 正常，`ready` |
+
+所以順序是：先編輯 `bot.env`（容器重建前不生效）→ **在合併觸發 CD 的 PR 之前一刻**寫入資料庫旗標 → 立刻合併 PR。從寫入旗標到 CD 完成（約 5 到 10 分鐘）`/share` 暫停，請挑沒人使用的時間。
+
+`owner_cli` 在正式容器需用 `PGSSLROOTCERT="$DB_SSLROOTCERT" DB_PASSWORD="$(cat "$DB_PASSWORD_FILE")"` 的繞法（見 `incident-record-2026-11-03.md`）。預覽：`settlement-switch preview --enabled on`，寫入：`settlement-switch write --enabled on --digest <預覽印出的驗證碼>`。
+
+**關閉**（懷疑發獎有問題）：`settlement-switch write --enabled off` 與 `JUKEBOX_AUTO_SETTLEMENT=off`，同樣先改 `bot.env`、再寫旗標、再觸發 CD（此時順序相反：先把 `bot.env` 改 off，旗標留 on 到 CD 完成前會停投稿入口，所以也要在 CD 前一刻才寫旗標 off）。
