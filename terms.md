@@ -18,7 +18,7 @@ JukeBox101 是社群音樂交換 Bot：
 
 - `/share`：投稿 YouTube 歌曲，經審核通過的新歌可獲得 Nickel。
 - `/exchange`：使用 Nickel 交換其他使用者推薦的歌曲。
-- `/daily`：開啟或關閉每日推薦，開啟後 Bot 會每日以私訊傳送推薦歌曲。
+- `/daily`：開啟或關閉每日推薦，開啟後 Bot 每天在你設定的整點（台北時間，預設 20:00）以私訊傳送一首推薦歌曲，每次扣除 Nickel。
 - `/balance`、`/history`：查詢 Nickel 餘額與投稿紀錄。
 
 本服務目前為 Beta 版本，功能可能隨時調整。
@@ -27,7 +27,7 @@ JukeBox101 is a community music-exchange bot:
 
 - `/share` — submit YouTube songs; approved new songs may earn Nickel.
 - `/exchange` — spend Nickel to get songs recommended by other users.
-- `/daily` — turn daily recommendations on or off; when on, the bot sends you a recommended song by direct message each day.
+- `/daily` — turn daily recommendations on or off; when on, the bot DMs you one recommended song each day at the hour you choose (Taipei time, default 20:00), deducting Nickel each time.
 - `/balance`, `/history` — check your Nickel balance and submissions.
 
 The Service is in beta and may change at any time.
@@ -52,9 +52,9 @@ You must comply with the [Discord Terms of Service](https://discord.com/terms) a
 
 ## 4. Nickel
 
-Nickel 是本服務內的虛擬點數，**沒有任何現金價值**，不得兌換現金、轉售或在本服務外交易。使用 `/exchange` 交換歌曲時會扣除 Nickel，交換完成後一般不予退還，但因系統錯誤造成的扣點會予以更正。維護者可因錯誤、濫用或違反本條款而調整、凍結或移除 Nickel。
+Nickel 是本服務內的虛擬點數，**沒有任何現金價值**，不得兌換現金、轉售或在本服務外交易。使用 `/exchange` 交換歌曲或接收 `/daily` 每日推薦時會扣除 Nickel；已成功送達的推薦不予退還，若派送失敗，系統會自動退回 Nickel。維護者可因錯誤、濫用或違反本條款而調整、凍結或移除 Nickel。
 
-Nickel is a virtual point within the Service with **no cash value**. It cannot be redeemed for money, resold, or traded outside the Service. Using `/exchange` deducts Nickel and completed exchanges are generally non-refundable, although deductions caused by system errors will be corrected. Maintainers may adjust, freeze, or remove Nickel due to errors, abuse, or violations of these Terms.
+Nickel is a virtual point within the Service with **no cash value**. It cannot be redeemed for money, resold, or traded outside the Service. Using `/exchange` or receiving a `/daily` recommendation deducts Nickel; successfully delivered recommendations are non-refundable, and Nickel is refunded automatically if delivery fails. Maintainers may adjust, freeze, or remove Nickel due to errors, abuse, or violations of these Terms.
 
 ## 5. 第三方內容 / Third-party content
 
@@ -64,9 +64,9 @@ Submitted videos belong to YouTube and their uploaders; the Service stores only 
 
 ## 6. 每日推薦私訊 / Daily recommendation DMs
 
-開啟 `/daily` 即表示你同意 Bot 每日傳送私訊給你。你可隨時用 `/daily mode:off` 關閉。若你關閉了與伺服器成員的私訊設定，可能無法收到推薦。推薦歌曲來自其他使用者投稿，本服務不保證符合你的喜好。
+開啟 `/daily` 即表示你同意 Bot 每天傳送私訊給你，並為每則推薦扣除 Nickel。你可隨時用 `/daily` 關閉或變更時間。餘額不足或沒有可推薦的歌曲時不會扣點，Bot 每天最多提醒一次，連續 3 天後停止提醒。若你的 Discord 隱私設定封鎖了伺服器成員的私訊，可能無法收到推薦。推薦歌曲來自其他使用者投稿，私訊中會以部分遮蔽的方式顯示推薦者名稱；本服務不保證歌曲符合你的喜好。
 
-By turning on `/daily`, you agree to receive one direct message from the bot each day. You can turn it off any time with `/daily mode:off`. If your Discord privacy settings block DMs from server members, you may not receive recommendations. Recommended songs come from other users' submissions and may not match your taste.
+By turning on `/daily`, you agree to receive a daily DM from the bot and to have Nickel deducted for each recommendation. You can turn it off or change the hour any time with `/daily`. If your balance is too low or no song is available, nothing is deducted; the bot reminds you at most once a day and stops after 3 consecutive days. If your Discord privacy settings block DMs from server members, you may not receive recommendations. Songs come from other users' submissions and the DM shows the recommender's name partially masked; songs may not match your taste.
 
 ## 7. 停權 / Suspension
 

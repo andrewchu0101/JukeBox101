@@ -21,7 +21,7 @@ This policy explains how the Discord bot "JukeBox101" (the "Service") collects, 
 - **YouTube 影片公開資訊**：透過 YouTube Data API 取得影片標題、頻道、長度與公開狀態，用於審核。
 - **Nickel 紀錄**：餘額與發放／異動紀錄。
 - **交換紀錄**：你用 `/exchange` 交換的歌曲、扣除的 Nickel 與時間。
-- **每日推薦設定**：你是否開啟 `/daily`，以及已傳送給你的推薦紀錄（用來避免重複推薦）。
+- **每日推薦設定與紀錄**：你是否開啟 `/daily`、送達時間、已派送的推薦與提醒紀錄（用來避免重複派送與扣點）。
 - **互動來源驗證**：處理指令時會檢查請求來自哪個伺服器（不接受私訊），但不會在資料庫中保存伺服器名稱、頻道或成員資料。
 
 The Service only processes data when you use its slash commands (e.g. `/share`, `/balance`, `/history`):
@@ -31,7 +31,7 @@ The Service only processes data when you use its slash commands (e.g. `/share`, 
 - **Public YouTube video information** — title, channel, duration and availability, fetched via the YouTube Data API for review.
 - **Nickel records** — balance and transaction history.
 - **Exchange records** — songs you obtain with `/exchange`, Nickel spent, and timestamps.
-- **Daily settings** — whether `/daily` is on, and which recommendations were sent to you (to avoid repeats).
+- **Daily settings and records** — whether `/daily` is on, your delivery hour, and delivered recommendations and notices (to avoid duplicate delivery or charges).
 - **Interaction checks** — the Service checks that a command comes from a server (DMs are rejected), but does not store server names, channels, or member lists.
 
 ## 2. 我們「不」蒐集的資料 / Data we do NOT collect
@@ -53,12 +53,12 @@ Data is used only to operate the Service: recording submissions, reviewing songs
 ## 4. 資料可見範圍 / Who can see your data
 
 - 指令回覆僅你本人可見（ephemeral）；每日推薦以私訊傳送給你本人。
-- 交換到的歌曲可能是其他使用者投稿的；我們不會向你顯示投稿者的身分，也不會向投稿者顯示你的身分。
+- 你投稿的歌曲可能被推薦給其他使用者。推薦私訊會顯示**部分遮蔽**的推薦者名稱（部分字元以 * 取代），名稱在傳送當下向 Discord 取得，不另外保存；不會標記（mention）任何人，也不會向投稿者顯示收到推薦的人。
 - 本服務維護者（Owner）可在審核時查看投稿與相關紀錄。
 - 你的 Nickel 餘額與投稿紀錄跨伺服器共用，但不會向其他使用者顯示。
 
 - Command replies are visible only to you (ephemeral); daily recommendations are sent to you by DM.
-- Songs you get through exchange may come from other users' submissions; we do not reveal submitters to you or you to submitters.
+- Songs you submit may be recommended to other users. Recommendation DMs show the recommender's name **partially masked** (some characters replaced with *); the name is fetched from Discord at send time and not stored. No one is mentioned, and submitters are never told who received their song.
 - The Service maintainers can view submissions and related records for review.
 - Your balance and history are shared across servers but never shown to other users.
 
