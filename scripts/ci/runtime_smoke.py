@@ -42,6 +42,7 @@ def assert_bot_policy(bot: dict) -> None:
     assert bot['healthcheck']['test'] == ['CMD', 'python', '-m', 'bot.healthcheck']
     assert bot['environment']['JUKEBOX_NICKEL_CLAIM'] == 'off'
     assert bot['environment']['JUKEBOX_FORMAL_EXCHANGE'] == 'off'
+    assert bot['environment']['JUKEBOX_FORMAL_DAILY'] == 'off'
     assert int(bot['deploy']['resources']['limits']['memory']) <= 512 * 1024 * 1024
     assert float(bot['deploy']['resources']['limits']['cpus']) <= 1.0
     assert bot['environment']['DB_SSLMODE'] == 'verify-full'
@@ -89,7 +90,7 @@ def synthetic_compose_environment(directory: str) -> dict:
             'DB_NAME': 'synthetic_database', 'DB_USER': 'synthetic_app',
             'JB_SECRET_DIR': directory, 'JB_DB_CA_FILE': str(root / 'ca.crt'),
             'DISCORD_EXPECTED_APPLICATION_ID': '789001', 'DISCORD_OWNER_USER_ID': '123',
-            'JUKEBOX_FORMAL_EXCHANGE': 'off', 'JUKEBOX_NICKEL_CLAIM': 'off',
+            'JUKEBOX_FORMAL_EXCHANGE': 'off', 'JUKEBOX_FORMAL_DAILY': 'off', 'JUKEBOX_NICKEL_CLAIM': 'off',
             'JB_IMAGE': 'ghcr.io/andrewchu0101/jukebox101@sha256:' + 'a' * 64,
             'JB_EGRESS_NETWORK': 'ci-egress', 'JB_DATABASE_NETWORK': 'ci-database'}
 

@@ -23,7 +23,7 @@
 | 條件 | 說明 | 誰確認 |
 |---|---|---|
 | 階段 B 程式碼已合併並部署 | 部署後開關仍 off；`python -m bot.healthcheck` 回 `ready` | 管理者 |
-| 受控 compose 與 runtime policy 允許開啟 | 目前 `deploy/controlled/compose.yaml` 與 `bot/runtime_policy.py` 仍強制 `JUKEBOX_FORMAL_EXCHANGE=off`；開放前須有已審查的變更讓**只有此開關**可為 on（`JUKEBOX_NICKEL_CLAIM` 仍強制 off）。**尚未完成，待確認** | Sean／實作者 |
+| 受控 compose 與 runtime policy 允許開啟 | `deploy/controlled/compose.yaml` 已改為 `JUKEBOX_FORMAL_EXCHANGE: ${JUKEBOX_FORMAL_EXCHANGE:-off}`，可由 root 擁有的 `bot.env` 開啟（已發佈預設與 CI 渲染仍為 off；`JUKEBOX_NICKEL_CLAIM` 仍強制 off）。需推一個新 commit 讓 CD 重建容器才會生效。CI 的 compose 渲染驗證：**待 CI 確認** | Sean／實作者 |
 | 資料庫備份 | 開開關前先備份 | 管理者 |
 | 歌池至少有 2 位不同使用者的已結算歌曲 | 否則所有人都會看到「目前沒有符合條件的歌曲」 | Owner |
 | 驗收用的兩個真實 Discord 帳號 | A（投稿者）與 B（交換者），B 的私訊設定可切換 | Owner |
@@ -93,6 +93,6 @@ sudo docker exec jukebox101-bot-1 python -m bot.owner_cli exchange-stuck
 ## 6. 已知限制與待確認
 
 - 真實 Discord 驗收（第 3 節）尚未執行。
-- 受控 compose／runtime policy 放寬（第 1 節）尚未完成。
+- 受控 compose 放寬（第 1 節）已實作，待 CI 渲染驗證與實機啟用。
 - Owner 在系統內處理卡住案件的指令不在本期範圍；目前只有唯讀查看。
 - 帳本完整性檢查的實際執行位置與指令，上線前由管理者依 `bot/ledger_integrity.py` 的唯讀 SQL 確認並記錄。

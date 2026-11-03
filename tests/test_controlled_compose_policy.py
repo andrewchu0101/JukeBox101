@@ -25,7 +25,7 @@ def controlled_profile(request):
                healthcheck={'test': ['CMD', 'python', '-m', 'bot.healthcheck']},
                deploy={'resources': {'limits': {'cpus': '1.0', 'memory': '536870912'}}},
                environment=dict(DB_NAME=environment['DB_NAME'], DB_USER=environment['DB_USER'],
-                                DB_SSLMODE='verify-full', JUKEBOX_NICKEL_CLAIM='off', JUKEBOX_FORMAL_EXCHANGE='off',
+                                DB_SSLMODE='verify-full', JUKEBOX_NICKEL_CLAIM='off', JUKEBOX_FORMAL_EXCHANGE='off', JUKEBOX_FORMAL_DAILY='off',
                                 JUKEBOX_AUTO_REVIEW='off', JUKEBOX_API_RETENTION='off', JUKEBOX_AUTO_SETTLEMENT='off',
                                 JUKEBOX_AUTO_VERSION_CONFIRM='off', JUKEBOX_AUTO_TRUST_MODE='allowlist', YOUTUBE_TRUSTED_CHANNEL_IDS='',
                                 YOUTUBE_API_KEY_FILE='/run/secrets/youtube_api_key'),
@@ -48,7 +48,7 @@ def test_reviewed_controlled_profiles_are_accepted(controlled_profile):
 
 @pytest.mark.parametrize('fault', ['ca', 'network', 'private_network', 'shared_network', 'database', 'role',
                                   'health', 'tls', 'port', 'mount', 'root', 'writable', 'capabilities',
-                                  'privileges', 'claim', 'exchange', 'memory', 'cpu', 'service', 'command', 'image',
+                                  'privileges', 'claim', 'exchange', 'daily', 'memory', 'cpu', 'service', 'command', 'image',
                                   'auto_review_on', 'auto_settlement_on', 'api_retention_on', 'version_confirm_on',
                                   'auto_review_unset', 'trusted_channels_preset', 'youtube_key_path', 'youtube_key_target',
                                   'extra_secret', 'missing_youtube_secret', 'swapped_secret', 'trust_mode_open', 'trust_mode_unset', 'trust_mode_invalid'])
@@ -79,6 +79,7 @@ def mutate_profile(config, environment, fault):
                'capabilities': (bot, 'cap_drop', []), 'privileges': (bot, 'security_opt', []),
                'claim': (bot['environment'], 'JUKEBOX_NICKEL_CLAIM', 'on'),
                'exchange': (bot['environment'], 'JUKEBOX_FORMAL_EXCHANGE', 'on'),
+               'daily': (bot['environment'], 'JUKEBOX_FORMAL_DAILY', 'on'),
                'memory': (bot['deploy']['resources']['limits'], 'memory', '1073741824'),
                'cpu': (bot['deploy']['resources']['limits'], 'cpus', '2.0'),
                'command': (bot, 'command', ['/bin/sh']), 'image': (bot, 'image', 'unreviewed:latest'),

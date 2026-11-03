@@ -41,7 +41,7 @@
 |---|---|---|
 | 階段 B（`/exchange`）已部署且穩定 | `/daily` 重用階段 B 的預約、派送、退款；階段 B 未開放前不要開 `/daily` | Owner |
 | 階段 C 程式碼已合併並部署 | 部署後 `JUKEBOX_FORMAL_DAILY` 仍 off；`python -m bot.healthcheck` 回 `ready` | 管理者 |
-| 受控 compose 與 runtime policy 允許開啟 | 目前 `deploy/controlled/compose.yaml` 與 `bot/runtime_policy.py` 只認得 `JUKEBOX_FORMAL_EXCHANGE`、`JUKEBOX_NICKEL_CLAIM` 為 off；新增 `JUKEBOX_FORMAL_DAILY` 的政策與預設 off 是否已完成：**待確認**（實作者回報） | 實作者 |
+| 受控 compose 與 runtime policy 允許開啟 | `deploy/controlled/compose.yaml` 與根目錄 `compose.yaml` 已傳入 `JUKEBOX_FORMAL_DAILY: ${JUKEBOX_FORMAL_DAILY:-off}`，可由 `bot.env` 開啟；CI 渲染政策已要求預設為 off。**待 CI 確認** | 實作者 |
 | **Owner 授權套用 migration 0005** | 見第 0 節第 1 點；授權前不得套用到正式庫 | Owner |
 | 資料庫備份 | 套用 migration 與開開關前各先備份一次 | 管理者 |
 | Discord 指令同步 | `/daily` 新增 `hour` 參數，需要同步指令清單（`python -m bot.command_sync preview` 後明確 opt-in 才 `apply`）；未同步前 Discord 不會顯示 `hour` 欄位：**待確認** | Owner、管理者 |
@@ -109,5 +109,5 @@
 - 「新時間已經過了的整點」（例如現在 15 點、當天還沒派送，把時間改成 9 點）會不會當天立刻補送：規則文字（今天還沒派送，新時間今天就生效；停機錯過會當天補送）傾向「立刻送」，測試尚未鎖定，**待 Owner 確認**。
 - 一個字的名稱顯示為單一 `*`（避免完整洩漏），與「1–2 字名稱只留第一字」的字面有出入，**待 Owner 確認**。
 - 無候選歌曲提醒的確切文案**待 Owner 確認**（目前由具名常數表示，可只改常數與測試）。
-- 受控 compose／runtime policy 放寬（第 1 節）、migration 套用方式（第 2 節第 4 步）、備份方式（第 2 節第 2 步）、健康檢查對「缺 migration」的錯誤代碼：**待確認**。
+- 受控 compose 放寬（第 1 節，已實作待 CI 確認）、migration 套用方式（第 2 節第 4 步）、備份方式（第 2 節第 2 步）、健康檢查對「缺 migration」的錯誤代碼：**待確認**。
 - 派送由 Bot 內的背景排程執行，掃描頻率與在單一實例下的行為由實作者說明；多實例部署不在本期範圍。
