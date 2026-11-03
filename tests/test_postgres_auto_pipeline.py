@@ -217,12 +217,13 @@ def test_replaying_the_same_share_after_an_award_pays_nothing_more(world) -> Non
 
 
 def test_an_earlier_unknown_candidate_blocks_later_awards_until_it_is_resolved(world) -> None:
-    """@description: A later confirmed song waits for the earlier unknown-version submission, and resolving it wakes the blocked candidate.
+    """@description: A later confirmed song of the SAME person waits for their earlier unknown-version submission, and resolving it wakes the blocked candidate.
+    Owner ruling 2026-11-03: an unknown earlier case only holds back its own submitter, so this scenario uses one person for both songs.
     @param world: Automatic-mode database.
     @return: None.
     """
     world.share(ALICE, VIDEO_A, "discord:1")
-    world.share(BOB, VIDEO_B, "discord:2")
+    world.share(ALICE, VIDEO_B, "discord:2")
     world.confirm_version("discord:2", "rec-B")
     blocked = world.pipeline.process("discord:2")
     assert blocked.decision.status is RewardCandidateStatus.WAITING_PREDECESSOR
@@ -230,7 +231,7 @@ def test_an_earlier_unknown_candidate_blocks_later_awards_until_it_is_resolved(w
     assert "較早" in format_share_outcome("discord:2", blocked)
     world.confirm_version("discord:1", "rec-A")
     world.owner.settlement_note(OWNER_ID, "discord:1")
-    assert world.balances() == {ALICE: 1, BOB: 1}
+    assert world.balances() == {ALICE: 2}
     world.assert_books_balance(2)
 
 
