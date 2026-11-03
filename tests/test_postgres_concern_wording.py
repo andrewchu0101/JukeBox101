@@ -109,7 +109,7 @@ def test_a_close_duration_on_one_channel_alone_shows_its_label_but_not_the_note_
     @param world: Comparing world.
     @return: None.
     """
-    reply, card = flag(world, official(VIDEO_B, "Alpha Beta Gamma", 190), official(VIDEO_A, "Zzzz Qqqq 1234", 189))
+    reply, card = flag(world, official(VIDEO_B, "Alpha Beta Gamma", 190), official(VIDEO_A, "Beta Gamma Delta", 189))
     assert CONCERN_LABELS[ConcernCode.SAME_CHANNEL_CLOSE_DURATION] in card and NEAR_DUPLICATE_NOTE not in card
     assert SIMILAR_REVIEW_REPLY not in reply and "+1" not in reply
 
@@ -130,7 +130,7 @@ def test_conditions_spread_over_two_different_songs_do_not_show_the_note(world) 
     @return: None.
     """
     similar_elsewhere = official(VIDEO_A, "Alpha Beta Gamma", 300, OTHER_CHANNEL)
-    close_duration_same_channel = official(VIDEO_C, "Omega Sigma Tau", 191)
+    close_duration_same_channel = official(VIDEO_C, "Beta Gamma Delta", 191)
     reply, card = flag(world, official(VIDEO_B, "Alpha Beta Gamma", 190), similar_elsewhere, close_duration_same_channel)
     assert watch_url(VIDEO_A) in card and watch_url(VIDEO_C) in card and NEAR_DUPLICATE_NOTE not in card
     assert SIMILAR_REVIEW_REPLY in reply

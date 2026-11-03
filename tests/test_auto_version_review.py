@@ -70,7 +70,7 @@ def test_no_concern_keeps_the_approval_and_attaches_the_comparison_basis() -> No
 
 
 @pytest.mark.parametrize("candidate,other", [
-    (meta(seconds=180), meta("othr0000001", "Zzzz Qqqq 1234", seconds=182)),
+    (meta(seconds=180), meta("othr0000001", "Beta Gamma Delta", seconds=182)),
     (meta(), meta("othr0000001", "ALPHA BETA GAMMA", channel=OTHER, seconds=300)),
     (meta(title="Alpha Beta Gamma (Live)"), meta("othr0000001", "Zzzz Qqqq 1234", channel=OTHER, seconds=300)),
     (meta(title="ab"), meta("othr0000001", "Zzzz Qqqq 1234", channel=OTHER, seconds=300))])
