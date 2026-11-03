@@ -15,6 +15,7 @@ from bot.evidence_record import VersionClaimKind
 from bot.owner_review import ReviewAction, ReviewOutcomeUnknown, ReviewPreview
 from bot.review import DurationEvidenceExpired, ReviewStatus, StaleReviewVersion
 from bot.song_identity import VideoIdentity
+from bot.version_concerns import ConcernCode, VersionConcern
 from bot.version_identity import VersionIdentityStatus
 
 OWNER_ID = 1001
@@ -24,11 +25,12 @@ SUBMITTER_ID = 5555
 VIDEO = VideoIdentity("dQw4w9WgXcQ")
 VIDEO_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 NOW = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
+DOUBT = (VersionConcern(ConcernCode.SIMILAR_TITLE, "abcdefghijk"),)  # [version doubt]: A stored automatic-comparison concern, which keeps approval separate from the version decision.
 PENDING_STATES = {ReviewStatus.PENDING_VALIDATION, ReviewStatus.PENDING_REVIEW, ReviewStatus.VALIDATION_FAILED}
 
 
 def case(sequence: int = 1, revision: int = 3, review: ReviewStatus = ReviewStatus.PENDING_REVIEW,
-         identity: VersionIdentityStatus = VersionIdentityStatus.UNRESOLVED, duration: int | None = 189, conflict: str | None = None):
+         identity: VersionIdentityStatus = VersionIdentityStatus.UNRESOLVED, duration: int | None = 189, conflict: str | None = None, concerns=()):
     """@description: Build one pending row shaped like the service's PendingItem, with an internal id the Owner must never see.
     @param sequence: Acceptance order, which the card uses instead of the operation id.
     @param revision: Review revision the card must decide.
@@ -36,11 +38,12 @@ def case(sequence: int = 1, revision: int = 3, review: ReviewStatus = ReviewStat
     @param identity: Version identity status.
     @param duration: Known full-video seconds, or None when missing.
     @param conflict: Frozen conflict reason, when any.
+    @param concerns: Stored automatic-comparison doubts.
     @return: Pending row.
     """
     return SimpleNamespace(operation_id=f"discord:internal-{sequence}", source_url=VIDEO_URL, accepted_sequence=sequence,
                            review_status=review, identity_status=identity, revision=revision, evidence_count=0,
-                           conflict_reason=conflict, submitter_id=SUBMITTER_ID, duration_seconds=duration, api_basis=None, concerns=())
+                           conflict_reason=conflict, submitter_id=SUBMITTER_ID, duration_seconds=duration, api_basis=None, concerns=concerns)
 
 
 class CardService:
@@ -372,11 +375,11 @@ def test_only_the_applicable_buttons_are_enabled_for_each_state():
     @return: None.
     """
     reviewable = first_card(cards_for(CardService(case()))).view
-    assert labels(reviewable) == {"確認通過": True, "拒絕": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
+    assert labels(reviewable) == {"核准並發獎": True, "拒絕": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
     missing = first_card(cards_for(CardService(case(review=ReviewStatus.PENDING_VALIDATION, duration=None)))).view
-    assert labels(missing) == {"確認通過": False, "拒絕": True, "補時長": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
+    assert labels(missing) == {"核准並發獎": False, "拒絕": True, "補時長": True, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
     waiting = first_card(cards_for(CardService(case(review=ReviewStatus.APPROVED)))).view
-    assert labels(waiting) == {"確認通過": False, "拒絕": False, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
+    assert labels(waiting) == {"核准並發獎": False, "拒絕": False, "確認為新的錄音版本": True, "其他情況…": True, "下一筆": True}
 
 
 def test_a_press_from_a_non_owner_or_another_guild_reads_and_writes_nothing():
@@ -395,7 +398,7 @@ def test_approve_decides_the_displayed_revision_in_one_press_and_confirms_once()
     @param: none
     @return: None.
     """
-    service = CardService(case(revision=3))
+    service = CardService(case(revision=3, concerns=DOUBT))
     shown = press(cards_for(service), "approve", 1, 3)
     preview = service.called("preview")[0]
     assert preview[3] is ReviewAction.APPROVE and preview[5] == 3 and preview[7].is_song is True
@@ -409,7 +412,7 @@ def test_approving_a_song_never_confirms_a_recording_version():
     @param: none
     @return: None.
     """
-    service = CardService(case())
+    service = CardService(case(concerns=DOUBT))
     shown = press(cards_for(service), "approve", 1, 3)
     assert {call[0] for call in service.calls} <= {"list_pending", "view", "preview", "confirm", "settlement_note"}
     assert "錄音版本" in shown.shown()
@@ -464,7 +467,7 @@ def test_two_simultaneous_presses_decide_once():
     @param: none
     @return: None.
     """
-    service = CardService(case(revision=3))
+    service = CardService(case(revision=3, concerns=DOUBT))
     cards = cards_for(service)
     first, second = Press(), Press()
 
@@ -486,7 +489,7 @@ def test_an_unknown_outcome_is_retried_with_the_same_token():
     @param: none
     @return: None.
     """
-    service = CardService(case(revision=3))
+    service = CardService(case(revision=3, concerns=DOUBT))
     service.confirm_failures = [ReviewOutcomeUnknown("lost")]
     cards = cards_for(service)
     first = press(cards, "approve", 1, 3)
@@ -505,7 +508,7 @@ def test_next_only_changes_the_displayed_case():
     shown = press(cards_for(service), "next", 1, 0)
     assert service.called("list_pending")[-1][2] == 1
     assert not (service.called("preview") or service.called("confirm") or service.called("preview_duration"))
-    assert labels(shown.edits[-1]["view"])["確認通過"] and "ocard:approve:2:7" in [c.custom_id for c in shown.edits[-1]["view"].children]
+    assert labels(shown.edits[-1]["view"])["核准並發獎"] and "ocard:approve:2:7" in [c.custom_id for c in shown.edits[-1]["view"].children]
 
 
 def test_next_after_the_last_case_says_so_and_offers_a_reload():
@@ -1007,7 +1010,7 @@ def test_a_case_resting_on_an_expired_api_conclusion_cannot_be_approved_from_the
     first = first_card(cards)
     assert "官方資料已過期" in first.text and "不能核准" in first.text
     shown = labels(first.view)
-    assert shown["確認通過"] is False and shown["補時長"] is True
+    assert shown["核准並發獎"] is False and shown["補時長"] is True
     attempted = press(cards, "approve", 1, 3)
     assert "官方時長資料已過期" in attempted.shown() and not service.called("confirm")
     assert item.review_status is ReviewStatus.PENDING_REVIEW
@@ -1021,7 +1024,7 @@ def test_a_valid_api_conclusion_shows_no_seconds_and_keeps_approval_available():
     item = case(review=ReviewStatus.PENDING_REVIEW, duration=None)
     item.api_basis = "valid"
     first = first_card(cards_for(CardService(item)))
-    assert "官方資料已驗證在範圍內" in first.text and labels(first.view)["確認通過"] is True and "補時長" not in labels(first.view)
+    assert "官方資料已驗證在範圍內" in first.text and labels(first.view)["核准並發獎"] is True and "補時長" not in labels(first.view)
 
 
 def test_the_card_warns_when_the_purge_is_overdue_and_escalates_with_the_days():
@@ -1078,7 +1081,7 @@ def test_pressing_the_same_button_twice_at_once_decides_only_once_and_the_second
     @param: none
     @return: None.
     """
-    service = CardService(case())
+    service = CardService(case(concerns=DOUBT))
     cards = cards_for(service)
     first, second = Press(), Press()
 

@@ -25,6 +25,7 @@ from bot.evidence_record import EvidenceSourceType, VersionClaimKind, record_evi
 from bot.owner_review import OwnerReviewService, ReviewAction, require_traceable_source
 from bot.song_identity import VideoIdentity
 from bot.song_judgement import ContentJudgement
+from bot.urls import canonical_watch_url
 from bot.version_identity import RecordingVersionIdentity
 
 OWNER_ENV = "DISCORD_OWNER_USER_ID"  # [configured Owner]: The only source of the acting identity.
@@ -154,6 +155,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_settlement_commands(commands)
     _add_switch_commands(commands)
     _add_stuck_command(commands)
+    _add_review_reasons_command(commands)
     _add_conflict_command(commands)
     return parser
 
@@ -266,6 +268,30 @@ def _add_stuck_command(commands: Any) -> None:
     commands.add_parser("exchange-stuck", help="Read-only list of exchange cases that need attention")
 
 
+DEFAULT_REASON_DAYS = 7  # [report window]: Used when --days is not given.
+MAX_REASON_DAYS = 60  # [report window cap]: The longest period the report may cover.
+
+
+def _reason_days(text: str) -> int:
+    """@description: Accept only a whole number of days inside the report window, so a bad value never reaches the database.
+    @param text: Option text.
+    @return: Days from one to the cap.
+    """
+    days = int(text)
+    if not 1 <= days <= MAX_REASON_DAYS:
+        raise argparse.ArgumentTypeError(f"days must be 1 to {MAX_REASON_DAYS}")
+    return days
+
+
+def _add_review_reasons_command(commands: Any) -> None:
+    """@description: Register the read-only automatic-review reason report; it takes only a look-back window, so no actor can be supplied.
+    @param commands: Top-level subparser collection that receives the review-reasons command.
+    @return: None.
+    """
+    command = commands.add_parser("review-reasons", help="Read-only count of automatic review reasons and the oldest waiting cases")
+    command.add_argument("--days", type=_reason_days, default=DEFAULT_REASON_DAYS)
+
+
 def conflict_digest(operation: str, expected_revision: int, keep_evidence: str, reason: str, owner_id: int) -> str:
     """@description: Bind a conflict resolution preview and its write to the same operation, revision, kept record, reason and Owner.
     @param operation: Operation of the conflicted video.
@@ -336,6 +362,23 @@ def _exchange_stuck(repository: Any, owner: int, now: Callable[[], datetime]) ->
         return 0
     _report([f"operation_code: {row['operation_code']} requester: {row['requester']} delivery_state: {row['delivery_state']} "
              f"reason: {row['reason']} waiting_seconds: {row['waiting_seconds']}" for row in rows])
+    return 0
+
+
+def _review_reasons(args: argparse.Namespace, repository: Any, owner: int) -> int:
+    """@description: Print the reason counts and the oldest waiting cases so the Owner can tune the rules; nothing is written.
+    @param args: Parsed arguments carrying the look-back days.
+    @param repository: Repository the operator reads through.
+    @param owner: Acting Owner identifier.
+    @return: Process exit code.
+    """
+    report = repository.owner_review_reasons(owner, args.days)
+    lines = [f"automatic review reasons, last {args.days} days:"]
+    lines += [f"  {code}: {total}" for code, total in report["reason_counts"].items()] or ["  none"]
+    lines.append("waiting for the Owner (oldest first):")
+    lines += [f"  sequence: {case['accepted_sequence']} operation: {case['operation_id']} video: {canonical_watch_url(case['video_id'])} "
+              f"reason: {case['reason']} concerns: {','.join(case['concerns']) or '-'}" for case in report["pending"]] or ["  none"]
+    _report(lines)
     return 0
 
 
@@ -520,6 +563,8 @@ def _dispatch(args: argparse.Namespace, repository: Any, owner: int, now: Callab
         return _settlement_switch(args, repository, owner)
     if args.command == "exchange-stuck":
         return _exchange_stuck(repository, owner, now)
+    if args.command == "review-reasons":
+        return _review_reasons(args, repository, owner)
     if args.command == "conflict-resolve":
         return _conflict_resolve(args, repository, owner)
     return _settle(args, repository, owner)

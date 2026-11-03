@@ -555,6 +555,18 @@ class SubmissionRepository:
         with submission_transaction(self._factory) as (cursor, _):
             return stuck_exchange_rows(cursor, now)
 
+    def owner_review_reasons(self, requester_id: int, days: int) -> dict:
+        """@description: Show the Owner why automatic review decided as it did, read-only.
+        @param self: Synchronous repository boundary, called from a worker thread.
+        @param requester_id: Identity making the request; must be the configured Owner.
+        @param days: Look-back window for the reason counts, from one to sixty.
+        @return: Reason counts and the oldest waiting cases, as codes and video IDs only.
+        """
+        from bot.database.review_reasons import review_reason_report  # [local import]: Keeps this file's change to this single method.
+        self._require_owner(requester_id)
+        with submission_transaction(self._factory) as (cursor, _):
+            return review_reason_report(cursor, days)
+
     def refund_undelivered(self, recommendation_id: int, now: Any) -> RefundOutcome:
         """@description: Refund one point for a reservation proven unsent, from its authoritative original debit only.
         @param self: Synchronous repository boundary, called from a worker thread.

@@ -4,6 +4,7 @@ Input is a metadata lookup and the allowlist; output is a verdict the repository
 Automatic approval requires every condition below; anything less keeps the Owner in the loop rather than guessing.
 """
 
+import re
 from dataclasses import dataclass, replace
 from enum import Enum
 
@@ -13,10 +14,13 @@ from bot.version_concerns import VersionConcern
 from bot.youtube_metadata import SOURCE_LABEL, LookupStatus, MetadataLookup, VideoMetadata
 
 AUTO_REVIEW_POLICY_VERSION = "trusted-channel-v2"  # [audit]: Written in every automatic decision; change it when the conditions change.
+AUTO_REVIEW_DECISION_PREFIX = "auto-review policy="  # [audit marker]: Starts every automatic decision reason; the report counts only such rows.
 MUSIC_CATEGORY_ID = "10"  # [YouTube category]: Music; a trusted channel's vlogs and notices do not qualify.
-NON_SONG_TITLE_HINTS = ("trailer", "teaser", "preview", "clip", "shorts", "#short", "highlight", "reaction", "interview",
-                        "behind the scenes", "making of", "full album", "playlist", "預告", "片段", "剪輯", "精華", "幕後",
-                        "訪談", "花絮", "合輯")  # [negative signal only]: A hint withholds trust; its absence proves nothing and it never rejects.
+ENGLISH_TITLE_HINTS = ("trailer", "teaser", "preview", "clip", "shorts?", "#short", "highlight", "reaction", "interview", "behind the scenes",
+                       "making of", "full album", "playlist")  # [whole-word terms]: Matched on word edges, with an optional plural s, never inside another word.
+CHINESE_TITLE_HINTS = ("預告", "片段", "剪輯", "精華", "幕後", "訪談", "花絮", "合輯")  # [substring terms]: Chinese has no word boundary.
+NON_SONG_TITLE_PATTERN = re.compile(r"(?<![a-z0-9])(?:" + "|".join(hint.replace(" ", r"\s+") + ("" if hint.endswith("?") else "s?") for hint in ENGLISH_TITLE_HINTS)
+                                    + r")(?![a-z0-9])")  # [negative signal only]: A hint withholds trust; its absence proves nothing and it never rejects.
 APPROVAL_CODE_ALLOWLIST = "trusted_channel_music"  # [audit]: Approval by an Owner-listed channel.
 APPROVAL_CODE_MUSIC_CATEGORY = "music_category"  # [audit]: Approval by the Music category alone; distinguishable from the allowlist code.
 UNAVAILABLE_UPLOAD_STATUSES = frozenset({"deleted", "failed", "rejected"})  # [no playable video]: Reported to the Owner, retryable by evidence.
@@ -115,7 +119,7 @@ def _trust_withheld(metadata: VideoMetadata, trusted_channel_ids: frozenset[str]
     if metadata.privacy_status != "public":
         return "video_not_public"
     title = (metadata.title or "").casefold()
-    if not title or any(hint in title for hint in NON_SONG_TITLE_HINTS):
+    if not title or NON_SONG_TITLE_PATTERN.search(title) or any(hint in title for hint in CHINESE_TITLE_HINTS):
         return "title_needs_owner"
     return None
 
@@ -140,7 +144,7 @@ def _audit(reason_code: str, metadata: VideoMetadata | None = None) -> str:
     @return: Audit explanation.
     """
     facts = "" if metadata is None else f" channel={metadata.channel_id} fetched_at={metadata.fetched_at.isoformat(timespec='seconds')}"
-    return f"auto-review policy={AUTO_REVIEW_POLICY_VERSION} reason={reason_code}{facts}"
+    return f"{AUTO_REVIEW_DECISION_PREFIX}{AUTO_REVIEW_POLICY_VERSION} reason={reason_code}{facts}"
 
 
 def refined_verdict(base: AutoReviewVerdict, kind: AutoReviewKind, reason_code: str, metadata: VideoMetadata | None, *,

@@ -9,11 +9,14 @@ import logging
 
 from bot.daily_runner import run_daily_loop
 from bot.discord_app import JukeBoxClient
+from bot.discord_exchange import DiscordDirectMessageSender
+from bot.owner_notifier import OwnerNotifier
 
 
 LOGGER = logging.getLogger(__name__)
 DAILY_STOP_WAIT_SECONDS = 5.0  # [bounded stop]: An in-flight daily pass gets this long to finish before it is cancelled at close.
 AUTO_SWEEP_INTERVAL_SECONDS = 300  # [resume cadence]: Unfinished lookups and settlements are resumed this often and once at startup.
+OWNER_NOTICE_CHECK_SECONDS = 300  # [reminder cadence]: How often the queue is checked; the notifier itself sends at most one reminder per interval.
 
 
 class ProductionGatewayClient(JukeBoxClient):
@@ -32,6 +35,7 @@ class ProductionGatewayClient(JukeBoxClient):
         self._auto_sweep_task = None  # [automatic resume]: Created only when the service has a pipeline.
         self._daily_task = None  # [scheduled daily]: Created only when the formal daily switch is on.
         self._daily_stop = asyncio.Event()  # [stop signal]: Set at close so the daily loop ends between passes.
+        self._owner_notice_task = None  # [Owner reminder]: Created only when the Owner review wiring exists.
 
     async def setup_hook(self) -> None:
         """@description: Start health sampling on the Gateway's own event loop before connecting.
@@ -41,6 +45,7 @@ class ProductionGatewayClient(JukeBoxClient):
         if self.gateway_health is not None:
             self.gateway_health.task = asyncio.create_task(self.gateway_health.monitor(self), name='gateway-health')
         self._start_daily_loop()
+        self._start_owner_notice_loop()
         pipeline = getattr(self.handlers.service, 'auto_pipeline', None)
         if pipeline is not None:
             try:
@@ -58,6 +63,30 @@ class ProductionGatewayClient(JukeBoxClient):
         if getattr(service, 'formal_daily_enabled', False) is not True:
             return  # [default off]: No task, no scan, no database access.
         self._daily_task = asyncio.create_task(run_daily_loop(service.submission_repository, self, self._daily_stop), name='daily-delivery')
+
+    def _start_owner_notice_loop(self) -> None:
+        """@description: Start the reminder loop that tells the Owner when cases wait, only when the Owner review wiring exists.
+        @param self: Client owned by the main process.
+        @return: None.
+        """
+        wiring = self.owner_review
+        if wiring is None:
+            return  # [no Owner features]: Nothing to remind about.
+        notifier = OwnerNotifier(wiring.service_provider, DiscordDirectMessageSender(self), wiring.owner_id)
+        self._owner_notice_task = asyncio.create_task(self._owner_notice_loop(notifier), name='owner-queue-reminder')
+
+    async def _owner_notice_loop(self, notifier: OwnerNotifier) -> None:
+        """@description: Check the Owner queue periodically; one failed round never ends the loop.
+        @param self: Client owned by the main process.
+        @param notifier: Reminder logic.
+        @return: None; runs until cancelled at close.
+        """
+        while True:
+            try:
+                await notifier.notify_if_needed()
+            except Exception as error:  # [scheduled-job boundary]: Class name only; the next round retries.
+                LOGGER.error('Owner reminder round failed: %s', type(error).__name__)
+            await asyncio.sleep(OWNER_NOTICE_CHECK_SECONDS)
 
     async def _stop_daily_loop(self) -> None:
         """@description: Ask the daily loop to stop, give a running pass a short time to finish, then cancel it.
@@ -129,6 +158,8 @@ class ProductionGatewayClient(JukeBoxClient):
             await self._stop_daily_loop()
             if self._auto_sweep_task is not None:
                 self._auto_sweep_task.cancel()
+            if self._owner_notice_task is not None:
+                self._owner_notice_task.cancel()
             await super().close()
 
     async def _stop_health_writer(self) -> None:

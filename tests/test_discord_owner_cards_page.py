@@ -11,7 +11,7 @@ from bot.discord_owner_cards import EMPTY_QUEUE_TEXT, OwnerCards
 from bot.owner_review import ReviewOutcomeUnknown
 from bot.review import ReviewStatus
 from bot.version_identity import VersionIdentityStatus
-from tests.test_discord_owner_cards import GUILD_ID, OTHER_USER_ID, OWNER_ID, Press, CardService, case, cards_for
+from tests.test_discord_owner_cards import DOUBT, GUILD_ID, OTHER_USER_ID, OWNER_ID, Press, CardService, case, cards_for
 
 BARE_LINK = re.compile(r"(?<!<)https?://")  # [bare link]: An http link not directly preceded by an angle bracket, which Discord would expand.
 PAGE_CAPACITY = 3  # [page size]: Owner-approved number of cases in one list message.
@@ -71,13 +71,14 @@ def sequences_shown(text: str) -> list[int]:
     return [int(number) for number in re.findall(r"#(\d+)", text)]
 
 
-def queue(count: int, identity: VersionIdentityStatus = VersionIdentityStatus.UNRESOLVED) -> PagedService:
+def queue(count: int, identity: VersionIdentityStatus = VersionIdentityStatus.UNRESOLVED, concerns=()) -> PagedService:
     """@description: Build a queue of pending reviews with distinct revisions.
     @param count: Number of cases, ordered 1..count.
     @param identity: Version state of every case; a confirmed version leaves the queue once the song is decided.
+    @param concerns: Stored doubts of every case; with a doubt, approving only approves.
     @return: Fake service.
     """
-    return PagedService(*[case(sequence=number, revision=10 + number, identity=identity) for number in range(1, count + 1)])
+    return PagedService(*[case(sequence=number, revision=10 + number, identity=identity, concerns=concerns) for number in range(1, count + 1)])
 
 
 def test_a_page_shows_at_most_three_cases_in_one_message():
@@ -99,7 +100,7 @@ def test_each_case_has_its_own_buttons_bound_to_its_own_order_and_revision():
     _, reply = open_page(queue(3))
     for sequence in (1, 2, 3):
         mine = [child for child in reply.view.children if f":{sequence}:{10 + sequence}" in child.custom_id]
-        assert {child.item.label.split(" ")[0] for child in mine} >= {"確認通過", "拒絕"}
+        assert {child.item.label.split(" ")[0] for child in mine} >= {"核准並發獎", "拒絕"}
         assert len({child.row for child in mine}) == 1
     assert len({child.row for child in reply.view.children}) == 4
 
@@ -140,7 +141,7 @@ def test_the_single_case_view_and_the_decision_result_do_not_expand_links_either
     cards, reply = open_page(service)
     detail = push(find(reply.view, "詳情"))
     assert not BARE_LINK.search(detail.shown())
-    result = push(find(detail.edits[-1]["view"], "確認通過"))
+    result = push(find(detail.edits[-1]["view"], "核准並發獎"))
     assert not BARE_LINK.search(result.shown())
 
 
@@ -202,7 +203,7 @@ def test_pressing_the_same_page_button_twice_at_once_decides_once():
     @param: none
     @return: None.
     """
-    service = queue(3)
+    service = queue(3, concerns=DOUBT)
     cards, reply = open_page(service)
     approve = next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12"))
     first, second = Press(), Press()
@@ -226,7 +227,7 @@ def test_a_page_button_removes_the_buttons_before_any_work_runs():
     service = queue(3)
     _, reply = open_page(service)
     interaction = Press()
-    push(find(reply.view, "確認通過"), interaction)
+    push(find(reply.view, "核准並發獎"), interaction)
     assert interaction.response.locks == [{"view": None}] and interaction.edits[-1]["view"] is not None
 
 
@@ -238,7 +239,7 @@ def test_a_press_from_a_non_owner_reads_and_writes_nothing():
     service = queue(3)
     _, reply = open_page(service)
     calls_before = len(service.calls)
-    foreign = push(find(reply.view, "確認通過"), Press(user_id=OTHER_USER_ID, guild_id=GUILD_ID))
+    foreign = push(find(reply.view, "核准並發獎"), Press(user_id=OTHER_USER_ID, guild_id=GUILD_ID))
     assert foreign.response.messages and len(service.calls) == calls_before and not foreign.edits
 
 
@@ -247,7 +248,7 @@ def test_an_unknown_outcome_is_retried_with_the_original_decision_from_the_page(
     @param: none
     @return: None.
     """
-    service = queue(3)
+    service = queue(3, concerns=DOUBT)
     service.confirm_failures.append(ReviewOutcomeUnknown("lost"))
     _, reply = open_page(service)
     unknown = push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12")))
