@@ -114,8 +114,6 @@ def _trust_withheld(metadata: VideoMetadata, trusted_channel_ids: frozenset[str]
         return "category_not_music"
     if metadata.privacy_status != "public":
         return "video_not_public"
-    if metadata.has_live_details:
-        return "broadcast_history"
     title = (metadata.title or "").casefold()
     if not title or any(hint in title for hint in NON_SONG_TITLE_HINTS):
         return "title_needs_owner"

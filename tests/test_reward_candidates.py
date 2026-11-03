@@ -76,12 +76,12 @@ def test_unknown_identity_is_not_a_new_song_and_blocks_later_claim() -> None:
     @return: None.
     """
     # [unresolved first claim]: Passing video review does not establish a distinct recording.
-    decisions = evaluate_reward_candidates(make_context(make_candidate(1, None), make_candidate(2)))
+    decisions = evaluate_reward_candidates(make_context(make_candidate(1, None, submitter_id=7), make_candidate(2, submitter_id=7)))  # [same submitter]: Owner ruling 2026-11-03 scopes the block to one person.
     assert decisions[0].status is Status.WAITING_IDENTITY
     assert decisions[1].status is Status.WAITING_PREDECESSOR
 
 
-@pytest.mark.parametrize("excluded_version,expected", [("original", Status.READY), ("unrelated", Status.WAITING_PREDECESSOR)])
+@pytest.mark.parametrize("excluded_version,expected", [("original", Status.READY), ("unrelated", Status.WAITING_PREDECESSOR)])  # [same submitter]: Owner ruling 2026-11-03.
 def test_unknown_blocker_requires_scoped_exclusion(excluded_version: str, expected: Status) -> None:
     """@description: Release an unknown predecessor only with evidence excluding the target version.
     @param excluded_version: Canonical version excluded by trusted synthetic evidence.
@@ -89,7 +89,7 @@ def test_unknown_blocker_requires_scoped_exclusion(excluded_version: str, expect
     @return: None.
     """
     # [negative evidence]: This explicit assertion is supplied by trusted review, not inferred here.
-    earlier, later = make_candidate(1, None), make_candidate(2)
+    earlier, later = make_candidate(1, None, submitter_id=7), make_candidate(2, submitter_id=7)
     exclusion = VersionExclusion(earlier.identity.video, RecordingVersionIdentity(excluded_version), "synthetic-distinction")  # [scope proof]: Explicit excluded version.
     decisions = evaluate_reward_candidates(make_context(earlier, later, exclusions=(exclusion,)))  # [release result]: Other versions remain blocked.
     assert decisions[0].status is Status.WAITING_IDENTITY
@@ -160,7 +160,8 @@ def test_unknown_conflict_is_conservative_unless_excluded() -> None:
     @return: None.
     """
     # [unscoped conflict]: Its possible recording remains unknown.
-    conflict, later = make_candidate(1, None, identity_status=VersionIdentityStatus.CONFLICT), make_candidate(2)
+    conflict = make_candidate(1, None, identity_status=VersionIdentityStatus.CONFLICT, submitter_id=7)  # [same submitter]: Owner ruling 2026-11-03.
+    later = make_candidate(2, submitter_id=7)
     assert evaluate_reward_candidates(make_context(conflict, later))[1].status is Status.CONFLICT
     exclusion = VersionExclusion(conflict.identity.video, later.identity.version, "synthetic-distinction")  # [scope release]: Proven unrelated recording.
     assert evaluate_reward_candidates(make_context(conflict, later, exclusions=(exclusion,)))[1].status is Status.READY
@@ -254,9 +255,20 @@ def test_later_existing_award_does_not_silently_discard_earlier_claim() -> None:
     @return: None.
     """
     # [priority conflict]: A later historical award cannot retroactively erase an earlier pending claim.
-    earlier = make_candidate(1, review_status=ReviewStatus.PENDING_VALIDATION)
-    decisions = evaluate_reward_candidates(make_context(earlier, make_candidate(2, awarded=True)))  # [historical violation]: Preserve money facts, flag priority conflict.
+    earlier = make_candidate(1, review_status=ReviewStatus.PENDING_VALIDATION, submitter_id=7)  # [same submitter]: Owner ruling 2026-11-03.
+    decisions = evaluate_reward_candidates(make_context(earlier, make_candidate(2, awarded=True, submitter_id=7)))  # [historical violation]: Preserve money facts, flag priority conflict.
     assert [item.status for item in decisions] == [Status.CONFLICT, Status.AWARDED]
+
+
+def test_another_persons_later_existing_award_is_not_a_priority_violation() -> None:
+    """@description: Owner ruling 2026-11-03: whoever passes first is paid, and the earlier person's same version gets no second award.
+    @param: none
+    @return: None.
+    """
+    earlier = make_candidate(1, review_status=ReviewStatus.PENDING_VALIDATION)  # [different person]: Default submitter equals the sequence.
+    decisions = evaluate_reward_candidates(make_context(earlier, make_candidate(2, awarded=True)))
+    assert [item.status for item in decisions] == [Status.INELIGIBLE, Status.AWARDED]
+    assert decisions[0].reason is Reason.VERSION_ALREADY_AWARDED
 
 
 @pytest.mark.parametrize("change", [{"accepted_sequence": 0}, {"accepted_sequence": True}, {"submitter_id": 0},

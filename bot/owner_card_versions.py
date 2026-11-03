@@ -82,7 +82,7 @@ def render_known_versions(versions, has_more: bool) -> str:
     """
     if not versions:
         return "已知版本：無"
-    rows = [f" {number}. 首位影片 {watch_url(version.first_video_id)}（{version.created_at.date().isoformat()} 建立）"
+    rows = [f" {number}. 首位影片 <{watch_url(version.first_video_id)}>（{version.created_at.date().isoformat()} 建立）"
             for number, version in enumerate(versions, 1)]
     return "\n".join(["已知版本（點連結比對）：", *rows, *([" … 還有更多，按「更多已知版本」"] if has_more else [])])
 
@@ -150,7 +150,7 @@ def concern_lines(concerns: tuple[VersionConcern, ...]) -> list[str]:
         return []
     lines = ["自動比對疑慮："]
     for concern in concerns:
-        link = f"（既有歌曲：{watch_url(concern.other_video_id)}）" if concern.other_video_id else ""
+        link = f"（既有歌曲：<{watch_url(concern.other_video_id)}>）" if concern.other_video_id else ""
         lines.append(f"• {CONCERN_LABELS[concern.code]}{link}")
     return lines + ([NEAR_DUPLICATE_NOTE] if _has_near_duplicate(concerns) else [])
 

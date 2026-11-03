@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 HISTORY_LIMIT = 10
+SUBMISSION_HISTORY_DISPLAY_LIMIT = 5  # [display size]: Beta /history rows shown at once; kept apart from HISTORY_LIMIT, which the repository queries share.
 MAX_REPLY_LENGTH = 1900
 
 

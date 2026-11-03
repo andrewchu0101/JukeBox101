@@ -241,7 +241,8 @@ def _blocks_priority(earlier: RewardCandidate, candidate: RewardCandidate, conte
         return False
     if earlier.identity.version is not None:
         return earlier.identity.version == candidate.identity.version
-    return not _excluded(earlier, candidate.identity.version, context)
+    # [same submitter only]: Owner ruling 2026-11-03: an earlier case of unknown version holds back only its own submitter, so one pending case cannot jam everyone.
+    return earlier.submitter_id == candidate.submitter_id and not _excluded(earlier, candidate.identity.version, context)
 
 
 def _has_identity_conflict(candidate: RewardCandidate, ordered: tuple[RewardCandidate, ...], context: RewardEvaluationInput) -> bool:
@@ -273,6 +274,9 @@ def _conflict_affects(subject: RewardCandidate, candidate: RewardCandidate, orde
         return False
     if subject.identity.video == candidate.identity.video:
         return True
+    # [same submitter only]: Owner ruling 2026-11-03: an unsettled subject of unknown version freezes only its own submitter's other cases; a paid one stays conservative.
+    if subject.identity.version is None and not subject.awarded and subject.submitter_id != candidate.submitter_id:
+        return False
     if subject.identity.version is not None and candidate.identity.version is not None:
         return subject.identity.version == candidate.identity.version
     return not _excluded(subject, candidate.identity.version, context)
@@ -319,10 +323,12 @@ def _multiple_awards(subject: RewardCandidate, ordered: tuple[RewardCandidate, .
 
 
 def _award_priority_conflict(subject: RewardCandidate, ordered: tuple[RewardCandidate, ...], context: RewardEvaluationInput) -> bool:
-    """@description: Freeze unsettled claims when an existing award appears to have bypassed priority.
+    """@description: Freeze unsettled claims when one person's existing award appears to have bypassed that same person's earlier case.
+    Owner ruling 2026-11-03: another person's earlier case is not a violation; whoever passes first is paid, and the later same-version confirmation gets VERSION_ALREADY_AWARDED.
     @param subject: Potentially settled operation supplied by the caller.
     @param ordered: Current scope including possibly earlier pending operations.
     @param context: Trusted exclusions used to establish unrelated versions.
-    @return: Whether an unsettled predecessor conflicts with this historical award.
+    @return: Whether an unsettled predecessor of the same submitter conflicts with this historical award.
     """
-    return subject.awarded and any(not item.awarded and _blocks_priority(item, subject, context) for item in ordered)
+    return subject.awarded and any(not item.awarded and item.submitter_id == subject.submitter_id
+                                   and _blocks_priority(item, subject, context) for item in ordered)

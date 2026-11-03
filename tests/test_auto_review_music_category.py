@@ -73,11 +73,11 @@ def test_the_duration_limits_are_unchanged_and_inclusive(seconds, kind) -> None:
     assert decide_open(found(channel_id=UNTRUSTED, duration_seconds=seconds)).kind is kind
 
 
-@pytest.mark.parametrize("fields,reason", [({"privacy_status": "unlisted"}, "video_not_public"), ({"has_live_details": True}, "broadcast_history"),
+@pytest.mark.parametrize("fields,reason", [({"privacy_status": "unlisted"}, "video_not_public"),
                                            ({"title": "Official Trailer"}, "title_needs_owner"), ({"title": ""}, "title_needs_owner"),
                                            ({"title": None}, "title_needs_owner")])
 def test_the_other_trust_conditions_still_send_the_case_to_the_owner(fields, reason) -> None:
-    """@description: Only the channel condition is dropped; visibility, broadcast history and title hints still withhold trust.
+    """@description: Only the channel condition is dropped; visibility and title hints still withhold trust.
     @param fields: Metadata override.
     @param reason: Reason code that must appear.
     @return: None.
@@ -135,3 +135,24 @@ def test_allowlist_mode_with_an_empty_list_never_approves_anything() -> None:
     @return: None.
     """
     assert decide_auto_review(found(channel_id=TRUSTED), frozenset(), True).kind is AutoReviewKind.DURATION_ONLY
+
+
+@pytest.mark.parametrize("require_trusted_channel,trusted", [(False, frozenset()), (True, frozenset({TRUSTED}))])
+def test_a_music_video_that_was_premiered_or_streamed_before_is_approved_without_the_owner(require_trusted_channel, trusted) -> None:
+    """@description: Owner ruling 2026-11-03: a past premiere or finished broadcast no longer needs a person, because live and upcoming videos are still held and the 60-720 second limit already excludes long recordings.
+    @param require_trusted_channel: Allowlist or open mode.
+    @param trusted: Allowlist for the mode.
+    @return: None.
+    """
+    channel = TRUSTED if require_trusted_channel else UNTRUSTED
+    verdict = decide_auto_review(found(channel_id=channel, has_live_details=True), trusted, require_trusted_channel)
+    assert verdict.kind is AutoReviewKind.AUTO_APPROVE and "broadcast_history" not in verdict.reason
+
+
+@pytest.mark.parametrize("fields", [{"live_broadcast_content": "live"}, {"live_broadcast_content": "upcoming"}, {"has_live_details": True, "duration_seconds": 721}])
+def test_a_broadcast_that_is_still_live_or_too_long_is_still_not_auto_approved(fields) -> None:
+    """@description: The relaxation covers finished premieres only; live, upcoming and over-long videos keep their existing treatment.
+    @param fields: Metadata override.
+    @return: None.
+    """
+    assert decide_open(found(channel_id=UNTRUSTED, **fields)).kind is not AutoReviewKind.AUTO_APPROVE

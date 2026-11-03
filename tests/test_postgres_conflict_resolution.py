@@ -126,14 +126,14 @@ def test_without_an_owner_version_the_automatic_path_still_confirms_a_version_it
     assert identity_of(world, "discord:1").status is VersionIdentityStatus.CONFIRMED
 
 
-def test_one_conflicted_video_freezes_a_later_submission_of_another_video(world) -> None:
-    """@description: Documents the conservative rule that makes a resolution necessary.
+def test_one_conflicted_video_does_not_freeze_another_persons_later_submission(world) -> None:
+    """@description: Owner ruling 2026-11-03: a conflict of unknown version freezes only its own submitter and video, so another person is still paid.
     @param world: Music-category world.
     @return: None.
     """
     conflicted_video(world)
     outcome = world.share(BOB, VIDEO_B, "discord:2")
-    assert outcome.decision.status is RewardCandidateStatus.CONFLICT and world.balances().get(BOB, 0) == 0
+    assert outcome.decision.status is RewardCandidateStatus.AWARDED and world.balances() == {ALICE: 0, BOB: 1}
 
 
 def test_the_owner_resolution_keeps_the_owner_version_and_unfreezes_every_innocent_candidate(world) -> None:

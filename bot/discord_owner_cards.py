@@ -5,6 +5,7 @@ Button ids carry the acceptance order and the displayed revision, never an opera
 """
 
 import asyncio
+import contextvars
 import hashlib
 import logging
 from collections.abc import Callable
@@ -29,8 +30,8 @@ from bot.song_judgement import ContentJudgement
 from bot.version_identity import RecordingVersionIdentity, VersionIdentityStatus
 
 _LOGGER = logging.getLogger(__name__)
-CARD_PATTERN = (r"ocard:(?P<action>approve|reject|duration|next|reload|new|same|other|vpage|kind|remaster|back|opage):(?P<sequence>\d+):(?P<revision>\d+)"
-                r"(?::(?P<extra>\d+))?")  # [button id]: Action, acceptance order, displayed revision and, for version buttons, an opaque choice.
+CARD_PATTERN = (r"ocard:(?P<action>approve|reject|duration|next|reload|new|same|other|vpage|kind|remaster|back|opage|detail|list|prev):(?P<sequence>\d+):(?P<revision>\d+)"
+                r"(?::(?P<extra>\d+))?(?::p(?P<page>\d+))?")  # [button id]: Action, acceptance order, displayed revision, an opaque choice for version buttons, and the list page the card was opened from.
 EXTRA_ACTIONS = {"same", "vpage", "kind", "remaster", "opage"}  # [choice carriers]: Actions whose id also carries a known version or a page cursor.
 VERSION_ACTIONS = {"new", "same", "other", "vpage", "kind", "remaster", "back", "opage"}  # [version buttons]: Offered only while the version is unresolved.
 APPROVE_REASON = "Owner 於案件卡片核准歌曲資格"  # [audit reason]: Stored with an approval made from a card.
@@ -41,12 +42,14 @@ DURATION_STATES = {ReviewStatus.PENDING_VALIDATION, ReviewStatus.VALIDATION_FAIL
 MAX_TRACKED_LOCKS = 1000  # [memory bound]: Unlocked per-case locks are dropped beyond this many.
 BUTTON_LABELS = {"approve": "確認通過", "reject": "拒絕", "duration": "補時長", "next": "下一筆", "reload": "重新載入",
                  "new": "確認為新的錄音版本", "same": "確認為同一錄音", "other": "其他情況…", "vpage": "更多已知版本",
-                 "kind": "類別", "remaster": "重製：同一錄音", "back": "返回", "opage": "更多已知版本"}  # [button text]: One label per action.
+                 "kind": "類別", "remaster": "重製：同一錄音", "back": "返回", "opage": "更多已知版本",
+                 "detail": "詳情", "list": "重新載入", "prev": "上一頁"}  # [button text]: One label per action.
 BUTTON_STYLES = {"approve": discord.ButtonStyle.success, "reject": discord.ButtonStyle.danger, "duration": discord.ButtonStyle.secondary,
                  "next": discord.ButtonStyle.secondary, "reload": discord.ButtonStyle.primary, "new": discord.ButtonStyle.success,
                  "same": discord.ButtonStyle.success, "other": discord.ButtonStyle.secondary, "vpage": discord.ButtonStyle.secondary,
                  "kind": discord.ButtonStyle.primary, "remaster": discord.ButtonStyle.primary, "back": discord.ButtonStyle.secondary,
-                 "opage": discord.ButtonStyle.secondary}  # [button look]: One style per action.
+                 "opage": discord.ButtonStyle.secondary, "detail": discord.ButtonStyle.secondary, "list": discord.ButtonStyle.primary,
+                 "prev": discord.ButtonStyle.secondary}  # [button look]: One style per action.
 EMPTY_QUEUE_TEXT = "目前沒有待處理案件。"
 NO_MORE_TEXT = "目前沒有更多待處理案件。"
 STALE_CARD_TEXT = "此案件已變更或已處理，這張卡片已失效，沒有執行任何操作。請按「重新載入」。"  # [stale card]: Never claims a decision.
@@ -54,6 +57,14 @@ UNKNOWN_OUTCOME_TEXT = "結果未知（連線中斷，決定可能已儲存）�
 DURATION_FORMAT_TEXT = "秒數必須是整數（0 到 86400）。"
 EXPIRED_BASIS_TEXT = "官方時長資料已過期，不能再依它核准。沒有執行任何操作；請等待系統重新驗證，或按「補時長」由你輸入時長與來源。"  # [expired API basis]: The case stays pending.
 MAX_LINK_CHARS = 300  # [message budget]: A longer submitted link is shown as its canonical watch link so the message stays under Discord's 2000-character limit.
+PAGE_CAPACITY = 3  # [list size]: Owner-approved number of cases in one /owner list message; each gets its own button row, plus one row for paging.
+LIST_LINK_CHARS = 100  # [list budget]: A longer submitted link is shown as its canonical watch link on the list page.
+LIST_REASON_CHARS = 100  # [list budget]: A longer waiting reason is cut with an ellipsis so three cases fit in one message.
+LIST_LEAD_CHARS = 400  # [list budget]: Cap of the "just handled" line above the list.
+LIST_WARNING_CHARS = 300  # [list budget]: Cap of the retention warning above the list.
+PAGE_ITEM_ACTIONS = ("approve", "reject", "duration", "new", "other", "detail")  # [list buttons]: Order of a case's buttons; only the applicable ones are shown.
+MAX_PRIOR_PAGE_CASES = 20  # [read size]: Rows read per request while finding the page before the current one.
+_PAGE_CONTEXT: contextvars.ContextVar[int | None] = contextvars.ContextVar("owner_card_page", default=None)  # [list page]: Cursor of the list page an action came from, so its replies return there.
 FORM_ACTIONS = {"reject", "duration", "kind", "remaster"}  # [forms]: Actions that open a modal instead of acting at once.
 
 
@@ -96,14 +107,34 @@ def _may_enter_duration(item) -> bool:
     return item.review_status in DURATION_STATES or (item.review_status is ReviewStatus.PENDING_REVIEW and item.api_basis == "expired")
 
 
-def _card_link(url: str) -> str:
-    """@description: Keep a very long submitted link from pushing the card past Discord's message limit without breaking it.
+def _card_link(url: str, limit: int = MAX_LINK_CHARS) -> str:
+    """@description: Keep a very long submitted link from pushing the card past Discord's message limit without breaking it, and keep Discord from expanding it into a large preview.
     @param url: Link exactly as submitted.
-    @return: The link as submitted within the card's budget, otherwise the canonical watch link of the same video.
+    @param limit: Longest link shown as submitted.
+    @return: The link in angle brackets (still clickable, never expanded); the canonical watch link of the same video when the submitted one exceeds the limit.
     """
-    if len(url) <= MAX_LINK_CHARS:
-        return url
-    return watch_url(video_identity_from_url(url).video_id)
+    if len(url) <= limit:
+        return f"<{url}>"
+    return f"<{watch_url(video_identity_from_url(url).video_id)}>"
+
+
+def _clip(text: str, limit: int) -> str:
+    """@description: Cut a text that would push the list message past Discord's limit.
+    @param text: Text to fit.
+    @param limit: Longest allowed length.
+    @return: The text, or its beginning followed by an ellipsis.
+    """
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _list_entry(item) -> str:
+    """@description: Summarize one case in a few short lines for the list page, with its link wrapped so it is not expanded.
+    @param item: Pending row.
+    @return: Entry text marked with the acceptance order the case's buttons carry.
+    """
+    return "\n".join([f"**#{item.accepted_sequence}**　投稿者：<@{item.submitter_id}>", _card_link(item.source_url, LIST_LINK_CHARS),
+                      f"審核：{REVIEW_LABELS[item.review_status]}｜版本：{IDENTITY_LABELS[item.identity_status]}｜時長：{_duration_text(item.duration_seconds, item.api_basis)}",
+                      f"待處理：{_clip(waiting_reason(item), LIST_REASON_CHARS)}"])
 
 
 def _version_line(item) -> str:
@@ -149,7 +180,7 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
     cards: "OwnerCards"  # [bound handler]: Set on the subclass the client registers; the base class is never registered.
 
     def __init__(self, action: str, sequence: int, revision: int, *, disabled: bool = False, extra: int = 0, row: int | None = None,
-                 label: str | None = None) -> None:
+                 label: str | None = None, page: int | None = None) -> None:
         """@description: Bind the action to the case position and revision that the card displayed.
         @param self: Button.
         @param action: One of the card actions.
@@ -159,10 +190,11 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
         @param extra: Opaque choice of a version button: a known version's first acceptance order, or a page cursor.
         @param row: Button row, so the groups of actions stay in their own rows.
         @param label: Text overriding the action's default label.
+        @param page: Cursor of the list page the card came from, or None for a card opened on its own.
         @return: None.
         """
-        self.action, self.sequence, self.revision, self.extra = action, sequence, revision, extra
-        tail = f":{extra}" if action in EXTRA_ACTIONS else ""
+        self.action, self.sequence, self.revision, self.extra, self.page = action, sequence, revision, extra, page
+        tail = (f":{extra}" if action in EXTRA_ACTIONS else "") + ("" if page is None else f":p{page}")
         super().__init__(discord.ui.Button(label=label or BUTTON_LABELS[action], style=BUTTON_STYLES[action], disabled=disabled,
                                            custom_id=f"ocard:{action}:{sequence}:{revision}{tail}"), row=row)
 
@@ -175,7 +207,8 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
         @param match: Template match carrying action, order and revision.
         @return: Button ready to run its callback.
         """
-        return cls(match["action"], int(match["sequence"]), int(match["revision"]), extra=int(match["extra"] or 0))
+        page = None if match["page"] is None else int(match["page"])
+        return cls(match["action"], int(match["sequence"]), int(match["revision"]), extra=int(match["extra"] or 0), page=page)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         """@description: Run the pressed action through the handler.
@@ -183,7 +216,7 @@ class _CardButton(discord.ui.DynamicItem[discord.ui.Button], template=CARD_PATTE
         @param interaction: Press.
         @return: None.
         """
-        await self.cards.press(interaction, self.action, self.sequence, self.revision, self.extra)
+        await self.cards.press(interaction, self.action, self.sequence, self.revision, self.extra, self.page)
 
 
 def _make_button_class(cards: "OwnerCards"):
@@ -197,7 +230,7 @@ def _make_button_class(cards: "OwnerCards"):
 class _CardModal(discord.ui.Modal):
     """Collect the one or two typed values a card action needs, then hand them back to the handler."""
 
-    def __init__(self, cards: "OwnerCards", action: str, sequence: int, revision: int, extra: int = 0) -> None:
+    def __init__(self, cards: "OwnerCards", action: str, sequence: int, revision: int, extra: int = 0, page: int | None = None) -> None:
         """@description: Build the small form for rejection, duration or a version category, bound to the displayed case and revision.
         @param self: Form.
         @param cards: Handler that applies the submission.
@@ -205,10 +238,12 @@ class _CardModal(discord.ui.Modal):
         @param sequence: Acceptance order of the displayed case.
         @param revision: Review revision the card displayed.
         @param extra: Category ordinal, or the first acceptance order of the version to remaster.
+        @param page: Cursor of the list page the form was opened from, or None.
         @return: None.
         """
         super().__init__(title=_modal_title(action, extra), timeout=300)
         self._cards, self._action, self._sequence, self._revision, self._extra = cards, action, sequence, revision, extra
+        self._page = page  # [return target]: The list page refreshed after the form decides the case.
         if action == "reject":
             self.reason = discord.ui.TextInput(label="拒絕理由", style=discord.TextStyle.paragraph, max_length=MAX_REASON_LENGTH)
             self.add_item(self.reason)
@@ -230,7 +265,7 @@ class _CardModal(discord.ui.Modal):
         """
         values = {"reject": lambda: (self.reason.value,), "kind": lambda: (self.source.value,), "remaster": lambda: (self.source.value,),
                   "duration": lambda: (self.seconds.value, self.source.value)}[self._action]()
-        await self._cards.submit(interaction, self._action, self._sequence, self._revision, values, self._extra)
+        await self._cards.submit(interaction, self._action, self._sequence, self._revision, values, self._extra, self._page)
 
 
 def _modal_title(action: str, extra: int) -> str:
@@ -266,14 +301,15 @@ class OwnerCards:
         self.button_class = _make_button_class(self)
 
     async def first_replies(self, actor_id: int) -> list[_Reply]:
-        """@description: Open the oldest pending case, which is what /owner list shows.
+        """@description: Open the first page of up to three pending cases, which is what /owner list shows.
         @param self: Card handler.
         @param actor_id: Admitted Owner identifier.
-        @return: One card reply, or the empty-queue sentence.
+        @return: One page reply, or the empty-queue sentence.
         """
-        return [await self._card_after(actor_id, None)]
+        return [await self._page_reply(actor_id, 0)]
 
-    async def press(self, interaction: discord.Interaction, action: str, sequence: int, revision: int, extra: int = 0) -> None:
+    async def press(self, interaction: discord.Interaction, action: str, sequence: int, revision: int, extra: int = 0,
+                    page: int | None = None) -> None:
         """@description: Admit the Owner, then open a form or run the pressed action and update the card with what really happened.
         @param self: Card handler.
         @param interaction: Button press.
@@ -281,19 +317,20 @@ class OwnerCards:
         @param sequence: Acceptance order in the button id.
         @param revision: Displayed revision in the button id.
         @param extra: Opaque choice of a version button.
+        @param page: Cursor of the list page the button came from, or None.
         @return: None.
         """
         if not await self._gate.admit(interaction):
             return
         if action in FORM_ACTIONS:
-            await interaction.response.send_modal(_CardModal(self, action, sequence, revision, extra))
+            await interaction.response.send_modal(_CardModal(self, action, sequence, revision, extra, page))
             return
         await interaction.response.edit_message(view=None)  # [lock the card]: Acknowledge by removing the buttons, so nothing can be pressed while the slow work runs.
-        reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, (), extra)))[0]
+        reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, (), extra, page)))[0]
         await self._show(interaction, reply)
 
     async def submit(self, interaction: discord.Interaction, action: str, sequence: int, revision: int, values: tuple[str, ...],
-                     extra: int = 0) -> None:
+                     extra: int = 0, page: int | None = None) -> None:
         """@description: Admit the Owner again, then apply a submitted form and update the card.
         @param self: Card handler.
         @param interaction: Form submission.
@@ -302,12 +339,13 @@ class OwnerCards:
         @param revision: Displayed revision the form was opened for.
         @param values: Typed values.
         @param extra: Category ordinal or version choice the form was opened for.
+        @param page: Cursor of the list page the form was opened from, or None.
         @return: None.
         """
         if not await self._gate.admit(interaction):
             return
         await interaction.response.defer()
-        reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, values, extra)))[0]
+        reply = (await _guarded(self._run(interaction.user.id, action, sequence, revision, values, extra, page)))[0]
         await self._show(interaction, reply)
 
     async def _show(self, interaction: discord.Interaction, reply: _Reply) -> None:
@@ -329,28 +367,54 @@ class OwnerCards:
             self._locks = {key: lock for key, lock in self._locks.items() if lock.locked()}
         return self._locks.setdefault(sequence, asyncio.Lock())
 
-    async def _run(self, actor_id: int, action: str, sequence: int, revision: int, values: tuple[str, ...], extra: int = 0) -> _Reply:
-        """@description: Serialize presses of one case and route the action.
+    async def _run(self, actor_id: int, action: str, sequence: int, revision: int, values: tuple[str, ...], extra: int = 0,
+                   page: int | None = None) -> _Reply:
+        """@description: Serialize presses of one case and route the action, remembering the list page the press came from.
         @param self: Card handler.
         @param actor_id: Admitted Owner identifier.
         @param action: Pressed or submitted action.
-        @param sequence: Acceptance order of the displayed case.
+        @param sequence: Acceptance order of the displayed case, or the list cursor for list actions.
         @param revision: Displayed revision.
         @param values: Typed form values, empty for plain buttons.
         @param extra: Opaque choice of a version button.
+        @param page: Cursor of the list page the press came from, or None.
         @return: The reply that replaces the card.
         """
-        async with self._lock_for(sequence):
-            if action == "next":
-                return await self._card_after(actor_id, sequence, NO_MORE_TEXT)
-            if action == "reload":
-                return await self._card_after(actor_id, None if sequence <= 1 else sequence - 1)
-            item = await self._item_at(actor_id, sequence)
-            if item is None or item.revision != revision:
-                return self._stale_reply(sequence)
-            if action in VERSION_ACTIONS:
-                return await self._version_action(actor_id, item, action, extra, values)
-            return await self._decide_action(actor_id, item, action, values)
+        token = _PAGE_CONTEXT.set(page)
+        try:
+            async with self._lock_for(sequence):
+                return await self._route(actor_id, action, sequence, revision, values, extra)
+        finally:
+            _PAGE_CONTEXT.reset(token)
+
+    async def _route(self, actor_id: int, action: str, sequence: int, revision: int, values: tuple[str, ...], extra: int) -> _Reply:
+        """@description: Send a list action to the list, check a case action against the live case, then run it.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param action: Pressed or submitted action.
+        @param sequence: Acceptance order of the displayed case, or the list cursor for list actions.
+        @param revision: Displayed revision.
+        @param values: Typed form values.
+        @param extra: Opaque choice of a version button.
+        @return: The reply that replaces the card.
+        """
+        page = _PAGE_CONTEXT.get()
+        if action == "list" or (action == "reload" and page is not None):
+            return await self._page_reply(actor_id, sequence if action == "list" else page)
+        if action == "prev":
+            return await self._previous_page_reply(actor_id, sequence)
+        if action == "next":
+            return await self._card_after(actor_id, sequence, NO_MORE_TEXT)
+        if action == "reload":
+            return await self._card_after(actor_id, None if sequence <= 1 else sequence - 1)
+        item = await self._item_at(actor_id, sequence)
+        if item is None or item.revision != revision:
+            return self._stale_reply(sequence)
+        if action == "detail":
+            return await self._card_reply(actor_id, item)
+        if action in VERSION_ACTIONS:
+            return await self._version_action(actor_id, item, action, extra, values)
+        return await self._decide_action(actor_id, item, action, values)
 
     async def _decide_action(self, actor_id: int, item, action: str, values: tuple[str, ...]) -> _Reply:
         """@description: Check the displayed state allows the action, then run its preview and confirmation.
@@ -566,6 +630,10 @@ class OwnerCards:
         self._open_tokens.pop(key, None)
         note = await self._reward_note(actor_id, item.operation_id)
         confirmed = f"{headline}\n{_confirmed_text(snapshot)}" if headline else _confirmed_text(snapshot)
+        page = _PAGE_CONTEXT.get()
+        if page is not None:
+            lead = " ".join(f"剛處理 #{item.accepted_sequence}：{confirmed} {note}".split())
+            return await self._page_reply(actor_id, page, lead=_clip(lead, LIST_LEAD_CHARS))
         return _Reply(render_result(item, confirmed, note), self._view([self._button("next", item.accepted_sequence, 0)]))
 
     async def _reward_note(self, actor_id: int, operation_id: str) -> str:
@@ -591,6 +659,69 @@ class OwnerCards:
         page = await _call_service(self._service_provider, lambda service: service.list_pending(
             actor_id, after_sequence=None if sequence <= 1 else sequence - 1, limit=1))
         return page.items[0] if page.items and page.items[0].accepted_sequence == sequence else None
+
+    async def _page_reply(self, actor_id: int, cursor: int, lead: str = "") -> _Reply:
+        """@description: Show up to three pending cases after a list cursor, each with its own buttons, plus paging.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param cursor: Acceptance order the page starts after; 0 is the first page.
+        @param lead: Short line above the list saying what was just handled, or an empty string.
+        @return: Page text and view; an emptied later page falls back to the first page, an empty queue says so.
+        """
+        after = None if cursor <= 0 else cursor
+        page = await _call_service(self._service_provider, lambda service: service.list_pending(actor_id, after_sequence=after, limit=PAGE_CAPACITY))
+        if not page.items and cursor > 0:
+            return await self._page_reply(actor_id, 0, lead)
+        if not page.items:
+            return _Reply(f"{lead}\n\n{EMPTY_QUEUE_TEXT}" if lead else EMPTY_QUEUE_TEXT)
+        warning = _clip(await self._retention_warning(actor_id), LIST_WARNING_CHARS)
+        parts = (lead, warning.strip(), f"待處理案件（本頁 {len(page.items)} 筆）", *map(_list_entry, page.items))
+        return _Reply("\n\n".join(part for part in parts if part), self._page_view(page, cursor))
+
+    def _page_view(self, page, cursor: int) -> discord.ui.View:
+        """@description: Give every listed case its own row of buttons bound to its own order and revision, then a paging row.
+        @param self: Card handler.
+        @param page: Pending page being shown.
+        @param cursor: Acceptance order the page starts after; carried by each case button so its replies return here.
+        @return: View with one row per case and a last row of Previous, Reload and Next.
+        """
+        buttons = [button for row, item in enumerate(page.items) for button in self._list_buttons(item, row, cursor)]
+        paging_row, first, last = len(page.items), page.items[0].accepted_sequence, page.items[-1].accepted_sequence
+        buttons.append(self.button_class("prev", first, 0, disabled=cursor <= 0, row=paging_row))
+        buttons.append(self.button_class("list", cursor, 0, row=paging_row))
+        buttons.append(self.button_class("list", last, 0, disabled=page.next_after_sequence is None, row=paging_row, label="下一頁"))
+        return self._view(buttons)
+
+    def _list_buttons(self, item, row: int, cursor: int) -> list:
+        """@description: Offer, in one row, only the main actions that apply to a listed case; the rest go through its detail card.
+        @param self: Card handler.
+        @param item: Pending row.
+        @param row: Button row of this case.
+        @param cursor: List page cursor the buttons carry.
+        @return: Buttons labelled with the case's acceptance order so three cases can be told apart.
+        """
+        status, unresolved = item.review_status, item.identity_status is VersionIdentityStatus.UNRESOLVED
+        applies = {"approve": status is ReviewStatus.PENDING_REVIEW and item.api_basis != "expired", "reject": status in DECIDABLE_STATES,
+                   "duration": _may_enter_duration(item), "new": unresolved, "other": unresolved, "detail": True}
+        return [self.button_class(action, item.accepted_sequence, item.revision, row=row, label=f"{BUTTON_LABELS[action]} #{item.accepted_sequence}", page=cursor)
+                for action in PAGE_ITEM_ACTIONS if applies[action]]
+
+    async def _previous_page_reply(self, actor_id: int, first_sequence: int) -> _Reply:
+        """@description: Show the page that ends just before a case, found from the live queue so it still works after cases were decided.
+        @param self: Card handler.
+        @param actor_id: Admitted Owner identifier.
+        @param first_sequence: Acceptance order of the first case on the page being left.
+        @return: The page holding the last three cases before it, or the first page.
+        """
+        earlier, after = [], None
+        while True:
+            page = await _call_service(self._service_provider, lambda service: service.list_pending(
+                actor_id, after_sequence=after, limit=MAX_PRIOR_PAGE_CASES))
+            earlier += [row.accepted_sequence for row in page.items if row.accepted_sequence < first_sequence]
+            if page.next_after_sequence is None or page.items[-1].accepted_sequence >= first_sequence:
+                break
+            after = page.next_after_sequence
+        return await self._page_reply(actor_id, earlier[-(PAGE_CAPACITY + 1)] if len(earlier) > PAGE_CAPACITY else 0)
 
     async def _card_after(self, actor_id: int, after_sequence: int | None, empty_text: str = EMPTY_QUEUE_TEXT) -> _Reply:
         """@description: Show the first pending case after a position, without changing any case or its order.
@@ -657,7 +788,7 @@ class OwnerCards:
         @param label: Text overriding the default label.
         @return: Dynamic button.
         """
-        return self.button_class(action, sequence, revision, disabled=disabled, extra=extra, row=row, label=label)
+        return self.button_class(action, sequence, revision, disabled=disabled, extra=extra, row=row, label=label, page=_PAGE_CONTEXT.get())
 
     def _view(self, buttons: list) -> discord.ui.View:
         """@description: Put buttons on a view that does not time out, because their ids rebuild them after any delay or restart.
@@ -683,7 +814,8 @@ class OwnerCards:
                    self._button("reject", sequence, revision, status not in DECIDABLE_STATES, row=0)]
         if _may_enter_duration(item):
             buttons.append(self._button("duration", sequence, revision, row=0))
-        buttons.append(self._button("next", sequence, 0, row=0))
+        page = _PAGE_CONTEXT.get()
+        buttons.append(self._button("next", sequence, 0, row=0) if page is None else self.button_class("list", page, 0, row=0, label="返回清單"))
         if item.identity_status is VersionIdentityStatus.UNRESOLVED:
             buttons += [self._button("new", sequence, revision, row=1), self._button("other", sequence, revision, row=1)]
             buttons += [self._button("same", sequence, revision, extra=version.first_sequence, row=2, label=f"確認為同一錄音 {number}")

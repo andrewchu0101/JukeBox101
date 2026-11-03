@@ -22,7 +22,7 @@ from bot.database.repository import MusicRepository
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
 from bot.exchange_delivery import ExchangeFlowResult, exchange_and_deliver
-from bot.models import DeliveryHistoryEntry, HISTORY_LIMIT, MAX_REPLY_LENGTH
+from bot.models import DeliveryHistoryEntry, HISTORY_LIMIT, MAX_REPLY_LENGTH, SUBMISSION_HISTORY_DISPLAY_LIMIT
 from bot.urls import InvalidVideoUrl, parse_youtube_url
 
 OperationResult = TypeVar("OperationResult")
@@ -341,7 +341,7 @@ class MusicService:
         if not submissions:
             return "目前沒有你的投稿紀錄。"
         lines = ["最近本人投稿與目前審核狀態："]
-        for submission in submissions[:HISTORY_LIMIT]:
+        for submission in submissions[:SUBMISSION_HISTORY_DISPLAY_LIMIT]:
             line = _submission_history_line(submission)
             if self.auto_pipeline is not None:
                 line = f"{line} · {reward_label(submission['reward_status'])}"
@@ -391,4 +391,4 @@ def _submission_history_line(submission: dict) -> str:
     operation_id = submission["operation_id"]  # [receipt reference]: Public IDs must originate from Discord snowflakes.
     if not operation_id.startswith("discord:") or not operation_id[8:].isascii() or not operation_id[8:].isdecimal():
         operation_id = "歷史操作"
-    return f"{operation_id} · {canonical_url} · {status}"
+    return f"{operation_id} · <{canonical_url}> · {status}"
