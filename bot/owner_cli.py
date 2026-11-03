@@ -154,6 +154,7 @@ def _parser() -> argparse.ArgumentParser:
     _add_settlement_commands(commands)
     _add_switch_commands(commands)
     _add_stuck_command(commands)
+    _add_conflict_command(commands)
     return parser
 
 
@@ -263,6 +264,63 @@ def _add_stuck_command(commands: Any) -> None:
     @return: None.
     """
     commands.add_parser("exchange-stuck", help="Read-only list of exchange cases that need attention")
+
+
+def conflict_digest(operation: str, expected_revision: int, keep_evidence: str, reason: str, owner_id: int) -> str:
+    """@description: Bind a conflict resolution preview and its write to the same operation, revision, kept record, reason and Owner.
+    @param operation: Operation of the conflicted video.
+    @param expected_revision: Review revision the Owner examined.
+    @param keep_evidence: Stored Owner evidence whose version wins.
+    @param reason: Audit explanation.
+    @param owner_id: Acting Owner identifier.
+    @return: Lowercase hexadecimal SHA-256.
+    """
+    payload = {"kind": "conflict-resolve", "operation": operation, "expected_revision": expected_revision, "keep": keep_evidence,
+               "reason": reason, "owner": owner_id}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def _add_conflict_command(commands: Any) -> None:
+    """@description: Register the explicit Owner resolution of a frozen version conflict, as a digest-bound preview and write.
+    @param commands: Top-level subparser collection that receives the conflict-resolve command.
+    @return: None.
+    """
+    conflict = commands.add_parser("conflict-resolve", help="Keep one stored Owner version record and end a frozen version conflict")
+    actions = conflict.add_subparsers(dest="action", required=True)
+    for name in ("preview", "write"):
+        action = actions.add_parser(name)
+        action.add_argument("--operation", required=True)
+        action.add_argument("--keep-evidence", required=True)
+        action.add_argument("--reason", required=True)
+    actions.choices["write"].add_argument("--expected-revision", type=int, required=True)
+    actions.choices["write"].add_argument("--digest", required=True)
+
+
+def _conflict_resolve(args: argparse.Namespace, repository: Any, owner: int) -> int:
+    """@description: Preview or write the resolution of a frozen version conflict in favour of one stored Owner record.
+    @param args: Parsed arguments of the conflict-resolve subcommand.
+    @param repository: Repository the operator reads and writes through.
+    @param owner: Acting Owner identifier.
+    @return: Process exit code.
+    """
+    view = repository.review_view(owner, args.operation)
+    if view.identity.status.value != "conflict":
+        raise OperatorRefused("NOT_IN_CONFLICT")
+    kept = [record for record in view.evidence if record.evidence_id == args.keep_evidence]
+    if not kept or kept[0].source_type.value != "owner_review" or kept[0].version is None:
+        raise OperatorRefused("KEPT_RECORD_NOT_AN_OWNER_VERSION_RECORD")
+    revision = view.review.version if args.action == "preview" else args.expected_revision
+    digest = conflict_digest(args.operation, revision, args.keep_evidence, args.reason, owner)
+    if args.action == "preview":
+        _report([f"operation: {args.operation}", f"current revision: {revision}", f"kept version: {kept[0].version.value}",
+                 *[f"evidence {record.evidence_id}: {record.source_type.value} version {record.version.value if record.version else '-'}"
+                   for record in view.evidence], f"digest: {digest}", "writes: none (preview only)"])
+        return 0
+    if digest != args.digest:
+        raise OperatorRefused("CONFIRMATION_DIGEST_MISMATCH")
+    review = repository.resolve_conflict(owner, f"conflict-resolve:{digest[:48]}", args.operation, args.keep_evidence, args.reason, revision)
+    _report([f"operation: {args.operation}", f"review status: {review.status.value}", f"revision: {review.version}", "conflict: resolved"])
+    return 0
 
 
 def _exchange_stuck(repository: Any, owner: int, now: Callable[[], datetime]) -> int:
@@ -462,6 +520,8 @@ def _dispatch(args: argparse.Namespace, repository: Any, owner: int, now: Callab
         return _settlement_switch(args, repository, owner)
     if args.command == "exchange-stuck":
         return _exchange_stuck(repository, owner, now)
+    if args.command == "conflict-resolve":
+        return _conflict_resolve(args, repository, owner)
     return _settle(args, repository, owner)
 
 

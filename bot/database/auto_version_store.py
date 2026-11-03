@@ -11,9 +11,10 @@ from typing import Any
 from bot.auto_review import AutoReviewVerdict
 from bot.auto_version_review import stale_verdict, system_version_evidence
 from bot.database.persisted_snapshot import fetch_all
-from bot.database.review_persistence import VersionConfirmationCommand, apply_version_confirmation
+from bot.database.review_persistence import VersionConfirmationCommand, _current_request, apply_version_confirmation
 from bot.evidence_record import SYSTEM_JUDGE_ID
 from bot.review import ApprovalSource, ReviewSnapshot, ReviewStatus
+from bot.version_identity import VersionIdentityStatus
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,8 @@ def confirm_version_by_system(cursor: Any, operation_id: str, verdict: AutoRevie
     """
     if verdict.version_basis is None or review.status is not ReviewStatus.APPROVED or review.approval_source is not ApprovalSource.AUTO:
         return
+    if _current_request(cursor, operation_id, 0).identity.status is not VersionIdentityStatus.UNRESOLVED:
+        return  # [Owner first]: A version the Owner already confirmed (or a frozen conflict) is never overwritten or contradicted by a system judgement.
     cursor.execute("SELECT * FROM jb2_control WHERE singleton_id = 1")
     control = cursor.fetchone()  # [fresh revision]: The approval just advanced it; the confirmation must build on the current one.
     evidence = system_version_evidence(review.video, verdict.version_basis.compared_count, datetime.now(timezone.utc))
