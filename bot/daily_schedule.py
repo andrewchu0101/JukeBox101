@@ -15,7 +15,7 @@ from typing import Any
 from bot.daily_limit import UPLOAD_DAY_ZONE, upload_day
 from bot.daily_mask import mask_display_name
 from bot.database.submission_transaction import CommitOutcomeUnknown
-from bot.exchange_delivery import DM_TIMEOUT_SECONDS, DeliveryStatus, DirectMessageSender, DmKind, DmResult, deliver_recommendation, refund_if_unsent
+from bot.exchange_delivery import DM_TIMEOUT_SECONDS, DeliveryStatus, DirectMessageSender, DmKind, DmResult, balance_line, deliver_recommendation, refund_if_unsent
 
 LOGGER = logging.getLogger(__name__)
 DAILY_DEFAULT_HOUR = 20  # [Owner default]: Taipei hour used when a user turns daily on without choosing one.
@@ -86,13 +86,15 @@ def notice_allowed(streak_before: int, last_notice_day: date | None, today: date
     return last_notice_day != today and streak_before < NOTICE_SILENCE_AFTER_DAYS
 
 
-def build_daily_dm_text(youtube_url: str, recommender_display_name: str | None) -> str:
-    """@description: Compose the daily message with the verified link and only the half-masked recommender name.
+def build_daily_dm_text(youtube_url: str, recommender_display_name: str | None, remaining_nickel: int | None = None) -> str:
+    """@description: Compose the daily message with the verified link, only the half-masked recommender name, and the balance the charge left when known.
     @param youtube_url: Verified delivery link.
     @param recommender_display_name: Live display name of the recommender, or None.
+    @param remaining_nickel: Spendable Nickel after the committed charge, or None when it could not be read.
     @return: Message body that never contains the full name or an identifier.
     """
-    return f"今日推薦：{youtube_url}\n推薦者：{mask_display_name(recommender_display_name)}"
+    body = f"今日推薦：{youtube_url}\n推薦者：{mask_display_name(recommender_display_name)}"
+    return body if remaining_nickel is None else f"{body}\n目前可用 Nickel：{remaining_nickel}"
 
 
 class DailyOutcome(Enum):
@@ -239,7 +241,8 @@ async def _send_notice(repository: Any, sender: DirectMessageSender, start: Any)
     """
     if start.silenced:
         return DailyUserResult(start.discord_user_id, DailyOutcome.NOTICE_SILENCED, None)
-    kind = await _notice_dm_kind(sender, start.discord_user_id, NOTICE_TEXT_BY_KIND[start.notice_kind])
+    notice_text = NOTICE_TEXT_BY_KIND[start.notice_kind] + await balance_line(repository, start.discord_user_id)  # [committed state]: Nothing was charged for a notice.
+    kind = await _notice_dm_kind(sender, start.discord_user_id, notice_text)
     delivery = _DELIVERY_OF_KIND[kind]  # [recorded evidence]: sent, failed or uncertain.
     await asyncio.to_thread(repository.finish_daily_notice, start.discord_user_id, start.notice_day, delivery)
     outcome = DailyOutcome.NOTICE_SENT if kind is DmKind.DELIVERED else DailyOutcome.NOTICE_FAILED
@@ -273,11 +276,25 @@ async def _deliver_reserved(repository: Any, sender: DirectMessageSender, resolv
     @return: Delivery outcome of the task.
     """
     name = await _recommender_name(repository, resolve, start.recommendation_id)
-    prepared = _PreparedTextSender(sender, build_daily_dm_text(start.youtube_url, name))
+    remaining = await _remaining_nickel(repository, start.discord_user_id)  # [after the charge]: The reservation already debited this day's Nickel.
+    prepared = _PreparedTextSender(sender, build_daily_dm_text(start.youtube_url, name, remaining))
     outcome = await deliver_recommendation(repository, prepared, start.recommendation_id, now, new_token())
     await refund_if_unsent(repository, outcome, now)
     await asyncio.to_thread(repository.finish_daily_dispatch, start.recommendation_id, outcome.status.value)
     return DailyUserResult(start.discord_user_id, _OUTCOME_OF_STATUS[outcome.status], start.recommendation_id)
+
+
+async def _remaining_nickel(repository: Any, discord_user_id: int) -> int | None:
+    """@description: Read the subscriber's own balance after the committed charge, or None when it cannot be read so the message omits it.
+    @param repository: Repository exposing the requester's own balance.
+    @param discord_user_id: Subscriber.
+    @return: Spendable Nickel, or None.
+    """
+    try:
+        return await asyncio.to_thread(repository.user_exchange_balance, discord_user_id)
+    except Exception as error:
+        LOGGER.warning("Daily balance omitted: %s", type(error).__name__)  # [class only]: The delivery itself is unaffected.
+        return None
 
 
 async def _recommender_name(repository: Any, resolve: Callable[[int], Awaitable[str | None]], recommendation_id: int) -> str | None:

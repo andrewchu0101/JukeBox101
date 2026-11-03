@@ -117,7 +117,8 @@ def test_a_zero_point_participant_is_refused_without_debit() -> None:
     @return: None.
     """
     service = entry.build_exchange_service("success", ACCOUNTS)
-    assert run_exchange(service, ZERO).endswith("Nickel 不足，交換一首歌曲需要 1 Nickel。")
+    refusal = run_exchange(service, ZERO)
+    assert "Nickel 不足，交換一首歌曲需要 1 Nickel。" in refusal and refusal.endswith("目前可用 Nickel：0")
     assert balance(service, ZERO).endswith("假餘額：0 點（合成資料，未動真實點數）。")
     assert service._database.state["recommendations"] == {}
 

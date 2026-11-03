@@ -21,7 +21,7 @@ from bot.nickel_claim_replies import format_claim_reply
 from bot.database.repository import MusicRepository
 from bot.database.submission_repository import SubmissionRepository
 from bot.database.submission_transaction import CommitOutcomeUnknown, PersistenceNotReady
-from bot.exchange_delivery import ExchangeFlowResult, exchange_and_deliver
+from bot.exchange_delivery import ExchangeFlowResult, balance_line, exchange_and_deliver
 from bot.models import DeliveryHistoryEntry, HISTORY_LIMIT, MAX_REPLY_LENGTH, SUBMISSION_HISTORY_DISPLAY_LIMIT
 from bot.urls import InvalidVideoUrl, parse_youtube_url
 
@@ -307,9 +307,10 @@ class MusicService:
         stored_hour = parsed_hour if enabled or hour is not None else None  # [off keeps the hour]: Turning off without an hour changes nothing else.
         save = partial(self.submission_repository.save_daily_preference, discord_user_id, enabled=enabled, delivery_hour=stored_hour)
         preference = await _database_operation(save)
+        balance_note = await balance_line(self.submission_repository, discord_user_id)  # [after the save]: Best effort; omitted when unreadable.
         if not preference.enabled:
-            return f"已關閉每日推薦，之後不會再自動私訊；歷史紀錄會保留。目前保存的時間為台北時間 {preference.delivery_hour:02d}:00。"
-        return f"已開啟每日推薦：每天台北時間 {preference.delivery_hour:02d}:00 私訊你 1 首推薦，每次扣 1 Nickel。"
+            return f"已關閉每日推薦，之後不會再自動私訊；歷史紀錄會保留。目前保存的時間為台北時間 {preference.delivery_hour:02d}:00。{balance_note}"
+        return f"已開啟每日推薦：每天台北時間 {preference.delivery_hour:02d}:00 私訊你 1 首推薦，每次扣 1 Nickel。{balance_note}"
 
     async def history(self, discord_user_id: int) -> str:
         """@description: Present caller-scoped submission history in Beta while preserving the legacy delivery reader.

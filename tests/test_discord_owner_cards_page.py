@@ -12,6 +12,7 @@ from bot.owner_review import ReviewOutcomeUnknown
 from bot.review import ReviewStatus
 from bot.version_identity import VersionIdentityStatus
 from tests.test_discord_owner_cards import DOUBT, GUILD_ID, OTHER_USER_ID, OWNER_ID, Press, CardService, case, cards_for
+from tests.test_discord_owner_cards_core_fake import Answer, FakeCore, cards_with_core
 
 BARE_LINK = re.compile(r"(?<!<)https?://")  # [bare link]: An http link not directly preceded by an angle bracket, which Discord would expand.
 PAGE_CAPACITY = 3  # [page size]: Owner-approved number of cases in one list message.
@@ -34,12 +35,13 @@ class PagedService(CardService):
         return SimpleNamespace(items=page, next_after_sequence=page[-1].accepted_sequence if len(everything.items) > limit else None)
 
 
-def open_page(service: CardService):
+def open_page(service: CardService, core: FakeCore | None = None):
     """@description: Open the list the way /owner list does.
     @param service: Fake service.
+    @param core: Fake decision core, or None to use the real one for display-only checks.
     @return: Cards handler and the first reply.
     """
-    cards = cards_for(service)
+    cards = cards_for(service) if core is None else cards_with_core(service, core)
     return cards, asyncio.run(cards.first_replies(OWNER_ID))[0]
 
 
@@ -100,7 +102,7 @@ def test_each_case_has_its_own_buttons_bound_to_its_own_order_and_revision():
     _, reply = open_page(queue(3))
     for sequence in (1, 2, 3):
         mine = [child for child in reply.view.children if f":{sequence}:{10 + sequence}" in child.custom_id]
-        assert {child.item.label.split(" ")[0] for child in mine} >= {"核准並發獎", "拒絕"}
+        assert {child.item.label.split(" ")[0] for child in mine} >= {"是，發獎", "不是"}
         assert len({child.row for child in mine}) == 1
     assert len({child.row for child in reply.view.children}) == 4
 
@@ -138,10 +140,10 @@ def test_the_single_case_view_and_the_decision_result_do_not_expand_links_either
     @return: None.
     """
     service = queue(3)
-    cards, reply = open_page(service)
+    cards, reply = open_page(service, FakeCore())
     detail = push(find(reply.view, "詳情"))
     assert not BARE_LINK.search(detail.shown())
-    result = push(find(detail.edits[-1]["view"], "核准並發獎"))
+    result = push(find(detail.edits[-1]["view"], "是，發獎"))
     assert not BARE_LINK.search(result.shown())
 
 
@@ -169,43 +171,42 @@ def test_next_and_previous_walk_the_queue_without_a_gap_or_a_repeat():
 
 
 def test_a_decision_on_one_case_leaves_the_others_untouched_and_refreshes_the_page():
-    """@description: Approving case 2 decides only case 2; cases 1 and 3 keep their revision, and the page refills with the next case.
+    """@description: Answering yes for case 2 decides only case 2; cases 1 and 3 keep their revision, and the page refills with the next case.
     @param: none
     @return: None.
     """
-    service = queue(5, VersionIdentityStatus.CONFIRMED)
-    _, reply = open_page(service)
-    approve = next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12"))
-    shown = push(approve)
-    assert len(service.called("confirm")) == 1 and service.called("preview")[0][2] == "discord:internal-2" and service.called("preview")[0][5] == 12
+    service, core = queue(5, VersionIdentityStatus.CONFIRMED), FakeCore()
+    _, reply = open_page(service, core)
+    shown = push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:yes:2:12")))
+    assert [(order, answer) for order, answer, _, _ in core.decisions] == [(2, Answer.YES)]
     assert service.items[1].revision == 11 and service.items[3].revision == 13
     assert sequences_shown(shown.shown().split("\n\n", 1)[-1]) == [1, 3, 4] and "已" in shown.shown().split("\n\n", 1)[0]
     assert all(child.custom_id.startswith("ocard:") for child in shown.edits[-1]["view"].children)
 
 
 def test_a_card_for_a_case_that_changed_or_left_is_stale_and_runs_nothing():
-    """@description: Pressing approve for a case at an old revision, or one no longer waiting, writes nothing and says the card is stale.
+    """@description: Pressing yes for a case at an old revision, or one no longer waiting, reaches no decision and says the card is stale.
     @param: none
     @return: None.
     """
-    service = queue(3)
-    cards, reply = open_page(service)
-    approve = next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12"))
+    service, core = queue(3), FakeCore()
+    cards, reply = open_page(service, core)
+    approve = next(child for child in reply.view.children if child.custom_id.startswith("ocard:yes:2:12"))
     service.items[2].revision = 99
-    assert "已失效" in push(approve).shown() and not service.called("confirm")
+    assert "已失效" in push(approve).shown() and not core.decisions
     del service.items[3]
     gone = next(child for child in reply.view.children if child.custom_id.startswith("ocard:detail:3:13"))
-    assert "已失效" in push(gone).shown() and not service.called("confirm")
+    assert "已失效" in push(gone).shown() and not core.decisions
 
 
 def test_pressing_the_same_page_button_twice_at_once_decides_once():
-    """@description: Two simultaneous presses of one case's approve serialize; the second finds the case changed and does nothing.
+    """@description: Two simultaneous presses of one case's yes serialize; the second finds the case changed and does nothing.
     @param: none
     @return: None.
     """
-    service = queue(3, concerns=DOUBT)
-    cards, reply = open_page(service)
-    approve = next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12"))
+    service, core = queue(3, concerns=DOUBT), FakeCore()
+    cards, reply = open_page(service, core)
+    approve = next(child for child in reply.view.children if child.custom_id.startswith("ocard:yes:2:12"))
     first, second = Press(), Press()
 
     async def both():
@@ -216,7 +217,7 @@ def test_pressing_the_same_page_button_twice_at_once_decides_once():
         await asyncio.gather(approve.callback(first), approve.callback(second))
 
     asyncio.run(both())
-    assert len(service.called("confirm")) == 1
+    assert len(core.decisions) == 1
 
 
 def test_a_page_button_removes_the_buttons_before_any_work_runs():
@@ -225,9 +226,9 @@ def test_a_page_button_removes_the_buttons_before_any_work_runs():
     @return: None.
     """
     service = queue(3)
-    _, reply = open_page(service)
+    _, reply = open_page(service, FakeCore())
     interaction = Press()
-    push(find(reply.view, "核准並發獎"), interaction)
+    push(find(reply.view, "是，發獎"), interaction)
     assert interaction.response.locks == [{"view": None}] and interaction.edits[-1]["view"] is not None
 
 
@@ -236,79 +237,81 @@ def test_a_press_from_a_non_owner_reads_and_writes_nothing():
     @param: none
     @return: None.
     """
-    service = queue(3)
-    _, reply = open_page(service)
+    service, core = queue(3), FakeCore()
+    _, reply = open_page(service, core)
     calls_before = len(service.calls)
-    foreign = push(find(reply.view, "核准並發獎"), Press(user_id=OTHER_USER_ID, guild_id=GUILD_ID))
-    assert foreign.response.messages and len(service.calls) == calls_before and not foreign.edits
+    foreign = push(find(reply.view, "是，發獎"), Press(user_id=OTHER_USER_ID, guild_id=GUILD_ID))
+    assert foreign.response.messages and len(service.calls) == calls_before and not foreign.edits and not core.decisions
 
 
 def test_an_unknown_outcome_is_retried_with_the_original_decision_from_the_page():
-    """@description: After a lost connection the buttons come back, and pressing again replays the same token instead of deciding twice.
+    """@description: After a lost connection the buttons come back, and pressing again hands the core the same token dictionary instead of starting a new decision.
     @param: none
     @return: None.
     """
-    service = queue(3, concerns=DOUBT)
-    service.confirm_failures.append(ReviewOutcomeUnknown("lost"))
-    _, reply = open_page(service)
-    unknown = push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12")))
+    service, core = queue(3, concerns=DOUBT), FakeCore()
+    core.failures.append(ReviewOutcomeUnknown("lost"))
+    cards, reply = open_page(service, core)
+    unknown = push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:yes:2:12")))
     assert "結果未知" in unknown.shown()
-    retry = push(next(child for child in unknown.edits[-1]["view"].children if child.custom_id.startswith("ocard:approve:2:12")))
-    assert len(service.called("preview")) == 1 and len(service.called("confirm")) == 2
-    assert service.called("confirm")[0][2] == service.called("confirm")[1][2] and "已確認" in retry.shown()
+    retry = push(next(child for child in unknown.edits[-1]["view"].children if child.custom_id.startswith("ocard:yes:2:12")))
+    assert len(core.decisions) == 2 and core.decisions[0][3] is core.decisions[1][3] is cards._open_tokens and "剛處理 #2" in retry.shown()
 
 
 def test_detail_shows_one_case_and_the_back_button_returns_to_the_same_page():
-    """@description: Detail opens the full single card for one case with a return to the list, and returning shows the page again.
+    """@description: Detail opens the single card for one case with a return to the list, and returning shows the page again.
     @param: none
     @return: None.
     """
     service = queue(5)
     _, reply = open_page(service)
     detail = push(find(reply.view, "詳情"))
-    assert "待處理案件" in detail.shown() and "返回清單" in [child.item.label for child in detail.edits[-1]["view"].children]
+    assert "這是一首新的歌嗎？" in detail.shown() and "已知時長" in detail.shown() and "返回清單" in [child.item.label for child in detail.edits[-1]["view"].children]
     assert sequences_shown(push(find(detail.edits[-1]["view"], "返回清單")).shown()) == [1, 2, 3]
 
 
 def test_a_form_opened_from_the_page_decides_that_case_and_refreshes_the_page():
-    """@description: Rejecting from the page opens the reason form for that case only, and submitting it refreshes the page.
+    """@description: The duration button of a listed case opens the form for that case only, and submitting it refreshes the page.
     @param: none
     @return: None.
     """
     service = queue(5)
+    service.items[2].review_status, service.items[2].duration_seconds = ReviewStatus.PENDING_VALIDATION, None
     _, reply = open_page(service)
     opener = Press()
-    push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:reject:2:12")), opener)
+    push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:duration:2:12")), opener)
     modal = opener.response.modals[0]
-    modal.reason._value = "不是歌曲"
+    modal.seconds._value, modal.source._value = "120", "https://example.test/check"
     submitted = Press()
     asyncio.run(modal.on_submit(submitted))
-    assert service.called("preview")[0][2] == "discord:internal-2" and sequences_shown(submitted.shown().split("\n\n", 1)[-1]) == [1, 3, 4]
+    assert service.called("preview_duration")[0][2] == "discord:internal-2" and sequences_shown(submitted.shown().split("\n\n", 1)[-1]) == [1, 2, 3]
 
 
 def test_old_card_buttons_without_a_page_marker_still_work_after_the_upgrade():
-    """@description: An id issued before this change still matches the registered pattern and behaves as a single card button.
+    """@description: An id issued before this change still matches the registered pattern and behaves as a single card button; the old approve id counts as yes.
     @param: none
     @return: None.
     """
-    service = CardService(case(revision=3))
-    cards = cards_for(service)
+    service, core = CardService(case(revision=3)), FakeCore()
+    cards = cards_with_core(service, core)
     template = cards.button_class.__discord_ui_compiled_template__
     assert template.fullmatch("ocard:approve:1:3") and template.fullmatch("ocard:approve:1:3:p0") and template.fullmatch("ocard:same:1:3:7:p0")
     shown = push(cards.button_class("approve", 1, 3))
-    assert "已確認" in shown.shown() and "ocard:next:1:0" in [child.custom_id for child in shown.edits[-1]["view"].children]
+    assert core.decisions[0][:2] == (1, Answer.YES) and "ocard:next:1:0" in [child.custom_id for child in shown.edits[-1]["view"].children]
 
 
 def test_three_heavy_cases_plus_a_long_just_handled_line_still_fit_in_one_message():
-    """@description: After a decision with a very long reward note, the page text stays within 2000 characters and keeps its buttons.
+    """@description: After a decision with a very long result sentence, the page text stays within 2000 characters and keeps its buttons.
     @param: none
     @return: None.
     """
     long_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ&" + "t=1&" * 500
-    service = PagedService(*[case(number, revision=10 + number, conflict="x" * 400) for number in range(1, 6)])
+    service, core = PagedService(*[case(number, revision=10 + number, conflict="x" * 400) for number in range(1, 6)]), FakeCore()
     for row in service.items.values():
-        row.source_url, row.identity_status = long_url, VersionIdentityStatus.CONFLICT
-    service.settlement_note = lambda actor_id, operation_id: "很長的說明" * 300
-    _, reply = open_page(service)
-    shown = push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:approve:2:12")))
+        row.source_url = long_url
+    core.result_text = "很長的說明" * 300
+    _, reply = open_page(service, core)
+    shown = push(next(child for child in reply.view.children if child.custom_id.startswith("ocard:yes:2:12")))
     assert len(shown.shown()) <= 2000 and "剛處理 #2" in shown.shown() and shown.edits[-1]["view"].children
+
+

@@ -185,7 +185,7 @@ def test_a_song_the_user_submitted_or_already_received_is_never_drawn_again(worl
     world.share(ALICE, VIDEO_C, "discord:alice:c")
     sender, replier = ScriptedSender(), Replier()
     flow = world.run(sender, replier, key="exchange-2")
-    assert flow.reply_text == NO_CANDIDATE_TEXT and sender.calls == []
+    assert flow.reply_text == NO_CANDIDATE_TEXT + "\n目前可用 Nickel：1" and sender.calls == []
     assert world.balances()[ALICE] == 1 and len(world.rows()) == 1
 
 
@@ -197,7 +197,7 @@ def test_an_exchange_without_enough_points_charges_nothing_and_sends_nothing(wor
     world.run(ScriptedSender())
     sender = ScriptedSender()
     flow = world.run(sender, key="exchange-2")
-    assert flow.reply_text == INSUFFICIENT_TEXT and flow.recommendation_id is None and sender.calls == []
+    assert flow.reply_text == INSUFFICIENT_TEXT + "\n目前可用 Nickel：0" and flow.recommendation_id is None and sender.calls == []
     assert len(world.ledger("exchange_debit")) == 1 and world.balances()[ALICE] == 0
 
 
