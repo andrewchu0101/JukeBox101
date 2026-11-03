@@ -1,6 +1,6 @@
 # v7 Docker 交付狀態（2026-10-30）
 
-對外顯示名稱：**JukeBox101 v1.0.0 (Beta)**；對應本文件的 v7 交付包。此為辨識用名稱，不變更既有包、映像 tag 或程式技術版本。交接清單見 `partner-handoff-v1.0.0-beta.md`。
+對外顯示名稱：**JukeBox101 v1.0.1 (Beta)**（2026-11-03 起，原為 v1.0.0 (Beta)）；對應本文件的 v7 交付包。此為辨識用名稱，不變更既有包、映像 tag 或程式技術版本。交接清單見 `partner-handoff-v1.0.0-beta.md`。
 
 **COMPLETE：隔離測試與 Docker 交付包完成。正式部署尚未驗收。**
 
