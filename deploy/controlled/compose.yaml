@@ -44,7 +44,9 @@ services:
       DISCORD_OWNER_GUILD_ID: ${DISCORD_OWNER_GUILD_ID:-}
       SECRET_EXPECTED_UID: '10001'
       SECRET_EXPECTED_GID: '10001'
-      JUKEBOX_FORMAL_EXCHANGE: 'off'
+      # Formal /exchange and /daily start closed and are opened only from the root-owned bot.env (Owner decision, stage B/C); the published defaults stay off.
+      JUKEBOX_FORMAL_EXCHANGE: ${JUKEBOX_FORMAL_EXCHANGE:-off}
+      JUKEBOX_FORMAL_DAILY: ${JUKEBOX_FORMAL_DAILY:-off}
       JUKEBOX_NICKEL_CLAIM: 'off'
       # Automatic review: every mode starts closed and is opened only from the root-owned bot.env, never by this file.
       # JUKEBOX_AUTO_REVIEW=on needs JUKEBOX_API_RETENTION=on and the key file below; JUKEBOX_AUTO_VERSION_CONFIRM=on needs both.
